@@ -56,15 +56,16 @@ mod oci;
 
 use devcontainer_api::read_default_devcontainer_configuration;
 
-use crate::devcontainer_api::DevContainerError;
 use crate::devcontainer_api::apply_devcontainer_template;
 use crate::oci::get_deserializable_oci_blob;
 use crate::oci::get_latest_oci_manifest;
 use crate::oci::get_oci_token;
 
 pub use devcontainer_api::{
-    DevContainerConfig, find_configs_in_snapshot, find_devcontainer_configs,
-    start_dev_container_with_config,
+    DevContainerConfig, DevContainerError, DevContainerOrigin, dev_container_origin,
+    find_configs_in_snapshot, find_devcontainer_configs, rebuild_dev_container,
+    remove_dev_container, restart_dev_container, start_dev_container,
+    start_dev_container_with_config, stop_dev_container,
 };
 
 /// Converts a string to a safe environment variable name.
@@ -121,21 +122,36 @@ impl DevContainerContext {
             let host_root = root.to_string_lossy().replace('\\', "/");
             Arc::from(engine_host.local_path(&host_root).as_path())
         };
-        let settings = DevContainerSettings::get_global(cx);
-        let use_podman = settings.use_podman;
-        let use_buildkit = settings.use_buildkit;
-        let http_client = cx.http_client().clone();
-        let fs = workspace.app_state().fs.clone();
-        let environment = workspace.project().read(cx).environment().downgrade();
-        Some(Self {
+        Some(Self::for_local_directory(
             project_directory,
             engine_host,
-            use_podman,
-            use_buildkit,
-            fs,
-            http_client,
-            environment,
-        })
+            workspace,
+            cx,
+        ))
+    }
+
+    /// Builds a context for an explicit `project_directory` on `engine_host`, as
+    /// the machine running Zed sees it, rather than deriving it from the current
+    /// project's active worktree. The active worktree's path isn't usable when the
+    /// current project itself is a dev container connection, since its worktree
+    /// paths are in-container paths rather than host paths (e.g. when rebuilding
+    /// a dev container from within its own window).
+    pub fn for_local_directory(
+        project_directory: Arc<Path>,
+        engine_host: EngineHost,
+        workspace: &Workspace,
+        cx: &App,
+    ) -> Self {
+        let settings = DevContainerSettings::get_global(cx);
+        Self {
+            project_directory,
+            engine_host,
+            use_podman: settings.use_podman,
+            use_buildkit: settings.use_buildkit,
+            fs: workspace.app_state().fs.clone(),
+            http_client: cx.http_client().clone(),
+            environment: workspace.project().read(cx).environment().downgrade(),
+        }
     }
 
     /// The environment of the engine host, where `${localEnv:…}` variables come from.
