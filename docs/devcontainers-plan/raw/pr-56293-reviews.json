@@ -1,0 +1,82 @@
+[
+  {
+    "id": 4377852133,
+    "node_id": "PRR_kwDOFExXwM8AAAABBPC45Q",
+    "user": {
+      "login": "KyleBarton",
+      "id": 8365783,
+      "node_id": "MDQ6VXNlcjgzNjU3ODM=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/8365783?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/KyleBarton",
+      "html_url": "https://github.com/KyleBarton",
+      "followers_url": "https://api.github.com/users/KyleBarton/followers",
+      "following_url": "https://api.github.com/users/KyleBarton/following{/other_user}",
+      "gists_url": "https://api.github.com/users/KyleBarton/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/KyleBarton/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/KyleBarton/subscriptions",
+      "organizations_url": "https://api.github.com/users/KyleBarton/orgs",
+      "repos_url": "https://api.github.com/users/KyleBarton/repos",
+      "events_url": "https://api.github.com/users/KyleBarton/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/KyleBarton/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "Looks like some cargo-fmt issues - can you address when you have a chance? Also left a small suggestion. Overall looks good, thank you for taking this on!",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/zed-industries/zed/pull/56293#pullrequestreview-4377852133",
+    "pull_request_url": "https://api.github.com/repos/zed-industries/zed/pulls/56293",
+    "author_association": "COLLABORATOR",
+    "_links": {
+      "html": {
+        "href": "https://github.com/zed-industries/zed/pull/56293#pullrequestreview-4377852133"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/zed-industries/zed/pulls/56293"
+      }
+    },
+    "submitted_at": "2026-05-28T04:05:09Z",
+    "commit_id": "e798cf1ce7b297f926a72e0948c6fcb8a9cd45f6"
+  },
+  {
+    "id": 4378330749,
+    "node_id": "PRR_kwDOFExXwM8AAAABBPgGfQ",
+    "user": {
+      "login": "YauhenVasileusky",
+      "id": 2217843,
+      "node_id": "MDQ6VXNlcjIyMTc4NDM=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2217843?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/YauhenVasileusky",
+      "html_url": "https://github.com/YauhenVasileusky",
+      "followers_url": "https://api.github.com/users/YauhenVasileusky/followers",
+      "following_url": "https://api.github.com/users/YauhenVasileusky/following{/other_user}",
+      "gists_url": "https://api.github.com/users/YauhenVasileusky/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/YauhenVasileusky/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/YauhenVasileusky/subscriptions",
+      "organizations_url": "https://api.github.com/users/YauhenVasileusky/orgs",
+      "repos_url": "https://api.github.com/users/YauhenVasileusky/repos",
+      "events_url": "https://api.github.com/users/YauhenVasileusky/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/YauhenVasileusky/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/zed-industries/zed/pull/56293#pullrequestreview-4378330749",
+    "pull_request_url": "https://api.github.com/repos/zed-industries/zed/pulls/56293",
+    "author_association": "CONTRIBUTOR",
+    "_links": {
+      "html": {
+        "href": "https://github.com/zed-industries/zed/pull/56293#pullrequestreview-4378330749"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/zed-industries/zed/pulls/56293"
+      }
+    },
+    "submitted_at": "2026-05-28T06:12:38Z",
+    "commit_id": "e798cf1ce7b297f926a72e0948c6fcb8a9cd45f6"
+  }
+]

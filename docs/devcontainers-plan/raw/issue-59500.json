@@ -1,0 +1,101 @@
+{
+  "url": "https://api.github.com/repos/zed-industries/zed/issues/59500",
+  "repository_url": "https://api.github.com/repos/zed-industries/zed",
+  "labels_url": "https://api.github.com/repos/zed-industries/zed/issues/59500/labels{/name}",
+  "comments_url": "https://api.github.com/repos/zed-industries/zed/issues/59500/comments",
+  "events_url": "https://api.github.com/repos/zed-industries/zed/issues/59500/events",
+  "html_url": "https://github.com/zed-industries/zed/issues/59500",
+  "id": 4686513533,
+  "node_id": "I_kwDOFExXwM8AAAABF1aFfQ",
+  "number": 59500,
+  "title": "Support connecting to remote devcontainers (devcontainer on remote host)",
+  "user": {
+    "login": "macraig",
+    "id": 1657213,
+    "node_id": "MDQ6VXNlcjE2NTcyMTM=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1657213?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/macraig",
+    "html_url": "https://github.com/macraig",
+    "followers_url": "https://api.github.com/users/macraig/followers",
+    "following_url": "https://api.github.com/users/macraig/following{/other_user}",
+    "gists_url": "https://api.github.com/users/macraig/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/macraig/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/macraig/subscriptions",
+    "organizations_url": "https://api.github.com/users/macraig/orgs",
+    "repos_url": "https://api.github.com/users/macraig/repos",
+    "events_url": "https://api.github.com/users/macraig/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/macraig/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "labels": [
+    {
+      "id": 9847994321,
+      "node_id": "LA_kwDOFExXwM8AAAACSvx30Q",
+      "url": "https://api.github.com/repos/zed-industries/zed/labels/area:dev%20containers",
+      "name": "area:dev containers",
+      "color": "2eaafb",
+      "default": false,
+      "description": "Feedback for Zed's dev containers feature",
+      "archived_at": null,
+      "archived_by": null
+    }
+  ],
+  "state": "open",
+  "locked": false,
+  "assignees": [
+
+  ],
+  "milestone": null,
+  "comments": 9,
+  "created_at": "2026-06-17T19:42:24Z",
+  "updated_at": "2026-08-15T14:38:27Z",
+  "closed_at": null,
+  "assignee": null,
+  "author_association": "CONTRIBUTOR",
+  "issue_field_values": [
+
+  ],
+  "type": {
+    "id": 25688060,
+    "node_id": "IT_kwDOBLq26M4Bh_f8",
+    "name": "Feature",
+    "description": "Features, enhancements, additions, improvements",
+    "color": "green",
+    "created_at": "2025-02-24T15:00:20Z",
+    "updated_at": "2025-11-27T10:13:21Z",
+    "is_enabled": true
+  },
+  "active_lock_reason": null,
+  "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+  },
+  "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+  },
+  "body": "\n### Discussed in https://github.com/zed-industries/zed/discussions/56252\n\n<div type='discussions-op-text'>\n\n<sup>Originally posted by **lieeesson** May  8, 2026</sup>\n## Question / Feature Request\n\nIs there a plan or timeline for Zed to support connecting to a **remote devcontainer**? Currently it seems devcontainer support is focused on local containers, but many developers work with devcontainers running on remote servers (via SSH port forwarding, etc.).\n\n## Use Case\n\n- Devcontainer runs on a remote machine (e.g., a powerful dev server accessed via SSH)\n- The local machine is a less powerful laptop or device\n- Developer wants to use Zed locally but have the devcontainer environment on the remote side\n- Similar to VS Code's \"Attach Shell to Remote\" or JetBrains' remote devcontainer support\n\n## What I'm Looking For\n\nSomething like: Zed connects to a remote host and attaches to an already-running devcontainer there. Either:\n1. Zed connects via SSH to remote, then uses remote Docker/podman CLI to find/devcontainer\n2. Or a devcontainer config option to specify a remote Docker host\n\n## Workaround I've Tried\n\nSSH port forwarding of the Docker socket, but Zed detects it's not a local socket and refuses to use it.\n\n---\n\nI'm happy to help test or contribute if this is on the roadmap! Just wanted to ask before diving in. ♡</div>",
+  "closed_by": null,
+  "reactions": {
+    "url": "https://api.github.com/repos/zed-industries/zed/issues/59500/reactions",
+    "total_count": 125,
+    "+1": 100,
+    "-1": 0,
+    "laugh": 0,
+    "hooray": 0,
+    "confused": 0,
+    "heart": 25,
+    "rocket": 0,
+    "eyes": 0
+  },
+  "timeline_url": "https://api.github.com/repos/zed-industries/zed/issues/59500/timeline",
+  "performed_via_github_app": null,
+  "state_reason": null,
+  "pinned_comment": null
+}

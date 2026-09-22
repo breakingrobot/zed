@@ -1,0 +1,74 @@
+    Blocking waiting for file lock on build directory
+   Compiling gpui v0.2.2 (H:\Sources\zed-wt\pupeno-remote\crates\gpui)
+   Compiling askpass v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\askpass)
+   Compiling settings_content v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\settings_content)
+   Compiling release_channel v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\release_channel)
+   Compiling rpc v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\rpc)
+   Compiling git v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\git)
+   Compiling fs v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\fs)
+   Compiling migrator v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\migrator)
+   Compiling settings v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\settings)
+   Compiling remote v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\remote)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 46s
+     Running unittests src\remote.rs (H:/Sources/zed-wt/target\debug\deps\remote-6c8da8ffc4d712e7.exe)
+
+running 56 tests
+test project_host::tests::ssh_and_wsl_connections_select_the_matching_project_host_kind ... ok
+test project_host::tests::a_project_host_reports_its_own_platform_and_path_rules ... ok
+test project_host::tests::a_project_host_rejects_inconsistent_platform_and_path_rules ... ok
+test project_host::tests::absoluteness_is_answered_by_the_host_not_the_desktop ... ok
+test project_host::tests::local_host_exposes_desktop_temporary_root ... ok
+test project_host::tests::a_wsl_project_host_runs_commands_at_its_linux_project_root ... ok
+test project_host::tests::prefix_questions_compare_whole_host_components ... ok
+test project_host::tests::desktop_relative_paths_are_resolved_with_the_host_separator ... ok
+test project_host::tests::roots_are_derived_with_the_host_path_rules ... ok
+test project_host::tests::joining_uses_the_host_separator_and_absolute_paths_replace_the_base ... ok
+test project_host::tests::serialized_host_paths_carry_their_path_rules ... ok
+test project_host::tests::components_are_derived_with_the_host_path_rules ... ok
+test project_host::tests::paths_are_normalized_with_the_host_path_rules ... ok
+test remote_client::tests::test_connection_type ... ok
+test remote_client::tests::test_ssh_display_name_falls_back_to_host ... ok
+test remote_client::tests::test_ssh_display_name_prefers_nickname ... ok
+test remote_client::tests::test_ssh_host_ignores_nickname ... ok
+test remote_identity::tests::docker_identity_ignores_non_persisted_runtime_fields ... ok
+test remote_identity::tests::local_identity_matches_only_local_identity ... ok
+test remote_identity::tests::ssh_identity_distinguishes_persistence_key_fields ... ok
+test remote_identity::tests::host_backed_container_identity_includes_the_project_host_and_transition ... ok
+test remote_identity::tests::ssh_identity_ignores_non_persisted_runtime_fields ... ok
+test remote_identity::tests::wsl_identity_includes_user ... ok
+test transport::docker::tests::skips_invalid_env_names ... ok
+test transport::ssh::tests::scp_args_exclude_port_forward_flags ... ok
+test transport::ssh::tests::test_parse_port_forward_spec_ipv6 ... ok
+test transport::ssh::tests::test_build_command_with_ipv6_port_forward ... ok
+test transport::ssh::tests::test_build_command_quotes_env_assignment ... ok
+test transport::ssh::tests::test_build_command ... ok
+test transport::ssh::tests::test_host_parsing ... ok
+test project_host::tests::local_host_performs_filesystem_operations ... ok
+test transport::ssh::tests::test_sftp_put_command_doubles_source_backslashes_for_posix_glob ... ok
+test transport::ssh::tests::test_port_forward_ipv6_formatting ... ok
+test project_host::tests::a_windows_like_desktop_preserves_linux_host_configuration_and_working_directory ... ok
+test transport::ssh::tests::test_sftp_put_command_doubles_trailing_destination_backslash_before_closing_quote ... ok
+test transport::ssh::tests::test_sftp_put_command_doubles_windows_source_backslashes_on_all_platforms ... ok
+test transport::ssh::tests::test_sftp_put_command_escapes_quotes_in_paths ... ok
+test transport::ssh::tests::test_sftp_put_command_quotes_paths ... ok
+test transport::tests::test_parse_os_version ... ok
+test transport::tests::test_parse_platform ... ok
+test transport::tests::test_parse_shell ... ok
+test project_host::tests::staging_sends_the_host_destination_in_the_host_path_style ... ok
+test remote_client::tests::test_channel_client_dropping_stream_request_before_completion ... ok
+test remote_client::tests::test_channel_client_request_stream_terminates_on_error ... ok
+test remote_client::tests::test_channel_client_dropping_stream_request_before_response_cleans_up_channel ... ok
+test transport::docker::tests::redacts_forwarded_env ... ok
+test transport::docker::tests::preserves_argument_boundaries_and_escapes_control_characters ... ok
+test transport::docker::tests::uses_podman_cli ... ok
+test transport::docker::tests::redacts_assignments_in_command_arguments ... ok
+test transport::docker::tests::redacts_failure_message ... ok
+test project_host::tests::local_host_stages_assets_at_the_requested_destination ... ok
+test project_host::tests::cancelling_a_host_process_stops_it ... ok
+test project_host::tests::local_host_reports_path_kinds_and_copies_host_directories ... ok
+test project_host::tests::local_host_returns_unsuccessful_process_outcomes ... ok
+test project_host::tests::remote_layer_can_access_raw_host_process_pipes ... ok
+test project_host::tests::local_host_uses_the_requested_working_directory ... ok
+
+test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+

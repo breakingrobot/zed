@@ -1,0 +1,5 @@
+error[E0063]: missing fields `config_file` and `local_folder` in initializer of `docker::DockerConnectionOptions`
+error: could not compile `remote` (lib test) due to 1 previous error
+REMOTE_EXIT=101
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 222 filtered out; finished in 5.08s
+WS_EXIT=0

@@ -1,0 +1,134 @@
+{
+  "url": "https://api.github.com/repos/zed-industries/zed/issues/56576",
+  "repository_url": "https://api.github.com/repos/zed-industries/zed",
+  "labels_url": "https://api.github.com/repos/zed-industries/zed/issues/56576/labels{/name}",
+  "comments_url": "https://api.github.com/repos/zed-industries/zed/issues/56576/comments",
+  "events_url": "https://api.github.com/repos/zed-industries/zed/issues/56576/events",
+  "html_url": "https://github.com/zed-industries/zed/issues/56576",
+  "id": 4432352153,
+  "node_id": "I_kwDOFExXwM8AAAABCDBTmQ",
+  "number": 56576,
+  "title": "Agent thread fails to load after dev container rebuild (RemoteConnectionIdentity keyed on ephemeral container_id)",
+  "user": {
+    "login": "maresb",
+    "id": 15216687,
+    "node_id": "MDQ6VXNlcjE1MjE2Njg3",
+    "avatar_url": "https://avatars.githubusercontent.com/u/15216687?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/maresb",
+    "html_url": "https://github.com/maresb",
+    "followers_url": "https://api.github.com/users/maresb/followers",
+    "following_url": "https://api.github.com/users/maresb/following{/other_user}",
+    "gists_url": "https://api.github.com/users/maresb/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/maresb/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/maresb/subscriptions",
+    "organizations_url": "https://api.github.com/users/maresb/orgs",
+    "repos_url": "https://api.github.com/users/maresb/repos",
+    "events_url": "https://api.github.com/users/maresb/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/maresb/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "labels": [
+    {
+      "id": 7950851595,
+      "node_id": "LA_kwDOFExXwM8AAAAB2eheCw",
+      "url": "https://api.github.com/repos/zed-industries/zed/labels/state:needs%20repro",
+      "name": "state:needs repro",
+      "color": "fbca04",
+      "default": false,
+      "description": "Needs reproduction steps and/or someone to reproduce",
+      "archived_at": null,
+      "archived_by": null
+    },
+    {
+      "id": 9690319414,
+      "node_id": "LA_kwDOFExXwM8AAAACQZaKNg",
+      "url": "https://api.github.com/repos/zed-industries/zed/labels/reach:some%20users",
+      "name": "reach:some users",
+      "color": "a00bf4",
+      "default": false,
+      "description": "Bugs that happen for less than one-third of users, special configurations, rare circumstances, etc",
+      "archived_at": null,
+      "archived_by": null
+    },
+    {
+      "id": 9690353516,
+      "node_id": "LA_kwDOFExXwM8AAAACQZcPbA",
+      "url": "https://api.github.com/repos/zed-industries/zed/labels/severity:S2",
+      "name": "severity:S2",
+      "color": "b60205",
+      "default": false,
+      "description": "Average run-of-the-mill bugs; a feature is broken but only partially",
+      "archived_at": null,
+      "archived_by": null
+    },
+    {
+      "id": 9847994321,
+      "node_id": "LA_kwDOFExXwM8AAAACSvx30Q",
+      "url": "https://api.github.com/repos/zed-industries/zed/labels/area:dev%20containers",
+      "name": "area:dev containers",
+      "color": "2eaafb",
+      "default": false,
+      "description": "Feedback for Zed's dev containers feature",
+      "archived_at": null,
+      "archived_by": null
+    }
+  ],
+  "state": "open",
+  "locked": false,
+  "assignees": [
+
+  ],
+  "milestone": null,
+  "comments": 7,
+  "created_at": "2026-05-12T20:19:38Z",
+  "updated_at": "2026-09-09T23:45:23Z",
+  "closed_at": null,
+  "assignee": null,
+  "author_association": "NONE",
+  "issue_field_values": [
+
+  ],
+  "type": {
+    "id": 14204221,
+    "node_id": "IT_kwDOBLq26M4A2L09",
+    "name": "Bug",
+    "description": "",
+    "color": "orange",
+    "created_at": "2024-02-08T14:32:07Z",
+    "updated_at": "2025-01-27T22:11:45Z",
+    "is_enabled": true
+  },
+  "active_lock_reason": null,
+  "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+  },
+  "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+  },
+  "body": "\n> **Note on authorship:** the body of this issue was drafted with AI assistance, but the diagnosis was produced by reading the Zed source (`crates/remote/src/remote_identity.rs`, `crates/sidebar/src/sidebar.rs`, `crates/dev_container/src/devcontainer_api.rs`), correlating with the actual failure in my local `Zed.log`, and verifying the fix end-to-end via the SQL workaround documented below. I stand behind the diagnosis and proposed fix; happy to iterate if anything is unclear or wrong.\n\n**Human summary:** After rebuilding a dev container I lose access to my previous agent threads. They no longer show up in my \"Threads Sidebar\" unless I click \"Show Threads History\". I click on a particular thread to open it, then the Zed window flashes but nothing else happens.\n\n### Reproduction steps\n\n1. Create a project with a `.devcontainer/devcontainer.json` that sets a `\"name\"` (e.g. `\"name\": \"myproject\"`).\n2. In Zed, open the project via the dev-container connection.\n3. In the agent sidebar, create one or more threads (this also reproduces with Claude Code wired up via ACP — `agent_id` is `claude-acp` in the persisted row).\n4. Rebuild the dev container — e.g. edit `devcontainer.json` to force a rebuild, or `docker rm` the running container. The new container has a different Docker `container_id`, but the same `name` and `remote_user`.\n5. Reopen Zed and reconnect to the dev container.\n6. Open Thread History (toggle from the threads sidebar — threads for the previous container are filtered out of the default view, but visible in history).\n7. Click a thread that was created against the previous container.\n\n### Current vs. Expected behavior\n\n**Current:** The window flashes briefly, no thread loads, and nothing is shown to the user. The `Zed.log` shows that Zed attempted `docker exec` against the *old* (now-deleted) container_id:\n\n```\nERROR [crates/sidebar/src/sidebar.rs:2681] failed to run command\n  Command(\"docker\" \"exec\" \"-u\" \"<remote_user>\" \"-e\" \"...\" \"<old_container_id>\" \"uname\" \"-sm\"):\n  Error response from daemon: No such container: <old_container_id>\n```\n\n**Expected:** The thread loads in the active dev-container workspace. The dev container's persistence-relevant identity (`name` from `devcontainer.json`, `remote_user`, and worktree paths) is unchanged across rebuilds; only the ephemeral `container_id` differs.\n\n### Zed version and system specs\n\n<!-- Run `zed: copy system specs into clipboard` from the command palette and paste here. -->\n\n```\nZed: v1.1.6+stable (Zed)\nOS: Linux Wayland nixos 25.11\nArchitecture: x86_64\n```\n\n### Attach Zed log file\n\n<details><summary>Zed.log</summary>\n\n```log\nERROR [crates/sidebar/src/sidebar.rs:2681] failed to run command\n  Command(\"docker\" \"exec\" \"-u\" \"<remote_user>\" \"-e\" \"...\" \"<old_container_id>\" \"uname\" \"-sm\"):\n  Error response from daemon: No such container: <old_container_id>\n```\n\n(Same `No such container` error has appeared repeatedly for multiple old container_ids across several rebuilds. Env vars in the `docker exec` invocation redacted.)\n\n</details>\n\n### Relevant Zed settings\n\n<details><summary>settings.json</summary>\n\n```json\n```\n\n</details>\n\n### Relevant Keymap\n\n<details><summary>keymap.json</summary>\n\n```json\n```\n\n</details>\n\n### (for AI issues) Model provider details\n\n- Provider: Anthropic via Claude Code (external ACP agent)\n- Mode: Agent Panel\n- Other details: dev-container connection; `agent_id` on the persisted thread rows is `claude-acp`. Same identity-matching code path is hit for any agent backed by a `RemoteConnectionOptions::Docker` connection, so this isn't specific to Claude Code.\n\n### If you are using WSL on Windows, what flavor of Linux are you using?\n\n<!-- N/A — not on WSL. -->\n\n---\n\n### Root cause\n\n`RemoteConnectionIdentity::Docker` in [`crates/remote/src/remote_identity.rs:20`](../blob/main/crates/remote/src/remote_identity.rs#L20) is:\n\n```rust\nDocker {\n    container_id: String,\n    name: String,\n    remote_user: String,\n},\n```\n\nThe Docker `container_id` is regenerated on every dev-container rebuild, but persisted threads (`sidebar_threads.remote_connection` JSON) carry the *old* `container_id`. As a result `same_remote_connection_identity` rejects the match against the live connection.\n\nFlow on click (`crates/sidebar/src/sidebar.rs` `open_thread_from_archive`):\n\n1. `find_current_workspace_for_path_list(.., metadata.remote_connection, ..)` — rejected (identity mismatch).\n2. `find_open_workspace_for_path_list(..)` — rejected for the same reason.\n3. Falls through to `open_workspace_and_activate_thread` → `find_or_create_workspace(.., connect_remote(.., options=stale_remote_connection, ..), ..)`.\n4. `connect_remote` runs `docker exec <stale_container_id> uname -sm`, which returns `No such container: <stale_container_id>`.\n5. The error is propagated via `detach_and_log_err` — written to `Zed.log` but not surfaced in the UI (no toast/modal), hence the silent window flash.\n\nIntroduced by #53918 (\"sidebar: Filter thread groups by remote host identity\"), which added `RemoteConnectionIdentity` with an SSH-centric motivation. The Docker variant inherited the same `container_id`-aware identity, which is fine for ad-hoc `docker exec`-style remotes but not for dev containers, whose stable identity is `name` + `remote_user` (the `name` is taken straight from `devcontainer.json`'s `name` field — [`crates/dev_container/src/devcontainer_api.rs:280-286`](../blob/main/crates/dev_container/src/devcontainer_api.rs#L280)).\n\n### Proposed fix\n\nTwo coupled changes:\n\n1. In [`crates/remote/src/remote_identity.rs:20`](../blob/main/crates/remote/src/remote_identity.rs#L20), drop `container_id` from `RemoteConnectionIdentity::Docker`. The persistence-key identity for a dev-container connection should be `(name, remote_user)`. `container_id` can still be carried in `RemoteConnectionOptions` for live-connection bookkeeping; it just should not participate in identity comparison.\n2. In [`crates/dev_container/src/devcontainer_api.rs:477`](../blob/main/crates/dev_container/src/devcontainer_api.rs#L477), `get_backup_project_name` falls back to `container_id` as its last branch when `devcontainer.json` has no `name` *and* the workspace path has no basename. Change this fallback to a fixed string (e.g. `\"devcontainer\".to_string()`) so that omitting `name` from `devcontainer.json` doesn't quietly reintroduce the same fragility through the back door.\n\n### Secondary suggestion (separate issue/PR worthy)\n\nWhen `connect_remote` returns \"No such container\" while resolving a thread from history, the failure is logged but not surfaced. A small toast or modal — \"Couldn't reconnect to the dev container this thread was created against\" — would prevent the silent-flash UX. Happy to file separately if useful.\n\n### Workaround for affected users\n\n<details><summary>SQL patch on Zed's local DB</summary>\n\nClose Zed, back up the DB, then rewrite the stale `container_id` in `sidebar_threads.remote_connection` to the current container's id (visible in `remote_connections.container_id`). Linux paths shown; adjust for macOS (`~/Library/Application Support/Zed/db/...`).\n\n```sh\nDB=~/.local/share/zed/db/0-stable/db.sqlite\ncp \"$DB\" \"$DB.bak\"\n\n# Inspect which container_ids are referenced\nsqlite3 \"$DB\" \"\n  SELECT json_extract(remote_connection, '\\$.Docker.container_id') AS cid, COUNT(*)\n  FROM sidebar_threads WHERE remote_connection IS NOT NULL\n  GROUP BY cid ORDER BY COUNT(*) DESC;\"\n\n# Replace OLD_ID with the current container_id\nsqlite3 \"$DB\" \"\n  UPDATE sidebar_threads\n  SET remote_connection = replace(remote_connection,\n    '\\\"container_id\\\":\\\"OLD_ID\\\"',\n    '\\\"container_id\\\":\\\"NEW_ID\\\"')\n  WHERE remote_connection LIKE '%\\\"container_id\\\":\\\"OLD_ID\\\"%';\"\n```\n\nAfter this, threads reattach to the live connection via `find_current_workspace_for_path_list` and load normally.\n\n</details>\n",
+  "closed_by": null,
+  "reactions": {
+    "url": "https://api.github.com/repos/zed-industries/zed/issues/56576/reactions",
+    "total_count": 7,
+    "+1": 6,
+    "-1": 0,
+    "laugh": 0,
+    "hooray": 0,
+    "confused": 0,
+    "heart": 1,
+    "rocket": 0,
+    "eyes": 0
+  },
+  "timeline_url": "https://api.github.com/repos/zed-industries/zed/issues/56576/timeline",
+  "performed_via_github_app": null,
+  "state_reason": null,
+  "pinned_comment": null
+}

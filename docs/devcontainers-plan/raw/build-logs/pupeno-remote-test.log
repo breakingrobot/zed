@@ -1,0 +1,221 @@
+    Blocking waiting for file lock on build directory
+   Compiling gpui v0.2.2 (H:\Sources\zed-wt\pupeno-remote\crates\gpui)
+   Compiling paths v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\paths)
+   Compiling language v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\language)
+   Compiling ui v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\ui)
+   Compiling node_runtime v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\node_runtime)
+   Compiling release_channel v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\release_channel)
+   Compiling askpass v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\askpass)
+   Compiling settings_content v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\settings_content)
+   Compiling syntax_theme v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\syntax_theme)
+   Compiling zed_actions v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\zed_actions)
+   Compiling fuzzy v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\fuzzy)
+   Compiling rpc v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\rpc)
+   Compiling credentials_provider v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\credentials_provider)
+   Compiling gpui_tokio v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\gpui_tokio)
+   Compiling menu v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\menu)
+   Compiling mermaid_render v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\mermaid_render)
+   Compiling language_model v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\language_model)
+   Compiling cloud_api_client v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\cloud_api_client)
+   Compiling theme v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\theme)
+   Compiling lsp v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\lsp)
+   Compiling zed_credentials_provider v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\zed_credentials_provider)
+   Compiling db v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\db)
+   Compiling fuzzy_nucleo v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\fuzzy_nucleo)
+   Compiling git v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\git)
+   Compiling session v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\session)
+   Compiling task v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\task)
+   Compiling component v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\component)
+   Compiling fs v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\fs)
+   Compiling ui_input v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\ui_input)
+   Compiling migrator v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\migrator)
+   Compiling settings v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\settings)
+   Compiling feature_flags v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\feature_flags)
+   Compiling theme_settings v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\theme_settings)
+   Compiling git_hosting_providers v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\git_hosting_providers)
+   Compiling context_server v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\context_server)
+   Compiling remote v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\remote)
+   Compiling terminal v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\terminal)
+   Compiling worktree v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\worktree)
+   Compiling prettier v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\prettier)
+   Compiling markdown v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\markdown)
+   Compiling buffer_diff v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\buffer_diff)
+   Compiling client v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\client)
+   Compiling dap v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\dap)
+   Compiling extension v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\extension)
+   Compiling snippet_provider v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\snippet_provider)
+   Compiling project v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\project)
+   Compiling agent_settings v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\agent_settings)
+   Compiling workspace v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\workspace)
+   Compiling picker v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\picker)
+   Compiling dev_container v0.1.0 (H:\Sources\zed-wt\pupeno-remote\crates\dev_container)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6m 20s
+     Running unittests src\lib.rs (H:/Sources/zed-wt/target\debug\deps\dev_container-fd5a4db9713289a7.exe)
+
+running 161 tests
+test command_json::tests::test_deserialize_empty_output ... ok
+test command_json::tests::test_deserialize_empty_object ... ok
+test command_json::tests::test_deserialize_newline_delimited_json_rejected ... ok
+test command_json::tests::test_deserialize_yaml_empty_output ... ok
+test desktop_boundary::tests::prose_about_paths_is_not_a_finding ... ok
+test desktop_boundary::tests::an_import_is_not_a_finding ... ok
+test desktop_boundary::tests::host_semantic_types_are_not_findings ... ok
+test desktop_boundary::tests::a_justifying_comment_silences_a_finding ... ok
+test desktop_boundary::tests::test_modules_are_not_scanned ... ok
+test desktop_boundary::tests::a_test_only_import_is_not_the_test_module_boundary ... ok
+test desktop_boundary::tests::a_url_in_a_string_literal_does_not_hide_the_rest_of_the_line ... ok
+test desktop_boundary::tests::a_string_literal_cannot_justify_a_finding ... ok
+test desktop_boundary::tests::a_desktop_build_time_platform_condition_is_a_finding ... ok
+test desktop_boundary::tests::a_desktop_environment_or_temporary_directory_read_is_a_finding ... ok
+test desktop_boundary::tests::a_justification_does_not_reach_past_its_window ... ok
+test desktop_boundary::tests::converting_to_a_desktop_path_without_naming_the_type_is_a_finding ... ok
+test desktop_boundary::tests::a_desktop_native_path_type_is_a_finding ... ok
+test desktop_boundary::tests::the_desktop_path_style_is_a_finding_even_though_path_style_is_not ... ok
+test command_json::tests::test_deserialize_yaml_empty_object ... ok
+test command_json::tests::test_deserialize_yaml_docker_compose_config ... ok
+test devcontainer_api::tests::ssh_and_wsl_are_supported_dev_container_source_connections ... ok
+test devcontainer_json::test::mount_definition_should_omit_source_when_none ... ok
+test devcontainer_json::test::mount_definition_should_use_bind_type_for_unix_absolute_paths ... ok
+test devcontainer_json::test::mount_definition_should_use_bind_type_for_windows_absolute_paths ... ok
+test devcontainer_json::test::mount_definition_should_use_bind_type_for_windows_unc_paths ... ok
+test devcontainer_json::test::explicit_override_command_takes_precedence_over_build_type_default ... ok
+test devcontainer_json::test::override_command_defaults_depend_on_build_type ... ok
+test devcontainer_json::test::array_lifecycle_command_runs_directly ... ok
+test devcontainer_json::test::should_deserialize_customizations_without_zed_key ... ok
+test devcontainer_json::test::should_deserialize_app_port_array ... ok
+test devcontainer_json::test::should_deserialize_port_attributes_with_missing_optional_fields ... ok
+test devcontainer_json::test::should_deserialize_customizations_with_unknown_keys ... ok
+test devcontainer_json::test::should_deserialize_port_attributes_with_all_fields_omitted ... ok
+test devcontainer_json::test::should_fail_validation_with_workspace_mount_only ... ok
+test devcontainer_json::test::should_fail_validation_with_workspace_folder_only ... ok
+test devcontainer_json::test::should_pass_validation_with_workspace_folder_for_docker_compose ... ok
+test devcontainer_json::test::should_reject_invalid_environment_names ... ok
+test devcontainer_json::test::string_lifecycle_command_runs_in_a_shell ... ok
+test devcontainer_json::test::should_deserialize_docker_compose_devcontainer_json ... ok
+test devcontainer_json::test::should_deserialize_dockerfile_devcontainer_json ... ok
+test devcontainer_json::test::should_deserialize_simple_devcontainer_json ... ok
+test devcontainer_manifest::test::compose_fragment_declares_name_detects_top_level_name_key ... ok
+test devcontainer_api::tests::a_project_host_without_docker_reports_it_as_unavailable ... ok
+test devcontainer_api::tests::a_project_host_that_cannot_be_reached_reports_docker_as_unavailable ... ok
+test devcontainer_api::tests::docker_is_probed_on_the_project_host ... ok
+test devcontainer_api::tests::podman_is_probed_on_the_project_host ... ok
+test devcontainer_manifest::test::derive_project_name_compose_name_wins_over_fallback ... ok
+test devcontainer_manifest::test::derive_project_name_dotenv_wins_over_compose_and_fallback ... ok
+test devcontainer_manifest::test::derive_project_name_env_wins_over_everything ... ok
+test devcontainer_manifest::test::derive_project_name_handles_resolved_paths_from_docker_compose_manifest ... ok
+test devcontainer_manifest::test::derive_project_name_omits_suffix_when_compose_file_outside_devcontainer_dir ... ok
+test devcontainer_manifest::test::derive_project_name_skips_compose_name_when_not_explicitly_declared ... ok
+test devcontainer_manifest::test::escape_compose_interpolation_uses_compose_dollar_escape ... ok
+test devcontainer_manifest::test::an_unreadable_dotenv_surfaces_instead_of_being_treated_as_absent ... ok
+test devcontainer_manifest::test::an_unqueryable_dotenv_surfaces_instead_of_being_treated_as_absent ... ok
+test devcontainer_manifest::test::container_user_is_remapped_for_a_linux_project_host ... ok
+test devcontainer_manifest::test::container_user_is_not_remapped_for_a_windows_project_host ... ok
+test devcontainer_manifest::test::an_absent_dotenv_falls_back_to_the_workspace_project_name ... ok
+test devcontainer_manifest::test::sanitize_compose_project_name_matches_cli_rules ... ok
+test devcontainer_manifest::test::docker_and_compose_run_on_the_supplied_project_host ... ok
+test devcontainer_manifest::test::should_extract_feature_id_from_references ... ok
+test devcontainer_manifest::test::initialize_command_runs_on_the_host_at_the_source_root ... ok
+test devcontainer_manifest::test::podman_is_selected_on_the_project_host ... ok
+test devcontainer_manifest::test::should_create_correct_docker_run_command ... ok
+test devcontainer_manifest::test::should_get_remote_user_from_devcontainer_if_available ... ok
+test devcontainer_manifest::test::should_identify_local_feature_refs ... ok
+test devcontainer_manifest::test::local_features_are_copied_without_leaving_the_host ... ok
+test devcontainer_manifest::test::should_find_primary_service_in_docker_compose ... ok
+test devcontainer_manifest::test::should_get_remote_user_from_docker_config ... ok
+test devcontainer_manifest::test::test_aliases_dockerfile_with_build_target_specified ... ok
+test devcontainer_manifest::test::test_aliases_dockerfile_with_line_continuation_is_unmodified ... ok
+test devcontainer_manifest::test::test_aliases_dockerfile_with_missing_build_target_is_unmodified ... ok
+test devcontainer_manifest::test::test_aliases_dockerfile_with_no_aliases_for_build ... ok
+test devcontainer_manifest::test::test_aliases_dockerfile_with_pre_existing_aliases_for_build ... ok
+test desktop_boundary::the_host_side_dev_container_path_carries_no_unjustified_desktop_state ... ok
+test devcontainer_manifest::test::should_not_override_entrypoint_when_override_command_is_false ... ok
+test devcontainer_manifest::test::a_host_process_that_cannot_start_fails_the_dev_container ... ok
+test devcontainer_manifest::test::should_substitute_nonremote_variables_in_image_metadata ... ok
+test devcontainer_manifest::test::should_use_devcontainer_cli_post_start_marker_for_started_container ... ok
+test devcontainer_manifest::test::generated_artifacts_live_under_the_host_temporary_root ... ok
+test devcontainer_manifest::test::a_failing_host_command_fails_the_dev_container ... ok
+test devcontainer_manifest::test::test_image_from_dockerfile_case_insensitive_alias ... ok
+test devcontainer_manifest::test::desktop_obtained_feature_assets_are_staged_onto_the_host ... ok
+test devcontainer_manifest::test::test_image_from_dockerfile_missing_target ... ok
+test devcontainer_manifest::test::test_image_from_dockerfile_no_target_resolves_alias ... ok
+test devcontainer_manifest::test::test_image_from_dockerfile_only_resolves_earlier_stages ... ok
+test devcontainer_manifest::test::test_image_from_dockerfile_resolves_deep_alias_chain ... ok
+test devcontainer_manifest::test::test_image_from_dockerfile_resolves_one_hop_alias ... ok
+test devcontainer_manifest::test::test_dockerfile_location_with_compose_context_parent ... ok
+test devcontainer_manifest::test::test_image_from_dockerfile_scratch_base ... ok
+test devcontainer_manifest::test::remote_dev_container_startup_uses_linux_project_host_paths ... ok
+test devcontainer_manifest::test::test_image_from_dockerfile_skips_platform_flag ... ok
+test devcontainer_manifest::test::test_image_from_dockerfile_stage_alias_shadows_external_image ... ok
+test devcontainer_manifest::test::compose_files_and_overrides_live_under_the_host_temporary_root ... ok
+test devcontainer_manifest::test::test_replace_environment_variables ... ok
+test devcontainer_manifest::test::test_replace_environment_variables_supports_defaults_with_colons ... ok
+test devcontainer_manifest::test::test_resolve_compose_dockerfile ... ok
+test devcontainer_manifest::test::test_nonremote_variable_replacement_with_explicit_mount ... ok
+test devcontainer_manifest::test::test_nonremote_variable_replacement_with_default_mount ... ok
+test devcontainer_manifest::test::test_resumes_only_requested_compose_services_without_recreating ... ok
+test devcontainer_manifest::test::test_spawns_devcontainer_with_plain_image ... ok
+test docker::test::buildx_detection_falls_back_when_the_probe_fails ... ok
+test devcontainer_manifest::test::trim_non_alphanumeric_chars_from_image_tag ... ok
+test devcontainer_manifest::test::test_expands_compose_service_args_in_dockerfile ... ok
+test docker::test::buildx_detection_probes_the_project_host ... ok
+test devcontainer_manifest::test::test_expands_args_in_dockerfile ... ok
+test docker::test::parse_find_process_output_multiple_errors ... ok
+[2026-09-22T21:57:49Z ERROR dev_container::docker] Command produced a non-successful output. StdErr: host command failed
+test docker::test::parse_find_process_output_none ... ok
+[2026-09-22T21:57:49Z ERROR dev_container::docker] Error running command project host could not start docker in container exec
+test docker::test::parse_find_process_output_single ... ok
+test docker::test::docker_exec_returns_error_on_nonzero_exit ... ok
+test docker::test::docker_exec_returns_error_when_the_host_process_cannot_start ... ok
+test docker::test::should_deserialize_compose_environment_key_only_entries ... ok
+test devcontainer_manifest::test::test_gets_base_image_from_dockerfile ... ok
+test docker::test::docker_exec_runs_the_hook_through_the_project_host ... ok
+test docker::test::should_deserialize_compose_labels_as_array ... ok
+test devcontainer_manifest::test::test_spawns_only_requested_compose_services ... ok
+test docker::test::should_deserialize_compose_labels_as_map ... ok
+test docker::test::should_deserialize_compose_inline_volume_strings ... ok
+test docker::test::should_deserialize_compose_top_level_volumes_with_null_value ... ok
+test docker::test::should_deserialize_compose_volume_without_source ... ok
+test docker::test::should_deserialize_compose_with_missing_volumes_field ... ok
+test docker::test::should_deserialize_compose_without_volumes ... ok
+test docker::test::should_deserialize_inspect_with_labels_but_no_metadata ... ok
+test devcontainer_manifest::test::test_expands_bare_dollar_args_in_dockerfile ... ok
+test docker::test::should_deserialize_inspect_with_null_labels ... ok
+test devcontainer_manifest::test::test_gets_base_image_from_dockerfile_with_target_specified ... ok
+test docker::test::should_deserialize_docker_compose_config ... ok
+test docker::test::should_deserialize_docker_ps_with_filters ... ok
+test docker::test::should_deserialize_inspect_without_labels ... ok
+test docker::test::should_deserialize_object_metadata_from_docker_compose_container ... ok
+test docker::test::should_create_docker_inspect_command ... ok
+test docker::test::should_parse_database_url_with_equals_in_query_string ... ok
+test docker::test::should_parse_env_var_with_equals_in_value ... ok
+test docker::test::should_parse_label_with_equals_in_value ... ok
+test docker::test::should_parse_simple_env_var ... ok
+test docker::test::should_skip_env_var_without_equals ... ok
+test docker::test::should_parse_simple_label ... ok
+test oci::test::test_get_oci_token ... ok
+test oci::test::test_get_oci_blob ... ok
+test oci::test::test_get_latest_manifests ... ok
+test tests::test_get_devcontainer_templates ... ok
+test docker::test::use_buildkit_setting_overrides_buildx_detection ... ok
+test oci::test::test_get_deserialized_response ... ok
+test oci::test::test_download_oci_tarball ... ok
+test tests::dev_container_environment_uses_the_local_project_route ... ok
+test devcontainer_manifest::test::test_compose_build_includes_primary_service_when_run_services_excludes_it ... ok
+test devcontainer_manifest::test::test_spawns_devcontainer_with_docker_compose_and_no_update_uid ... ok
+test tests::dev_container_environment_uses_the_remote_project_route ... ok
+test devcontainer_manifest::test::test_spawns_devcontainer_with_dockerfile_and_no_update_uid ... ok
+test devcontainer_api::tests::test_find_configs_subfolder_configs ... ok
+test devcontainer_api::tests::test_find_configs_no_devcontainer ... ok
+test devcontainer_api::tests::test_find_configs_root_devcontainer_json ... ok
+test devcontainer_api::tests::test_find_configs_default_devcontainer_dir ... ok
+test devcontainer_api::tests::test_find_configs_empty_devcontainer_dir_falls_back_to_root ... ok
+test devcontainer_api::tests::test_find_configs_dir_and_root_both_included ... ok
+test devcontainer_api::tests::test_find_configs_default_and_subfolder ... ok
+test devcontainer_api::tests::test_find_configs_root_json_and_subfolder_configs ... ok
+test devcontainer_api::tests::test_find_configs_when_the_project_ignores_its_own_devcontainer_dir ... ok
+test devcontainer_api::tests::test_find_configs_under_an_ignoring_repository_does_not_scan_the_rest ... ok
+test devcontainer_api::tests::test_find_configs_subfolder_when_an_enclosing_repository_ignores_the_project ... ok
+test devcontainer_api::tests::test_find_configs_when_an_enclosing_repository_ignores_the_project ... ok
+
+test result: ok. 161 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+

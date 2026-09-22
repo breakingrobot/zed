@@ -1,0 +1,91 @@
+{
+  "url": "https://api.github.com/repos/zed-industries/zed/issues/59907",
+  "repository_url": "https://api.github.com/repos/zed-industries/zed",
+  "labels_url": "https://api.github.com/repos/zed-industries/zed/issues/59907/labels{/name}",
+  "comments_url": "https://api.github.com/repos/zed-industries/zed/issues/59907/comments",
+  "events_url": "https://api.github.com/repos/zed-industries/zed/issues/59907/events",
+  "html_url": "https://github.com/zed-industries/zed/issues/59907",
+  "id": 4745018987,
+  "node_id": "I_kwDOFExXwM8AAAABGtM-aw",
+  "number": 59907,
+  "title": "Remote REPL + Remote Devcontainers",
+  "user": {
+    "login": "macraig",
+    "id": 1657213,
+    "node_id": "MDQ6VXNlcjE2NTcyMTM=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1657213?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/macraig",
+    "html_url": "https://github.com/macraig",
+    "followers_url": "https://api.github.com/users/macraig/followers",
+    "following_url": "https://api.github.com/users/macraig/following{/other_user}",
+    "gists_url": "https://api.github.com/users/macraig/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/macraig/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/macraig/subscriptions",
+    "organizations_url": "https://api.github.com/users/macraig/orgs",
+    "repos_url": "https://api.github.com/users/macraig/repos",
+    "events_url": "https://api.github.com/users/macraig/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/macraig/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "labels": [
+
+  ],
+  "state": "open",
+  "locked": false,
+  "assignees": [
+
+  ],
+  "milestone": null,
+  "comments": 0,
+  "created_at": "2026-06-25T15:07:55Z",
+  "updated_at": "2026-06-25T15:07:55Z",
+  "closed_at": null,
+  "assignee": null,
+  "author_association": "CONTRIBUTOR",
+  "issue_field_values": [
+
+  ],
+  "type": {
+    "id": 25688060,
+    "node_id": "IT_kwDOBLq26M4Bh_f8",
+    "name": "Feature",
+    "description": "Features, enhancements, additions, improvements",
+    "color": "green",
+    "created_at": "2025-02-24T15:00:20Z",
+    "updated_at": "2025-11-27T10:13:21Z",
+    "is_enabled": true
+  },
+  "active_lock_reason": null,
+  "sub_issues_summary": {
+    "total": 0,
+    "completed": 0,
+    "percent_completed": 0
+  },
+  "issue_dependencies_summary": {
+    "blocked_by": 0,
+    "total_blocked_by": 0,
+    "blocking": 0,
+    "total_blocking": 0
+  },
+  "body": "\n### Discussed in https://github.com/zed-industries/zed/discussions/45962\n\n<div type='discussions-op-text'>\n\n<sup>Originally posted by **dangooddd** January  2, 2026</sup>\nIs zed plans to support remote development in regard of REPL and Devcontainers:\r\n1. Possibility to use REPL features on remote\r\n2. SSH -> Devcontainer, so Devcontainer is run on remote server\r\n\r\nThis two features are really essential for ML tasks, atleast my company uses this workflow, and I am limited to vscode when it comes to devcontainer on remote or running REPL on remote (often it is REPL in remote devcontainer).\r\n\r\nZed is really great, and I use it for personal stuff, but these two features are really blocking me and potentially many other ML engineers from switching editor from VSCode to Zed.\r\n\r\nHappy New Year!</div>",
+  "closed_by": null,
+  "reactions": {
+    "url": "https://api.github.com/repos/zed-industries/zed/issues/59907/reactions",
+    "total_count": 36,
+    "+1": 36,
+    "-1": 0,
+    "laugh": 0,
+    "hooray": 0,
+    "confused": 0,
+    "heart": 0,
+    "rocket": 0,
+    "eyes": 0
+  },
+  "timeline_url": "https://api.github.com/repos/zed-industries/zed/issues/59907/timeline",
+  "performed_via_github_app": null,
+  "state_reason": null,
+  "pinned_comment": null
+}
