@@ -645,7 +645,7 @@ impl DevContainerManifest {
             DevContainerBuildType::DockerCompose => true,
             _ => false,
         };
-        let use_buildkit = self.docker_client.supports_compose_buildkit() || !is_compose;
+        let use_buildkit = self.docker_client.supports_compose_buildkit();
 
         let dockerfile_base_content = if let Some(location) = &self.dockerfile_location().await {
             self.fs.load(location).await.log_err()
@@ -1609,6 +1609,10 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
             }
         };
 
+        if !self.docker_client.supports_compose_buildkit() {
+            self.build_feature_content_image().await?;
+        }
+
         let mut command = self.create_docker_build()?;
 
         let output = self
@@ -1622,7 +1626,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            log::error!("docker buildx build failed: {stderr}");
+            log::error!("docker build failed: {stderr}");
             return Err(DevContainerError::CommandFailed(
                 command.get_program().display().to_string(),
             ));
@@ -1913,20 +1917,30 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         };
         let mut command = Command::new(self.docker_client.docker_cli());
 
-        command.args(["buildx", "build"]);
+        if self.docker_client.supports_compose_buildkit() {
+            command.args(["buildx", "build"]);
 
-        // --load is short for --output=docker, loading the built image into the local docker images
-        command.arg("--load");
+            // --load is short for --output=docker, loading the built image into the local docker images
+            command.arg("--load");
 
-        // BuildKit build context: provides the features content directory as a named context
-        // that the Dockerfile.extended can COPY from via `--from=dev_containers_feature_content_source`
-        command.args([
-            "--build-context",
-            &format!(
-                "dev_containers_feature_content_source={}",
-                features_build_info.features_content_dir.display()
-            ),
-        ]);
+            // BuildKit build context: provides the features content directory as a named context
+            // that the Dockerfile.extended can COPY from via `--from=dev_containers_feature_content_source`
+            command.args([
+                "--build-context",
+                &format!(
+                    "dev_containers_feature_content_source={}",
+                    features_build_info.features_content_dir.display()
+                ),
+            ]);
+        } else {
+            // Without BuildKit, Dockerfile.extended copies the feature content from the
+            // `dev_container_feature_content_temp` image built beforehand, which only
+            // resolves from the daemon's image store under the classic builder.
+            if self.docker_client.docker_cli() != "podman" {
+                command.env("DOCKER_BUILDKIT", "0");
+            }
+            command.arg("build");
+        }
 
         // Build args matching the CLI reference implementation's `getFeaturesBuildOptions`
         if let Some(build_image) = &features_build_info.build_image {
@@ -1996,7 +2010,8 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             command.arg(self.calculate_context_dir(build).display().to_string());
         } else {
             // Use an empty folder as the build context to avoid pulling in unneeded files.
-            // The actual feature content is supplied via the BuildKit build context above.
+            // The actual feature content is supplied via the BuildKit build context above,
+            // or via the feature content image without BuildKit.
             command.arg(features_build_info.empty_context_dir.display().to_string());
         }
 
@@ -7226,6 +7241,137 @@ RUN echo $RUBY_VERSION2
         );
     }
 
+    async fn build_dockerfile_devcontainer(
+        cx: &mut TestAppContext,
+        has_buildx: bool,
+    ) -> (TestDependencies, String) {
+        let given_devcontainer_contents = r#"
+            {
+              "name": "cli-${devcontainerId}",
+              "build": {
+                "dockerfile": "Dockerfile",
+              },
+              "updateRemoteUserUID": false,
+            }
+            "#;
+        let mut fake_docker = FakeDocker::new();
+        fake_docker.set_has_buildx(has_buildx);
+        let (test_dependencies, mut devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            FakeFs::new(cx.executor()),
+            fake_http_client(),
+            Arc::new(fake_docker),
+            Arc::new(TestCommandRunner::new()),
+            HashMap::new(),
+            given_devcontainer_contents,
+        )
+        .await
+        .unwrap();
+
+        test_dependencies
+            .fs
+            .atomic_write(
+                PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer/Dockerfile"),
+                "FROM test_image:latest\n".to_string(),
+            )
+            .await
+            .unwrap();
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest.build_and_run().await.unwrap();
+
+        let files = test_dependencies.fs.files();
+        let extended_dockerfile_path = files
+            .iter()
+            .find(|f| {
+                f.file_name()
+                    .is_some_and(|s| s.display().to_string() == "Dockerfile.extended")
+            })
+            .expect("Dockerfile.extended should be generated");
+        let extended_dockerfile = test_dependencies
+            .fs
+            .load(extended_dockerfile_path)
+            .await
+            .unwrap();
+
+        (test_dependencies, extended_dockerfile)
+    }
+
+    #[gpui::test]
+    async fn test_dockerfile_build_uses_buildx_when_available(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        env_logger::try_init().ok();
+        let (test_dependencies, extended_dockerfile) =
+            build_dockerfile_devcontainer(cx, true).await;
+
+        let build_commands: Vec<TestCommand> = test_dependencies
+            .command_runner
+            .commands_by_program("docker")
+            .into_iter()
+            .filter(|command| {
+                command
+                    .args
+                    .first()
+                    .is_some_and(|arg| arg == "build" || arg == "buildx")
+            })
+            .collect();
+        assert_eq!(build_commands.len(), 1, "{build_commands:?}");
+
+        let args = &build_commands[0].args;
+        assert_eq!(&args[..4], ["buildx", "build", "--load", "--build-context"]);
+        assert!(args[4].starts_with("dev_containers_feature_content_source="));
+        assert!(!extended_dockerfile.contains("FROM dev_container_feature_content_temp"));
+    }
+
+    #[gpui::test]
+    async fn test_dockerfile_build_without_buildx_uses_classic_builder(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        env_logger::try_init().ok();
+        let (test_dependencies, extended_dockerfile) =
+            build_dockerfile_devcontainer(cx, false).await;
+
+        let build_commands: Vec<TestCommand> = test_dependencies
+            .command_runner
+            .commands_by_program("docker")
+            .into_iter()
+            .filter(|command| {
+                command
+                    .args
+                    .first()
+                    .is_some_and(|arg| arg == "build" || arg == "buildx")
+            })
+            .collect();
+        assert_eq!(build_commands.len(), 2, "{build_commands:?}");
+
+        let feature_content_build = &build_commands[0].args;
+        assert_eq!(
+            &feature_content_build[..3],
+            ["build", "-t", "dev_container_feature_content_temp"]
+        );
+
+        let image_build = &build_commands[1].args;
+        assert_eq!(image_build[0], "build");
+        for build in [feature_content_build, image_build] {
+            assert!(!build.contains(&"buildx".to_string()), "{build:?}");
+            assert!(!build.contains(&"--build-context".to_string()), "{build:?}");
+            assert!(!build.contains(&"--load".to_string()), "{build:?}");
+        }
+        assert!(image_build.contains(&"dev_containers_target_stage".to_string()));
+        assert!(
+            image_build
+                .windows(2)
+                .any(|pair| pair[0] == "-f" && pair[1].ends_with("Dockerfile.extended")),
+            "{image_build:?}"
+        );
+
+        assert!(extended_dockerfile.contains(
+            "FROM dev_container_feature_content_temp as dev_containers_feature_content_source"
+        ));
+        assert!(extended_dockerfile.contains(
+            "COPY --from=dev_containers_feature_content_source /tmp/build-features/devcontainer-features.builtin.env /tmp/build-features/"
+        ));
+    }
+
     #[test]
     fn test_aliases_dockerfile_with_pre_existing_aliases_for_build() {
         let dockerfile = "FROM ubuntu:24.04 AS base\nFROM base AS development";
@@ -7325,6 +7471,9 @@ RUN echo $RUBY_VERSION2
         #[cfg(not(target_os = "windows"))]
         fn set_podman(&mut self, podman: bool) {
             self.podman = podman;
+        }
+        fn set_has_buildx(&mut self, has_buildx: bool) {
+            self.has_buildx = has_buildx;
         }
         #[cfg(not(target_os = "windows"))]
         fn set_duplicate_container_ids(&self, ids: Vec<String>) {
