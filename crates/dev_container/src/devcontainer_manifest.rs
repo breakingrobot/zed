@@ -2477,10 +2477,26 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             .unwrap_or_default()
     }
 
+    async fn open(&mut self) -> Result<DevContainerUp, DevContainerError> {
+        self.parse_nonremote_vars()?;
+        self.dev_container().validate_environment_names()?;
+
+        // Per the spec, initializeCommand runs on the host every time the dev container is
+        // opened, before any existing container is looked up, not only when one is created.
+        self.run_initialize_commands().await?;
+
+        log::debug!("Checking for existing container");
+        if let Some(devcontainer) = self.check_for_existing_devcontainer().await? {
+            Ok(devcontainer)
+        } else {
+            log::debug!("Existing container not found. Building");
+
+            self.build_and_run().await
+        }
+    }
+
     async fn build_and_run(&mut self) -> Result<DevContainerUp, DevContainerError> {
         self.dev_container().validate_devcontainer_contents()?;
-
-        self.run_initialize_commands().await?;
 
         self.download_feature_and_dockerfile_resources().await?;
 
@@ -2905,22 +2921,7 @@ pub(crate) async fn spawn_dev_container(
     )
     .await?;
 
-    devcontainer_manifest.parse_nonremote_vars()?;
-    devcontainer_manifest
-        .dev_container()
-        .validate_environment_names()?;
-
-    log::debug!("Checking for existing container");
-    if let Some(devcontainer) = devcontainer_manifest
-        .check_for_existing_devcontainer()
-        .await?
-    {
-        Ok(devcontainer)
-    } else {
-        log::debug!("Existing container not found. Building");
-
-        devcontainer_manifest.build_and_run().await
-    }
+    devcontainer_manifest.open().await
 }
 
 #[derive(Debug)]
@@ -3863,6 +3864,66 @@ mod test {
                 expected_id
             );
         }
+    }
+
+    #[gpui::test]
+    async fn runs_initialize_command_when_reusing_an_existing_container(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"
+            {
+              "image": "test_image:latest",
+              "initializeCommand": ["echo", "initialize"]
+            }
+            "#,
+        )
+        .await
+        .unwrap();
+
+        let devcontainer_up = devcontainer_manifest.open().await.unwrap();
+
+        assert_eq!(devcontainer_up.container_id, "found_docker_ps");
+        let initialize_commands = test_dependencies.command_runner.commands_by_program("echo");
+        assert_eq!(initialize_commands.len(), 1);
+        assert_eq!(initialize_commands[0].args, vec!["initialize".to_string()]);
+    }
+
+    #[gpui::test]
+    async fn failing_initialize_command_stops_before_looking_for_a_container(
+        cx: &mut TestAppContext,
+    ) {
+        let fs = FakeFs::new(cx.executor());
+        let command_runner = Arc::new(TestCommandRunner::failing("false"));
+        let (test_dependencies, mut devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            fs,
+            fake_http_client(),
+            Arc::new(FakeDocker::new()),
+            command_runner,
+            HashMap::new(),
+            r#"
+            {
+              "image": "test_image:latest",
+              "initializeCommand": ["false"]
+            }
+            "#,
+        )
+        .await
+        .unwrap();
+
+        let result = devcontainer_manifest.open().await;
+
+        let Err(DevContainerError::CommandFailed(label)) = result else {
+            panic!("expected initializeCommand to fail, got {result:?}");
+        };
+        assert_eq!(label, "initializeCommand");
+        assert!(
+            test_dependencies
+                .command_runner
+                .commands_by_program("docker")
+                .is_empty(),
+            "no container commands should run after initializeCommand fails"
+        );
     }
 
     #[gpui::test]
@@ -8277,7 +8338,7 @@ RUN echo $RUBY_VERSION2
             Ok(())
         }
         async fn start_container(&self, _id: &str) -> Result<(), DevContainerError> {
-            Err(DevContainerError::DockerNotAvailable)
+            Ok(())
         }
         async fn find_process_by_filters(
             &self,
@@ -8315,12 +8376,22 @@ RUN echo $RUBY_VERSION2
 
     pub(crate) struct TestCommandRunner {
         commands_recorded: Mutex<Vec<TestCommand>>,
+        failing_program: Option<String>,
     }
 
     impl TestCommandRunner {
         fn new() -> Self {
             Self {
                 commands_recorded: Mutex::new(Vec::new()),
+                failing_program: None,
+            }
+        }
+
+        /// A runner whose commands for `program` exit with a non-zero status.
+        fn failing(program: &str) -> Self {
+            Self {
+                commands_recorded: Mutex::new(Vec::new()),
+                failing_program: Some(program.to_string()),
             }
         }
 
@@ -8339,8 +8410,14 @@ RUN echo $RUBY_VERSION2
         async fn run_command(&self, command: &mut Command) -> Result<Output, std::io::Error> {
             let mut record = self.commands_recorded.lock().expect("poisoned");
 
+            let program = command.get_program().display().to_string();
+            let status = if self.failing_program.as_ref() == Some(&program) {
+                failed_exit_status()
+            } else {
+                ExitStatus::default()
+            };
             record.push(TestCommand {
-                program: command.get_program().display().to_string(),
+                program,
                 args: command
                     .get_args()
                     .map(|a| a.display().to_string())
@@ -8348,10 +8425,24 @@ RUN echo $RUBY_VERSION2
             });
 
             Ok(Output {
-                status: ExitStatus::default(),
+                status,
                 stdout: vec![],
                 stderr: vec![],
             })
+        }
+    }
+
+    fn failed_exit_status() -> ExitStatus {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            // A raw wait status holds the exit code in its second byte.
+            ExitStatus::from_raw(1 << 8)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            ExitStatus::from_raw(1)
         }
     }
 
