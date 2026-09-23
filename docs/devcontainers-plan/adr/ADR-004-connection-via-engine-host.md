@@ -12,5 +12,13 @@
   - arrêt du proxy via le handle du processus, et non via le binaire `kill` (absent sous Windows, `01` §2).
 - Alternatives : `HostDocker` (nouvelle variante dans tous les `match`, persiste le mot de passe SSH — `02-overlap-matrix.md` §5 C) ;
   garde « même moteur ».
-- Conséquences : l'hôte est persisté **sans secret** (pas de `password`), mais avec les `args` SSH utiles, que #62680 perd ;
-  pas de port forwarding en v1 (PR séparée, cf. #63899).
+- Conséquences : pas de port forwarding en v1 (PR séparée, cf. #63899).
+- Révisions après revue adverse (`08` F-4) :
+  - **Pas de `SshConnectionOptions` embarqué** : il sérialise `password` (`remote/src/transport/ssh.rs:136-141`) et
+    `RemoteConnectionOptions` est persisté en JSON complet dans `sidebar_threads`/`sidebar_terminal_threads`
+    (`agent_ui/src/thread_metadata_store.rs:1528`). Utiliser un type dédié `DockerHostSsh { host, username, port, args, nickname }`
+    **sans secret**, reconverti en `SshConnectionOptions` à la connexion (le mot de passe éventuel est redemandé).
+  - **Reconnexion** : l'hôte est reconnecté par le pool avant `DockerExecConnection` ; en cas d'échec de l'hôte, l'erreur
+    affichée nomme l'hôte (pas le conteneur).
+  - **Arrêt** : tuer le processus local (ssh/wsl.exe) ne garantit pas l'arrêt du `docker exec` distant ; prévoir un arrêt explicite
+    du proxy (identifiant de processus dans le conteneur) — **non vérifié** : comportement actuel de `kill` sur les transports SSH/WSL.

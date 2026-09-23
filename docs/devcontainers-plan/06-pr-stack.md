@@ -1,124 +1,135 @@
 # 06 — Pile de PRs et coordination
 
-Base : `05-target-architecture.md`, ADR-001…010, `03-spec-compliance.md` §13, `02-overlap-matrix.md` §7.
-Rien n'est ouvert ni posté. Tailles estimées en lignes de code hors tests (ordre de grandeur).
+Base : `05-target-architecture.md`, ADR-001…011, `03-spec-compliance.md` §13, `02-overlap-matrix.md` §7.
+Révisé après la revue adverse (`08` §5 : P-1…P-5, F-2, F-1). Rien n'est ouvert ni posté. Tailles estimées hors tests.
 
-## 0. Contraintes amont qui façonnent la pile (`CONTRIBUTING.md`)
+## 0. Contraintes amont
 
-- Les **fonctionnalités** doivent être confirmées par le staff avant PR (discussion d'abord) ; les **bugfixes** sont bienvenus directement.
-  → Piste A (bugs/conformité) et B (#56576) peuvent partir tout de suite ; la piste C (distant) attend un accord de design.
-- **3 PRs ouvertes maximum par auteur** ; « une seule chose » par PR ; tests obligatoires ; pas de « giant refactorings ».
-- Politique IA : humain qui comprend le code ; messages aux mainteneurs **écrits par un humain** (texte généré cité et signalé).
-- Constat : aucun mainteneur n'a encore commenté les PRs dev containers ouvertes (`raw/INDEX.md`) ; auteur principal du crate : KyleBarton
-  (23 commits depuis 2026-01, `git shortlog`) — rôle dans l'équipe non vérifié.
+- `CONTRIBUTING.md` :
+  - **features** confirmées par le staff avant toute PR ; les propositions se font dans une **Discussion**, pas dans une issue (`CONTRIBUTING.md:33, 53-55`) ;
+  - bugfixes bienvenus directement ; une PR « not obviously great » est fermée (`:98-100`) ;
+  - **3 PRs ouvertes max par auteur** ; une seule chose par PR ; tests obligatoires ; pas de « giant refactorings » ;
+  - politique IA : un humain comprend le code ; les messages aux mainteneurs sont écrits par un humain (texte généré cité et signalé).
+- Débit de revue : 11 PRs ouvertes `area:dev containers`, **aucune** avec un commentaire MEMBER/OWNER (`raw/INDEX.md`), y compris
+  #58500 de KyleBarton. KyleBarton est `COLLABORATOR` et a mergé #56293 (`gh pr view 56293` : `mergedBy: KyleBarton`) : c'est
+  le relecteur naturel du crate, mais sa disponibilité est inconnue.
+- ⇒ **Engagement initial réduit** : C0 + une ou deux corrections indiscutables + soutien actif des PRs existantes. Le reste
+  de la pile est **conditionné à une réponse du staff**.
 
-## 1. Vue d'ensemble
+## 1. Graphe
 
 ```mermaid
 flowchart TD
-  subgraph A["Piste A — conformité / bugs (sans accord préalable)"]
-    A1[A1 argv des hooks<br/>= #63034] --> A2[A2 initializeCommand]
-    A1 --> A3[A3 hooks features + marqueurs]
-    A4[A4 devcontainerId]
-    A5[A5 repli sans BuildKit]
-    A6[A6 options Podman Linux-only + kill Windows]
-    A7[A7 ordre/options des features<br/>≈ #64025]
-  end
-  subgraph B["Piste B — identité (#56576)"]
-    B1[B1 identité stable<br/>adapte #60975]
-  end
-  subgraph C["Piste C — hôte distant (après accord de design)"]
-    C0[C0 proposition de design<br/>#59500] --> C1[C1 EngineHost no-op]
-    C1 --> C2[C2 HostFiles + RemotePathBuf]
-    C1 --> C3[C3 décisions selon plateforme hôte]
-    C2 --> C4[C4 DockerHost dans la connexion]
-    C3 --> C4
-    B1 --> C5[C5 identité qualifiée par l'hôte]
-    C4 --> C5
-    C5 --> C6[C6 activer SSH]
-    C6 --> C7[C7 activer WSL]
-    C6 --> C8[C8 refus explicites]
-  end
-  subgraph D["Piste D — variantes de CLI"]
-    C1 --> D1[D1 ContainerCli docker/podman]
-    D1 --> D2[D2 wslc expérimental]
-  end
-  subgraph E["Piste E — UX"]
-    B1 --> E1[E1 reconnect/restart/rebuild<br/>réduit de #60975]
-    C4 --> E2[E2 port forwarding<br/>+ #63899]
-  end
+  C0[C0 proposition<br/>Discussion #56252] --> T1[T1 porte Workspace Trust]
+  S[Soutien : #63034 #63391 #64025 #63899 #60975] --> A3
+  T1 --> A2[A2 initializeCommand]
+  A4[A4 devcontainerId]
+  A5[A5 repli sans BuildKit]
+  A6a[A6a Podman Linux-only]
+  A6b[A6b arrêt proxy sans kill]
+  S --> B1[B1 identité stable]
+  C0 --> C1[C1 EngineHost no-op]
+  C1 --> C2[C2 HostFiles + BuildDir]
+  C1 --> C3[C3 plateforme de l'hôte]
+  C1 --> D1[D1 ContainerCli]
+  C2 --> C2b[C2b sonde d'env de l'hôte]
+  C2 --> C4[C4 DockerHost]
+  C3 --> C4
+  C1 --> C8[C8 refus explicites]
+  B1 --> C5[C5 identité + hôte]
+  C4 --> C5
+  C5 --> C6[C6 SSH]
+  C2b --> C6
+  T1 --> C6
+  C6 --> C7[C7 WSL]
+  D1 --> D2[D2 wslc expérimental]
+  B1 --> E1[E1 reconnect/restart/rebuild]
+  C4 --> E2[E2 port forwarding]
 ```
 
 ## 2. Détail des PRs
 
-| ID | Titre (anglais, style Zed) | Contenu | Dépend de | Taille | Tests | Reprend / coordonne |
+| ID | Titre (anglais, style Zed) | Contenu | Dépend de | Taille | Tests | Existant |
 |---|---|---|---|---|---|---|
-| **A1** | `dev_container: Preserve lifecycle command arguments` | `docker exec … <argv>` sans `join` ; forme chaîne intacte ; même correctif dans le script marqueur postStart | — | S | argv exact de `run_docker_exec` pour chaîne/tableau/objet ; régression #62964 | **#63034 (pupeno)** et #62271 : **soutenir/relire l'existant plutôt que dupliquer** |
-| **A2** | `dev_container: Run initializeCommand on every open and fail on error` | exécution avant la recherche du conteneur ; code ≠ 0 fatal ; `cmd /c` sur Windows | — | S | conteneur existant ⇒ exécuté ; exit 1 ⇒ erreur ; Windows ⇒ `cmd` | **#63391** (forme chaîne Windows) |
-| **A3** | `dev_container: Run feature and image lifecycle hooks` | hooks des métadonnées d'image et des features, dans l'ordre spec ; marqueurs `.onCreate/.updateContent/.postCreateCommandMarker` ; forme objet parallèle | A1 | M | ordre fusionné ; marqueurs (conteneur recréé vs redémarré) ; échec ⇒ arrêt | — |
-| **A4** | `dev_container: Compute devcontainerId per spec` | sha256 + base32 (52 car.) | — | S | vecteurs de test issus de l'algorithme spec/CLI | — |
-| **A5** | `dev_container: Build without BuildKit when buildx is unavailable` | repli image temporaire pour image/Dockerfile | — | M | commande générée avec/sans buildx | — |
-| **A6** | `dev_container: Apply Podman user namespace options on Linux only` + `remote: Stop docker proxy without external kill` | deux PRs S | — | S+S | options selon plateforme ; arrêt proxy sous Windows | — |
-| **A7** | `dev_container: Order features by installsAfter and dependsOn` | tri topologique + options tableau/nombre | — | M | graphes de features ; cycles | **#64025** (options) |
-| **A8** | *(en suspens)* `dev_container: Persist only remoteEnv for dev container connections` | ADR-008 | — | S | — | **décision utilisateur : rien pour l'instant** |
-| **B1** | `Give dev containers a stable identity across rebuilds` | clé `(host=local, root, config, user)` ; UPDATE runtime ; migration en fin de liste ; `""`=absent ; normalisation des labels | — | M | rebuild ⇒ même `RemoteConnectionId` ; threads retrouvés ; migration | **#60975 (alex-berger)** : proposer de réduire sa PR à ce morceau |
-| **C0** | *(discussion, pas de code)* | proposition de design (§3) dans #59500 | — | — | — | alexdhill, pupeno, alex-berger |
-| **C1** | `dev_container: Route engine commands through an EngineHost` | `EngineHost::Local` seulement ; tous les sites (y c. `id`, `initializeCommand`, `docker_cli()`) | C0 | M | **égalité d'argv avant/après** sur tous les sites (fixtures `07`) | fusion `DevContainerHost` (#62680) / `ProjectCommandBuilder` (pupeno-wsl) |
-| **C2** | `dev_container: Read and stage build files through the engine host` | `HostFiles` ; `BuildDir` unique et nettoyé ; `RemotePathBuf::join/parent/file_name` | C1 | M | faux `RemoteConnection` : commandes `cat`/`mktemp`/`rm` ; contenu par stdin | `ProjectHost` (pupeno-remote), réduit |
-| **C3** | `dev_container: Decide UID and labels from the engine host platform` | ADR-007 | C1 | S | client Windows + hôte Linux ⇒ UID aligné | pupeno-wsl/pupeno-remote ; corrige le test rouge de #62680 |
-| **C4** | `remote: Let docker connections run through a host connection` | `DockerHost` + pool + `docker_command()` + upload par flux ; inactif tant que C6 n'est pas mergé | C2, C3 | L | faux hôte : proxy, upload, terminal ; sérialisation `serde(default)` | **#62680 (alexdhill)** |
-| **C5** | `Qualify dev container identity with its engine host` | étend B1 avec `engine_host_key` | B1, C4 | S | deux hôtes, même chemin ⇒ identités distinctes ; sans secret | #62680 × #60975 |
-| **C6** | `Open dev containers from SSH projects` | lève le refus pour SSH (hôte POSIX) ; UI | C5 | M | e2e manuel T4 ; tests avec faux SSH | #62680 |
-| **C7** | `Open dev containers from WSL projects` | idem WSL ; message si aucun moteur dans la distro | C6 | S | e2e T2/T3 | pupeno-wsl / pupeno-remote |
-| **C8** | `dev_container: Explain unsupported dev container setups` | ADR-009 (T4w, T5, T6b, compose+wslc) | C1 | S | chaque motif | pupeno-wsl (`unsupported_reason`) |
-| **D1** | `dev_container: Detect Docker or Podman CLI variant` | `ContainerCli` ; réglage `dev_container_cli` ; `use_podman` conservé | C1 | M | détection via `-v` (fixtures) | — |
-| **D2** | `dev_container: Experimental WSL Containers (wslc) support` | ADR-006 Wslc ; derrière réglage | D1 | M | contrats sur sorties `wslc` enregistrées | — |
-| **E1** | `Add dev container reconnect, restart and rebuild actions` | sous-ensemble de #60975, via `EngineHost` ; compose ; rebuild non destructif | B1 (C4 pour le distant) | M | — | #60975 |
+| **S** | *(pas de PR)* soutien | relire, tester, reproduire : #63034 (argv des hooks, #62964), #63391, #64025, #63899 ; proposer à alex-berger de réduire #60975 à l'identité | — | — | repros sur fixtures `07` | — |
+| **T1** | `dev_container: Require a trusted worktree before running dev container setup` | ADR-011 : aucune exécution (initializeCommand, build, extensions) sans confiance ; résumé des éléments sensibles | C0 (question de design) | M | refus sans confiance ; toast/CLI passent par la porte | — |
+| **A1** | = **#63034** (non dupliquée) | argv préservé | — | — | — | pupeno |
+| **A2** | `dev_container: Run initializeCommand on every open and fail on error` | ADR-010 ; comportement **visible** (à annoncer) | T1 | S | existant ⇒ exécuté ; exit 3 ⇒ erreur ; Windows ⇒ `cmd /c` | #63391 |
+| **A3** | `dev_container: Run feature and image lifecycle hooks` | ordre spec, marqueurs, forme objet ; comportement **visible** | A1 mergée | M | ordre ; marqueurs ; échec ⇒ arrêt | — |
+| **A4** | `dev_container: Compute devcontainerId per spec` | nouvel algorithme pour les **nouveaux** conteneurs ; garder l'ancien id tant qu'un conteneur existant est réutilisé (volumes DinD préservés) | — | S | `fixtures/devcontainer-id/vectors.json` | — |
+| **A5** | `dev_container: Build without BuildKit when buildx is unavailable` | repli image temporaire | — | M | commande avec/sans buildx | — |
+| **A6a** | `dev_container: Apply Podman user namespace options on Linux only` | + retrait de `consistency=cached` hors spec sous Linux | — | S | options selon plateforme | #58500 (à recouper) |
+| **A6b** | `remote: Stop the docker proxy without an external kill` | `Child::kill` au lieu du binaire `kill` | — | S | arrêt sous Windows | — |
+| **A7** | `dev_container: Order features by installsAfter and dependsOn` | tri topologique | — | M | graphes, cycles | #64025 (options) |
+| **A8** | *(en suspens — sécurité)* env persisté, dossier temporaire prévisible | ADR-008 | — | S+S | `fixtures/env-secrets` | **décision utilisateur : rien pour l'instant** |
+| **B1** | `Give dev containers a stable identity across rebuilds` | ADR-005 (hôte = `local`) ; **inclut** `sidebar_threads`/`sidebar_terminal_threads` (sinon #56576 n'est corrigé que pour les nouveaux threads) | S (accord avec alex-berger) | M | rebuild ⇒ même id ; threads existants migrés | #60975 |
+| **C0** | *(Discussion, pas de code)* | §4 | — | — | — | — |
+| **C1** | `dev_container: Route engine commands through an EngineHost` | ADR-002 ; `Local` seulement ; tous les sites | C0 accepté | M | **goldens sur `HostCommand`** (program, args, env, cwd, stdin) avant/après (`07` §4) | #62680 / pupeno-wsl |
+| **C2** | `dev_container: Stage build files through the engine host` | ADR-003 ; `BuildDir` unique 0700, nettoyé | C1 | M | faux `RemoteConnection` ; stdin ; nettoyage sur échec | pupeno-remote (réduit) |
+| **C2b** | `dev_container: Probe the engine host environment` | shell de login de l'hôte (`PATH`, `DOCKER_HOST`), cache ; réglage du chemin du CLI | C2 | S | faux hôte sans docker dans le PATH non-login | — |
+| **C3** | `dev_container: Decide UID and labels from the engine host platform` | ADR-007 | C1 | S | client × hôte {Linux, Windows} | pupeno ; test rouge de #62680 |
+| **C4** | `remote: Let docker connections run through a host connection` | ADR-004 révisé (`DockerHostSsh` sans secret) ; inactif avant C6 | C2, C3 | L | proxy, upload, terminal ; `serde(default)` | #62680 |
+| **C5** | `Qualify dev container identity with its engine host` | ADR-005 | B1, C4 | S | deux hôtes, même chemin ⇒ ids distincts | #62680 × #60975 |
+| **C6** | `Open dev containers from SSH projects` | lève le refus pour SSH POSIX | C5, C2b, T1 | M | e2e T4 | #62680 |
+| **C7** | `Open dev containers from WSL projects` | idem WSL | C6 | S | e2e T2/T3 | pupeno |
+| **C8** | `dev_container: Explain unsupported dev container setups` | ADR-009 révisé (pas de blocage `npipe`) | C1 | S | chaque motif | pupeno-wsl |
+| **D1** | `Detect the container CLI variant` | ADR-006 révisé (`ContainerCli` dans `remote`) | C1 | M | détection `-v` | — |
+| **D2** | `dev_container: Experimental wslc support` | Wslc sans compose ni features | D1 | M | contrats `fixtures/wslc-2.9.12` | — |
+| **E1** | `Add dev container reconnect, restart and rebuild actions` | sous-ensemble de #60975 | B1 | M | — | #60975 |
 | **E2** | `Forward dev container ports through the engine host` | — | C4 | M | — | #62680, #63899 |
 
-Taille : S < 150, M 150–500, L 500–1000 lignes hors tests.
+## 3. Vagues (≤ 3 PRs ouvertes, dépendances **mergées** avant soumission)
 
-## 3. Ordre de soumission compatible avec « 3 PRs ouvertes par auteur »
-
-| Vague | PRs | Condition |
+| Vague | PRs ouvertes | Préalable |
 |---|---|---|
-| 1 | A2, A4, B1 (ou soutien à #63034/#63391/#60975 si leurs auteurs acceptent de réduire) | aucune |
-| 2 | A3, A5, A6 | A1 mergée (#63034) |
-| 3 | C1, C3, A7 | accord de design sur C0 |
-| 4 | C2, C4, D1 | C1 mergée |
-| 5 | C5, C6, C8 | C4 mergée |
-| 6 | C7, D2, E1 | C6 mergée |
+| 0 | aucune — C0 posté + soutien S | — |
+| 1 | A4, A6a, A6b | aucun (corrections indépendantes, sans accord de design) |
+| 2 | T1, A5, A7 | réponse du staff à C0 (T1 est une question de design) |
+| 3 | A2, B1 (ou #60975 réduite), A3 si #63034 mergée | T1 mergée |
+| 4 | C1 | accord sur l'architecture dans C0 |
+| 5 | C2, C3, D1 | C1 mergée |
+| 6 | C2b, C4, C8 | C2 et C3 mergées |
+| 7 | C5, D2, E1 | C4, D1, B1 mergées |
+| 8 | C6 | C5, C2b mergées |
+| 9 | C7, E2 | C6, C4 mergées |
 
-Répartition proposée aux auteurs existants (à négocier dans C0, jamais imposée) : pupeno → A1 (#63034), C7 ;
-alexdhill → C4, C6, E2 ; alex-berger → B1, E1 ; autres PRs ouvertes (#63391, #64025, #63899) : les soutenir.
+Les changements de comportement **visibles** (A2, A3, A4) sont annoncés dans C0 comme « bugfix à comportement visible »,
+avec une note de version.
 
-## 4. Brouillon du message de coordination (C0) — NON POSTÉ
+## 4. Brouillon de proposition (C0) — NON POSTÉ
 
-> **À réécrire par toi, avec tes mots.** `CONTRIBUTING.md` demande que les messages aux mainteneurs soient écrits par un
-> humain ; si tu gardes des passages de ce brouillon, mets-les en citation et indique qu'ils sont générés par IA.
-> Lieu suggéré : issue #59500 (suivi officiel de la demande), en mentionnant #62680, #60975, #56576 et les branches de pupeno.
+> **À réécrire par toi, avec tes mots.** Si tu conserves des passages, mets-les en citation et signale-les comme générés
+> par IA (`CONTRIBUTING.md`, politique IA). Lieu : **discussion #56252** (lier #59500, #56576, #62680, #60975).
+> Suivre le gabarit de `docs/src/development/feature-process.md` (pourquoi / quoi / ce que ça affecte, dont Security/Workspace Trust).
+> Ne pas nommer de répartition de tâches ; ne citer les branches de pupeno qu'avec son accord.
 
 ```text
-Hi all — I've been reading the dev container code on main and the open work around remote hosts
-(#62680 by @alexdhill, pupeno's wsl-devcontainers / remote-devcontainer branches, and #60975 by
-@alex-berger for #56576). They overlap heavily: every pair of them conflicts in 3–16 files, and
-each introduces its own "run docker on the project host" abstraction.
+Why
+Opening a dev container only works for local projects today (recent_projects refuses remote
+projects), yet #59500 / this discussion show strong demand for SSH and WSL hosts. Three remote-host
+efforts exist (#62680 and two unproposed branches); in trial merges I ran locally they conflict with
+each other and with #60975 in 3–16 files, and each introduces its own "run docker on the project
+host" abstraction.
 
-Before anyone writes more code, could we agree on one shape? Proposal:
+What (proposal, before anyone writes more code)
+1. One execution type in dev_container, EngineHost { Local, Remote(Arc<dyn RemoteConnection>) },
+   delegating to RemoteConnection::build_command — no new transport, no hand-made quoting; local
+   behaviour unchanged, checked by recorded command tests.
+2. Docker connections carry a flat, non-recursive host (Local / Ssh / Wsl, serde default Local, no
+   secrets persisted), so creation and the exec/proxy connection always use the same engine.
+3. A stable identity keyed on (engine host, project root, config file, remote user); this should
+   fix #56576 for new threads, with a migration for existing ones.
+4. Decisions based on the engine host platform (UID, labels, sh vs cmd) instead of cfg(windows).
 
-1. One execution type in dev_container: EngineHost { Local, Remote(Arc<dyn RemoteConnection>) },
-   delegating to RemoteConnection::build_command (no new transport, no hand-made quoting, identical
-   argv for local projects).
-2. Docker connections carry a flat, non-recursive host (DockerHost { Local, Ssh, Wsl }, serde
-   default = Local), so creation and the exec/proxy connection always use the same engine.
-3. A stable identity keyed on (engine host, project root, config file, remote user), with
-   container_id as a runtime attribute — this fixes #56576 and extends to remote hosts.
-4. Host-platform decisions (UID, labels, cmd vs sh) instead of cfg(windows) on the client.
+What else this affects
+- Security / Workspace Trust: opening a dev container runs repository-controlled commands
+  (initializeCommand on the host, runArgs, extension installs). I'd propose gating all of it on a
+  trusted worktree — is that the direction you'd want?
+- Persistence: new columns (append-only migrations); connection options no longer store secrets.
+- Visible bug fixes first: string-form lifecycle commands (#62964 / #63034), initializeCommand on
+  every open, feature lifecycle hooks, spec-conformant devcontainerId.
 
-Suggested order: bug fixes first (#63034 for #62964, #63391, initializeCommand on every open),
-then the identity fix, then a no-op EngineHost refactor, then SSH, then WSL. Each step keeps
-local behaviour unchanged and ships with tests.
-
-Would the team be open to this direction? If so, I'm happy to coordinate with the authors above
-on who takes which piece rather than opening yet another competing PR.
+Questions for the team
+- Is this shape acceptable, and who would review dev container changes?
+- Would you prefer SSH first, or WSL first?
 ```

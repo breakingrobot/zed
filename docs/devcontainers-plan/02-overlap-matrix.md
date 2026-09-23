@@ -134,7 +134,8 @@ Migration : append-only (leçon du rebase #60975), backfill best-effort des lign
 ## 8. Conséquences pour la suite
 
 - Contraintes amont (`CONTRIBUTING.md`) : fonctionnalité non confirmée par le staff → **discussion d'abord** (#59500 existe,
-  ouverte par un mainteneur, mais sans validation de design) ; **3 PRs ouvertes max par auteur** ; pas de « giant refactorings » ;
+  ouverte par macraig, `authorAssociation: CONTRIBUTOR` — statut staff **non établi** (corrigé après `08`) ; aucune validation
+  de design ; le lieu prévu par `CONTRIBUTING.md` pour une proposition est une **Discussion** : #56252) ; **3 PRs ouvertes max par auteur** ; pas de « giant refactorings » ;
   politique IA. Les quatre contributions déclarent une forte part d'IA et aucune n'a eu de revue : la pile de PRs (P6) devra
   être petite, testée, et portée par des humains qui la comprennent.
 - Coordination : trois auteurs actifs (alex-berger, alexdhill, pupeno) ; pupeno a déjà proposé de découper son travail et

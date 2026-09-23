@@ -14,5 +14,12 @@
     - compose ⇒ refus ;
     - binaire `wslc` avec repli sur `%ProgramFiles%\WSL\wslc.exe` (`04-wslc.md`).
   - **Toutes** : repli sans BuildKit pour image/Dockerfile (`03` B1).
-- Conséquences : WSLc reste expérimental (préversion, GA visée à l'automne 2026). Les features via `--build-context` étant
-  indisponibles sur Wslc, leur contenu est copié dans le contexte de build.
+- Conséquences : WSLc reste expérimental (préversion, GA visée à l'automne 2026).
+- Révisions après revue adverse (`08` C-1, C-3, F-6, R-7) :
+  - `consistency=cached` est ajouté par Zed à **tous** les mounts (`dev_container/src/devcontainer_json.rs:95`) : le retirer pour
+    Wslc (refusé, `04-wslc.md` Q3) et sous Linux/Podman (le CLI de référence ne l'ajoute que hors Linux).
+  - **Pas de features en Wslc v1** (refus explicite) : copier leur contenu dans le contexte de build toucherait le dossier du
+    projet ; un mécanisme sans effet sur le projet reste à spécifier.
+  - `ContainerCli` doit vivre dans le crate **`remote`** (la connexion en a besoin : `cp` vs `container cp`, `exec`), avec migration
+    de `use_podman` dans `DockerConnectionOptions` et les settings.
+  - Recouper avec les PRs Podman/SELinux ouvertes (#58500 de KyleBarton ; #58794 citée par la revue — **non vérifiée**).

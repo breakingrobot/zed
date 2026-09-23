@@ -1,25 +1,74 @@
 # Plan d'ingénierie — support Dev Containers robuste (Zed)
 
 Dossier de travail local (branche `plan/devcontainers`), **hors de l'arbre mdBook publié** (`docs/book.toml` → `src = "src"`).
-Rien ici n'a été poussé ni posté. Base : `main` = `16c9aa7ea6` (2026-09-22).
+Rien n'a été poussé, posté ni ouvert sur GitHub (`gh` en lecture seule). Base : `main` = `16c9aa7ea6` (2026-09-22).
 
-## État
+## Résumé exécutif
+
+1. **Aujourd'hui**, le support Dev Containers de Zed suppose que client, CLI docker et démon sont sur la même machine
+   (30 lancements de processus locaux, aucun point d'exécution commun) et **refuse** les projets distants (`01`).
+2. **Il a déjà des défauts sur `main`**, indépendants du distant (`03`) :
+   - commandes lifecycle en chaîne cassées (régression v1.15.0, #62964) ;
+   - `initializeCommand` sauté ou ignoré ;
+   - hooks des features jamais exécutés ;
+   - `devcontainerId` non conforme.
+3. **Sécurité** : trois points sensibles vérifiés. Leur traitement est **en suspens** sur ta décision :
+   - l'env complet du conteneur est persisté en clair (base `remote_connections` + tables `sidebar_*`) ;
+   - un dossier `/tmp` prévisible suit les liens symboliques (Linux multi-utilisateur) ;
+   - aucune porte Workspace Trust avant d'exécuter du contenu du dépôt.
+4. **Contributions existantes** (#60975, #62680, deux branches de pupeno) : utiles mais incompatibles entre elles (3 à 16 fichiers
+   en conflit par paire) et largement générées par IA, sans aucune revue de mainteneur ; la tête de #62680 ne compile pas (`02`).
+5. **Cible** (`05`, ADR-001…011) :
+   - déplacer le CLI vers l'hôte des sources ;
+   - une abstraction unique `EngineHost` au-dessus de `RemoteConnection::build_command` ;
+   - la connexion passe par le même hôte ;
+   - identité stable qualifiée par l'hôte ;
+   - variantes docker/podman/wslc ;
+   - porte Workspace Trust.
+6. **Topologies** (`04`) :
+   - P0 : local ;
+   - P1 : SSH puis WSL ;
+   - P2 : WSLc expérimental (préversion, pas d'API Docker, CLI `wslc` adaptable) ;
+   - P3 : Zed dans un conteneur ;
+   - refus explicites : hôte SSH Windows, `DOCKER_HOST` distant avec sources locales, dev container depuis un dev container.
+7. **Livraison** (`06`) : engagement initial réduit (proposition dans la discussion #56252 + corrections indépendantes + soutien
+   des PRs existantes), puis une pile de ~25 petites PRs en vagues de 3, conditionnée à une réponse du staff.
+8. **Tests** (`07`) :
+   - fixtures prêtes ;
+   - vecteurs `devcontainerId` recoupés avec le code du CLI de référence ;
+   - contrats `wslc` enregistrés ;
+   - e2e **non exécutés** (aucun moteur installé ici).
+9. **Revue adverse** (`08`) : 46 références relues (37 ✅ · 7 ⚠️ · 2 ❌) ; les 10 corrections prioritaires ont été revérifiées puis appliquées.
+
+## Décisions et hypothèses
+
+| Sujet | Statut |
+|---|---|
+| Priorités P0→P3, refus T4w/T5/T6b | hypothèse de travail (proposée au point d'arrêt 2, non contredite) |
+| WSL : connexion via la distro | hypothèse de travail |
+| WSLc : adaptateur CLI, sans compose ni features en v1 | hypothèse de travail |
+| Points sécurité (env persisté, `/tmp`, Workspace Trust) | **en suspens — décision utilisateur : rien pour l'instant** |
+| Installations pour les tests réels | **aucune** faite ; à décider (`07` §3) |
+| Publication de la proposition C0 | brouillon **non posté**, à réécrire par un humain (`06` §4) |
+
+## Documents
 
 | Phase | Livrable | État |
 |---|---|---|
-| 0 — Préparation | `raw/` (données GitHub brutes, `raw/INDEX.md` ; `gh` non authentifié → API REST publique) | ✅ |
-| 1 — Architecture actuelle | `01-current-architecture.md` | ✅ |
-| 2 — Contributions existantes | `02-contrib-*.md`, `02-overlap-matrix.md` | ✅ |
-| 🛑 Point d'arrêt 1 | | ✅ validé (2026-09-23) |
-| 3 — Conformité spec | `03-spec-reference.md` (spec + CLI réf., sourcé), `03-spec-compliance.md` | ✅ |
-| 4 — Topologies (local, WSL, SSH, imbriqué, WSLc) | `04-reference-topologies.md`, `04-wslc.md`, `04-topologies.md` | ✅ |
-| 🛑 Point d'arrêt 2 | questions ouvertes : `04-topologies.md` §6 | en attente de validation |
-| 5 — Architecture cible + ADRs | `05-target-architecture.md`, `adr/` | — |
-| 6 — Pile de PRs + message de coordination (brouillon) | `06-pr-stack.md` | — |
-| 7 — Stratégie de test + fixtures | `07-test-strategy.md`, `fixtures/` | — |
-| 8 — Revue adverse | `08-adversarial-review.md` | — |
+| 0 — Préparation | `raw/` (données GitHub : API publique puis `gh` authentifié ; `raw/INDEX.md` ; logs `raw/build-logs/`) | ✅ |
+| 1 — Architecture actuelle | `01-current-architecture.md` | ✅ (révisé après 08) |
+| 2 — Contributions | `02-contrib-*.md`, `02-overlap-matrix.md` | ✅ |
+| 🛑 Point d'arrêt 1 | | ✅ validé |
+| 3 — Conformité spec | `03-spec-reference.md`, `03-spec-compliance.md` | ✅ (révisé après 08) |
+| 4 — Topologies | `04-reference-topologies.md`, `04-wslc.md`, `04-topologies.md` | ✅ |
+| 🛑 Point d'arrêt 2 | | ✅ (sécurité : en suspens) |
+| 5 — Architecture cible | `05-target-architecture.md`, `adr/ADR-001…011` | ✅ (révisé après 08) |
+| 6 — Pile de PRs | `06-pr-stack.md` (+ brouillon C0 non posté) | ✅ (réécrit après 08) |
+| 7 — Tests | `07-test-strategy.md`, `fixtures/` | ✅ (révisé après 08) |
+| 8 — Revue adverse | `08-adversarial-review.md` (+ §8 suite donnée) | ✅ |
+| 🛑 Point d'arrêt final | | en attente |
 
-## Sources analysées (branches locales en lecture seule)
+## Sources analysées (branches locales, lecture seule)
 
 | Branche locale | Origine | Rapport |
 |---|---|---|
@@ -28,14 +77,17 @@ Rien ici n'a été poussé ni posté. Base : `main` = `16c9aa7ea6` (2026-09-22).
 | `review/pupeno-wsl` | pupeno/zed `wsl-devcontainers` | `02-contrib-pupeno-wsl.md` |
 | `review/pupeno-remote` | pupeno/zed `remote-devcontainer` | `02-contrib-pupeno-remote.md` |
 
-Les worktrees d'essai `H:\Sources\zed-wt\<nom>` et les branches `trial/*` citées dans les rapports ont été **supprimées**
-après analyse (merges d'essai jamais commités) ; les logs de build/test sont conservés dans `raw/build-logs/`.
-Les branches `review/*` restent disponibles localement.
+Les worktrees d'essai `H:\Sources\zed-wt\<nom>` et les branches `trial/*` citées dans les rapports ont été supprimées après
+analyse ; les logs sont dans `raw/build-logs/`. Les caches de build `H:\Sources\zed-wt\target*` et le clone
+`%TEMP%\dccli` (spec + CLI de référence) sont conservés et peuvent être supprimés.
 
 ## Conventions
 
 - Chaque affirmation est sourcée : `chemin:ligne` (sur `main` sauf mention), SHA, ou fichier de `raw/`.
-- Hypothèses : ✅ confirmée · ❌ infirmée · ⚠️ partielle.
-- Contraintes amont retenues (`CONTRIBUTING.md`) : fonctionnalités à faire valider en discussion avant PR ;
-  PRs « une seule chose » avec tests ; plafond de **3 PRs ouvertes par auteur** ; pas de « refactorings géants » ;
-  politique IA (humain qui comprend le code, pas d'agents autonomes, messages aux mainteneurs écrits par un humain).
+- Hypothèses : ✅ confirmée · ❌ infirmée · ⚠️ partielle ; « non vérifié » quand non lu directement.
+- Contraintes amont (`CONTRIBUTING.md`) :
+  - fonctionnalités proposées d'abord en **Discussion** ;
+  - une seule chose par PR, tests obligatoires ;
+  - **3 PRs ouvertes max par auteur** ;
+  - pas de « giant refactorings » ;
+  - politique IA : un humain comprend le code, et les messages aux mainteneurs sont écrits par un humain.

@@ -9,6 +9,12 @@ H-b pour WSL, la connexion passe par la distro (pas de garde « même moteur »)
 H-c WSLc via le CLI `wslc`, première version sans compose ni `--build-context`.
 Sécurité (`03` E2) : **en suspens sur décision utilisateur** — l'architecture prévoit le correctif (ADR-008), mais aucun signalement ni PR n'est planifié tant que ce n'est pas décidé.
 
+**Révisions après la revue adverse (`08`)** : ajout d'ADR-011 (Workspace Trust, porte avant toute exécution) ; ADR-002
+(goldens sur `HostCommand`, sonde d'environnement de l'hôte en shell de login, coût SSH sans ControlMaster sous Windows) ;
+ADR-004 (type d'hôte SSH **sans** `password`, reconnexion, arrêt du proxy distant) ; ADR-006 (`consistency`, pas de features
+en Wslc v1, `ContainerCli` dans le crate `remote`) ; ADR-008 (tables `sidebar_*`, gabarits non résolus, `--env-file`,
+`BuildDir` 0700 unique) ; ADR-009 (pas de blocage sur `npipe`, T6a non bloquant). Le §4 ci-dessous intègre ces révisions.
+
 ## 1. Principes
 
 1. **Trois lieux explicites** : client, hôte moteur (= hôte CLI = hôte démon), conteneur. On **déplace le CLI** vers l'hôte
@@ -59,7 +65,7 @@ flowchart LR
 | `HostCommand` | idem | builder `program, args, env, current_dir, stdin` ; aucune chaîne shell | `ProjectCommand` + `current_dir` (#62680) | 002 |
 | `HostFiles` | idem | `read_to_string(path)`, `write(path, bytes)` (stdin), `create_build_dir() -> BuildDir` (supprimé au `Drop`/fin), `exists` ; local = `Fs` ; distant = commandes POSIX (`cat`, `mkdir -p`, `mktemp -d`, `rm -rf` borné au dossier créé) | `ProjectHost` (pupeno-remote), réduit | 003 |
 | Chemins hôte | `util::paths::RemotePathBuf` **étendu** (`join`, `parent`, `file_name`, `is_absolute`) | chemins typés par `PathStyle` de l'hôte | `HostPathBuf` (pupeno-remote), sans nouveau type | 003 |
-| `ContainerCli` | `dev_container/src/docker.rs` | `enum { Docker, Podman, Wslc }` détecté par `<cli> -v` (surchargé par réglage) ; filtre/traduit les options par variante ; remplace le booléen `use_podman` (réglage conservé comme alias) | `CLIVariant` du CLI de référence | 006 |
+| `ContainerCli` | crate `remote` (révisé : la connexion en a besoin — `cp` vs `container cp`), utilisé par `dev_container/src/docker.rs` | `enum { Docker, Podman, Wslc }` détecté par `<cli> -v` (surchargé par réglage) ; filtre/traduit les options par variante ; remplace le booléen `use_podman` (réglage conservé comme alias) | `CLIVariant` du CLI de référence | 006 |
 | `Docker` (client) | `dev_container/src/docker.rs` | **toutes** les commandes moteur passent par `ContainerCli` + `EngineHost` (y compris celles que le manifest fabrique aujourd'hui via `docker_cli()`) ; fonctions `*_args` pures testables | `Docker::run` + `*_args` (#62680) | 002, 006 |
 | Lifecycle runner | `dev_container/src/devcontainer_manifest.rs` (extraction éventuelle `lifecycle.rs`) | argv préservés ; marqueurs spec ; hooks features/metadata ; forme objet ; `initializeCommand` sur l'hôte à chaque ouverture | #63034, spec | 010 |
 | `DockerHost` | `remote/src/transport/docker.rs` | `enum { Local, Ssh(SshConnectionOptions), Wsl(WslConnectionOptions) }` plat, `#[serde(default)]` dans `DockerConnectionOptions` | #62680 | 004 |
@@ -69,9 +75,12 @@ flowchart LR
 
 ## 4. Flux cible (ouverture)
 
+0. **Porte Workspace Trust** (ADR-011) : rien d'exécutable tant que le worktree (local ou distant) n'est pas de confiance.
 1. `unsupported_reason(project)` : collab → refus ; projet déjà en conteneur → refus (T6b) ; hôte SSH Windows → refus (T4w) ;
-   `DOCKER_HOST`/contexte non-unix détecté en **local** → avertissement bloquant (T5) ; sinon `EngineHost` = connexion du projet.
-2. `ContainerCli::detect(engine_host)` (`<cli> -v`, cache par hôte).
+   endpoint **distant** (`ssh://`, `tcp://` non-loopback) en local → avertissement bloquant (T5) — `npipe://`/`unix://` locaux
+   acceptés ; Zed dans un conteneur → avertissement non bloquant (T6a) ; sinon `EngineHost` = connexion du projet.
+2. Sonde d'environnement de l'hôte (shell de login, cache : `PATH`, `DOCKER_HOST`) puis `ContainerCli::detect(engine_host)`
+   (`<cli> -v`, cache par hôte).
 3. Lecture de devcontainer.json / Dockerfile / compose via `HostFiles` (local : `Fs` ; distant : `cat`).
 4. `initializeCommand` via `EngineHost` (hôte POSIX : `/bin/sh -c` ; hôte Windows : `cmd /c`), **à chaque ouverture**, échec fatal.
 5. Recherche du conteneur par labels (chemins hôte, normalisés selon la plateforme **de l'hôte**).
@@ -80,7 +89,9 @@ flowchart LR
 7. `run` / `compose up` via `ContainerCli` ; hooks conteneur (marqueurs, features, argv).
 8. `DevContainerConnection { …, host: DockerHost }` → `DockerConnectionOptions { host }` → pool → `DockerExecConnection`
    qui exécute `docker exec -i … proxy` **sur l'hôte**.
-9. Persistance : identité stable ; `remote_env` = `remoteEnv` résolu seulement (pas l'env complet du conteneur).
+9. Persistance : identité stable ; seulement les **gabarits** `remoteEnv` non résolus (ni l'env du conteneur, ni les valeurs
+   résolues), y compris dans `sidebar_threads`/`sidebar_terminal_threads` ; env transmis aux `docker exec` par `--env-file`
+   0600 (ADR-008, en suspens).
 
 ## 5. Correspondance topologies ↔ composants
 

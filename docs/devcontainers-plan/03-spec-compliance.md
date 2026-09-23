@@ -79,14 +79,14 @@ Légende gravité : **B** bloquant (casse des configs courantes ou sécurité) �
 | # | Exigence | Zed `main` | Écart | Grav. |
 |---|---|---|---|---|
 | E1 | `userEnvProbe` (défaut `loginInteractiveShell`) : variables du shell de l'utilisateur fusionnées pour les processus de l'outil | champ privé ignoré (`json:214`) ; l'env du serveur distant vient de `DockerExecConnection` (`remote/src/transport/docker.rs`) | PATH des features/`.bashrc` absent des processus Zed hors shell de login | M |
-| E2 | `remoteEnv` : propre à l'outil, modifiable sans rebuild ; `containerEnv` : posé sur le conteneur | `remote_env` = **tout** `Config.Env` du conteneur (moins `HOME`) + `remoteEnv` (`manifest:208-223`) | (a) réinjecte en `-e K=V` sur **chaque** `docker exec` l'env complet du conteneur (visible dans `ps` de l'hôte) ; (b) **persisté en clair** en SQLite (`workspace/src/persistence.rs:1035, 1754`) → un `containerEnv` `${localEnv:GITHUB_TOKEN}` finit sur disque ; les logs sont rédigés depuis #63606 mais pas la DB | **B** (sécurité) |
+| E2 | `remoteEnv` : propre à l'outil, modifiable sans rebuild ; `containerEnv` : posé sur le conteneur | `remote_env` = **tout** `Config.Env` du conteneur (moins `HOME`) + `remoteEnv` (`manifest:208-223`) | (a) réinjecte en `-e K=V` sur **chaque** `docker exec` l'env complet du conteneur (visible dans `ps` de l'hôte) ; (b) **persisté en clair** en SQLite (`workspace/src/persistence.rs:1035, 1754`) **et**, via le JSON complet de `RemoteConnectionOptions`, dans `sidebar_threads` (`agent_ui/src/thread_metadata_store.rs:1528`) et `sidebar_terminal_threads` (`agent_ui/src/terminal_thread_metadata_store.rs:540`) — ajouté après `08` R-3 → un `containerEnv` `${localEnv:GITHUB_TOKEN}` finit sur disque ; **même un `remoteEnv` seul** (`${localEnv:…}` résolu) reste un secret : persister des gabarits non résolus ; les logs sont rédigés depuis #63606 mais pas la DB | **B** (sécurité) |
 | E3 | `remoteEnv` : valeur `null` = suppression | `HashMap<String,String>` → un `null` fait échouer le parse | m |
 
 ## 8. Workspace, mounts
 
 | # | Exigence | Zed `main` | Écart | Grav. |
 |---|---|---|---|---|
-| W1 | Mount par défaut `type=bind,source=<dossier>,target=/workspaces/<basename>` ; `consistency=cached` hors Linux (pas avec Podman Linux) | `manifest:2137-2157` (sans `consistency`) | ✅ (`consistency` sans effet sur les moteurs récents) | ✅ |
+| W1 | Mount par défaut `type=bind,source=<dossier>,target=/workspaces/<basename>` ; `consistency=cached` hors Linux (pas avec Podman Linux) | `manifest:2137-2157` ; **`consistency=cached` ajouté à tous les mounts, sur tous les OS** (`json:95`) — corrigé après revue adverse (`08`, ❌ sur la version précédente) | hors spec sous Linux/Podman (le CLI ne l'ajoute que hors Linux) ; **refusé par wslc** (`04-wslc.md` Q3) | m |
 | W2 | `workspaceMount`/`workspaceFolder` : obligatoires ensemble avec Dockerfile ? (divergence spec/CLI, cf. référence « points ambigus ») | `validate_devcontainer_contents` exige les deux ensemble (`json:308`) | plus strict que le CLI | m |
 | W3 | `mounts` chaîne ou objet ; dédoublonnage par `target` (dernier gagne) | chaîne/objet ✅ (`json:77-96`) ; pas de dédoublonnage ; chaîne `--mount` non échappée (virgule) | | m |
 | W4 | Source de bind-mount résolue par le **démon** | chemin client brut (`manifest:2146`) | correct seulement si client = hôte du démon (cf. 04) | ⚠️ |
@@ -107,7 +107,7 @@ Légende gravité : **B** bloquant (casse des configs courantes ou sécurité) �
 |---|---|---|---|---|
 | C1 | `service` obligatoire ; `runServices` | `json:308` ; `runServices` (#56293, fusionnée) | ✅ | ✅ |
 | C2 | Nom de projet : `COMPOSE_PROJECT_NAME` (env/.env) sinon dérivation CLI | `project_name`/`derive_project_name` (`manifest:2518, 2901`), aligné CLI | ✅ | ✅ |
-| C3 | Overrides générés (build + runtime) | `docker_compose_build.json` / `_runtime.json` à **noms fixes** dans `temp_dir` (`manifest:1170, 1269, 1336`) | collision entre projets simultanés | m |
+| C3 | Overrides générés (build + runtime) | `docker_compose_build.json` / `_runtime.json` à **noms fixes** dans `temp_dir` (`manifest:1170, 1269, 1336`) | collision entre projets **et** risque de sécurité sous Linux multi-utilisateur (liens symboliques / substitution dans `/tmp` partagé, cf. `01` §5) | **B** (sécurité, requalifié après `08`) |
 
 ## 11. Features
 

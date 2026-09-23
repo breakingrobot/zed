@@ -14,8 +14,8 @@ en production, tous locaux, et aucune abstraction d'exécution par laquelle ils 
 servent de sources de bind-mount, de labels d'identité et de contexte de build ; l'UI **refuse** d'ouvrir un
 Dev Container depuis un projet distant (`rp/recent_projects.rs:508-521`).
 
-Taille : `dc/` ≈ 15 070 lignes (manifest 8 718, json 1 757, lib 1 656, docker 1 347, api 676, oci 420,
-features 317, command_json 181).
+Taille (`wc -l`, corrigé après revue adverse `08` #40) : `dc/` = 16 726 lignes (manifest 9 787, json 1 892, lib 1 772,
+docker 1 493, api 756, oci 470, features 349, command_json 207). Les chiffres initiaux (15 070 / 8 718…) comptaient les lignes non vides.
 
 ## 1. Flux complet
 
@@ -90,7 +90,8 @@ flowchart TD
 ## 2. Lancements de processus
 
 Tous passent par `util::command::Command` (wrapper `smol::process::Command`, `util/src/command.rs:28-43` ; sous
-Windows : seulement `CREATE_NO_WINDOW`). **Aucun `.envs()`** dans `dc/` : l'env du projet ne sert qu'aux substitutions.
+Windows : seulement `CREATE_NO_WINDOW` ; **sous macOS : implémentation `posix_spawn` propre**, `command.rs:8-9` +
+`command/darwin.rs` — précisé après `08` #39). **Aucun `.envs()`** dans `dc/` : l'env du projet ne sert qu'aux substitutions.
 Total production : **30 sites** (17 `dc/`, 6 `rt/`, 6 `remote/src/transport.rs` en build dev uniquement, 1 `rp/`)
 + 16 invocations via exécuteurs génériques.
 
@@ -181,5 +182,5 @@ Candidats à des PRs de correction « une seule chose » (à recouper avec les P
 | `initializeCommand` : sauté sur réutilisation, exit≠0 ignoré, `/bin/sh` sous Windows | `manifest:2308`, `dc/devcontainer_json.rs:366-416` | moyenne |
 | `kill` absent sous Windows natif | `rt:646` | moyenne |
 | Échappement `\'` invalide ; `ENV` non échappé | `manifest:3027-3035, 1835-1838` | basse (entrée de confiance) |
-| Fichiers compose temporaires à noms fixes, `temp_dir` jamais nettoyé | `manifest:1170, 1269, 1336, 444` | basse |
+| Dossier temporaire **prévisible et partagé** `temp_dir()/devcontainer-zed/` (noms fixes pour les overrides compose), écrit par `RealFs::write` = `std::fs::write` (`fs/src/fs.rs:1037-1051`, **suit les liens symboliques**) ; sous Linux `/tmp` est commun à tous les utilisateurs → un autre utilisateur local peut pré-créer le dossier/des liens (écrasement de fichiers de la victime) ou substituer l'override compose lu ensuite par `docker compose -f` (service privilégié ⇒ root via docker). macOS/Windows : `temp_dir` par utilisateur, risque faible | `manifest:444, 1170, 1269, 1336` | **haute (sécurité, Linux multi-utilisateur)** — requalifié après `08` R-2 ; traitement **en suspens** comme les autres points sécurité |
 | `devcontainerId` via `DefaultHasher` | `manifest:113-124` | basse |

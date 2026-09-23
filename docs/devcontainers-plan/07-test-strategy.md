@@ -50,10 +50,19 @@ Base : `main` = `16c9aa7ea6`. Fixtures : `fixtures/` (décrites en §5). Aucune 
 
 ## 4. Capture d'argv de référence (préalable à C1)
 
-Méthode : un `CommandRunner`/`FakeDocker` qui enregistre `program + args + env + cwd` pour chaque site listé dans
-`01-current-architecture.md` §2 (17 sites `dev_container` + 6 `remote/transport/docker.rs`), exécuté sur les fixtures
-`lifecycle-forms`, `initialize-command`, `compose-basic` ; résultat sérialisé en fichiers `*.golden` versionnés **dans le
-crate** (pas dans ce dossier) lors de la PR C1. Critère : diff vide après introduction d'`EngineHost`.
+Révisé après la revue adverse (`08` F-2) : `util::command::Command` n'expose que `get_program`/`get_args`
+(`util/src/command.rs:59, 125`), **ni env ni cwd**, et plusieurs sites contournent `CommandRunner` (`id -u/-g`,
+`command_json.rs:35, 52`, `check_for_docker`, `Docker::new`). Méthode en deux temps :
+
+1. **PR préparatoire (dans C1)** : introduire `HostCommand { program, args, env, cwd, stdin }` et faire passer **tous** les
+   sites de `01` §2 par une fonction unique `EngineHost::command(&HostCommand)` ; en test, un enregistreur capture le
+   `HostCommand` complet **avant** conversion.
+2. Goldens `*.golden` (dans le crate, pas dans ce dossier) produits sur les fixtures `lifecycle-forms`, `initialize-command`,
+   `compose-basic`, puis comparés après chaque PR de la piste C. Pour la variante `Local`, un test vérifie en plus que la
+   conversion `HostCommand → Command` conserve `get_program`/`get_args`.
+
+Limite assumée : l'égalité « avant/après » ne peut pas être prouvée contre `main` pour env/cwd (non observables) ; elle l'est
+à partir de la PR préparatoire.
 
 ## 5. Fixtures fournies
 
