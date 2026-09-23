@@ -643,10 +643,7 @@ impl DockerExecConnection {
 
     fn kill_inner(&self) -> Result<()> {
         if let Some(pid) = self.proxy_process.lock().take() {
-            if let Ok(_) = util::command::new_command("kill")
-                .arg(pid.to_string())
-                .spawn()
-            {
+            if let Ok(_) = kill_process_command(pid).spawn() {
                 Ok(())
             } else {
                 Err(anyhow::anyhow!("Failed to kill process"))
@@ -654,6 +651,20 @@ impl DockerExecConnection {
         } else {
             Ok(())
         }
+    }
+}
+
+/// Builds the command that stops the local `docker exec` proxy process. Windows has
+/// no `kill` executable, so reconnecting to a dev container failed there before this.
+fn kill_process_command(pid: u32) -> util::command::Command {
+    if cfg!(target_os = "windows") {
+        let mut command = util::command::new_command("taskkill");
+        command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        command
+    } else {
+        let mut command = util::command::new_command("kill");
+        command.arg(pid.to_string());
+        command
     }
 }
 
@@ -939,6 +950,23 @@ fn redact_environment(assignment: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kills_the_proxy_with_a_command_available_on_the_platform() {
+        let command = kill_process_command(4242);
+        let arguments: Vec<_> = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(command.get_program(), "taskkill");
+            assert_eq!(arguments, ["/PID", "4242", "/T", "/F"]);
+        } else {
+            assert_eq!(command.get_program(), "kill");
+            assert_eq!(arguments, ["4242"]);
+        }
+    }
 
     #[test]
     fn redacts_forwarded_env() {
