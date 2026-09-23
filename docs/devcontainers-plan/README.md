@@ -10,10 +10,10 @@ Rien ici n'a été poussé ni posté. Base : `main` = `16c9aa7ea6` (2026-09-22).
 | 0 — Préparation | `raw/` (données GitHub brutes, `raw/INDEX.md` ; `gh` non authentifié → API REST publique) | ✅ |
 | 1 — Architecture actuelle | `01-current-architecture.md` | ✅ |
 | 2 — Contributions existantes | `02-contrib-*.md`, `02-overlap-matrix.md` | ✅ |
-| 🛑 Point d'arrêt 1 | | en attente de validation |
-| 3 — Conformité spec | `03-spec-compliance.md` | — |
-| 4 — Topologies (local, WSL, SSH, imbriqué, WSLc) | `04-topologies.md` | — |
-| 🛑 Point d'arrêt 2 | | — |
+| 🛑 Point d'arrêt 1 | | ✅ validé (2026-09-23) |
+| 3 — Conformité spec | `03-spec-reference.md` (spec + CLI réf., sourcé), `03-spec-compliance.md` | ✅ |
+| 4 — Topologies (local, WSL, SSH, imbriqué, WSLc) | `04-reference-topologies.md`, `04-wslc.md`, `04-topologies.md` | ✅ |
+| 🛑 Point d'arrêt 2 | questions ouvertes : `04-topologies.md` §6 | en attente de validation |
 | 5 — Architecture cible + ADRs | `05-target-architecture.md`, `adr/` | — |
 | 6 — Pile de PRs + message de coordination (brouillon) | `06-pr-stack.md` | — |
 | 7 — Stratégie de test + fixtures | `07-test-strategy.md`, `fixtures/` | — |

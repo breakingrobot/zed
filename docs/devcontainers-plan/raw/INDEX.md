@@ -1,6 +1,6 @@
 # Données GitHub brutes — index
 
-Récupérées le 2026-09-22 via l'API REST publique (non authentifiée, `gh` non connecté). Lecture seule.
+Récupérées le 2026-09-22 via l'API REST publique (non authentifiée), complétées le 2026-09-23 via `gh` authentifié (lecture seule).
 
 ## PRs suivies
 
@@ -76,3 +76,22 @@ Discussion #56252 : voir `discussion-56252.md` (résumé, non verbatim).
 | #47580 | issue | secondl1ght | Git commit not working in Zed UI inside devcontainer but working in terminal | 2026-01-25 |
 | #47422 | issue | bramvbilsen | Codex agent authentication via OpenAI account not possible in DevContainers | 2026-01-22 |
 | #47121 | issue | secondl1ght | SSH and GPG agents not forwarded to devcontainer | 2026-01-19 |
+
+## PRs connexes (via `gh`, 2026-09-23 ; fichiers `pr-<n>-gh.json`)
+
+| PR | État | Auteur | Titre | Diff | Revues | Commentaires MEMBER/OWNER |
+|---|---|---|---|---|---|---|
+| #63034 | open | pupeno | Preserve Docker exec command arguments | +318/−184 | — | 0 |
+| #62271 | open | voedipus | devcontainer: fix postStartCommand shell escaping in marker script | +15/−13 | — | 0 |
+| #63391 | open | shrirajh | dev_container: Fix string-form initializeCommand on Windows hosts | +179/−10 | — | 0 |
+| #62196 | open | Yuxin-Qiao | dev_container: Preserve Dockerfile USER in features image | +321/−12 | — | 0 |
+| #63899 | open | cmdr-chara | dev_container: Bind forwarded ports to loopback | +225/−1 | — | 0 |
+| #63613 | open | senid231 | remote: Fix switching git worktrees inside a dev container | +178/−31 | — | 0 |
+| #58500 | open | KyleBarton | Relabel mounts for podman/buildkit cases, to account for SELinux | +62/−1 | — | 0 |
+| #53170 | open | zdeneklapes | dev_container: Fix various startup issues | +685/−69 | — | 0 |
+| #64025 | open | harshaygadekar | dev_container: Support array and numeric feature options (#63978) | +127/−4 | copilot-pull-request-reviewer:COMMENTED, harshaygadekar:COMMENTED | 0 |
+| #63898 | merged (merged) | cole-miller | fs: Replace `GlobalWatcher` with an `OsWatcher` that contains one backend | +281/−352 | Anthony-Eid:APPROVED | 0 |
+
+Issue #62964 (open, jackdouglas) : « devcontainer: string-form lifecycle scripts lose their argument boundaries (v1.15.0 regression) » — reproduction de `sh -c "/bin/sh -c mkdir /tmp/zed-repro"` ; correctif proposé : #63034. Fichier `issue-62964-gh.json`.
+
+CI #60975 confirmée par `gh pr checks` : seul `verification/cla-signed`. CI #62680 : `route-pr` pass, 10 jobs `skipping`.
