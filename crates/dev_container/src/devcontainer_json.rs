@@ -151,6 +151,8 @@ pub(crate) struct ContainerBuild {
 }
 
 const CONTAINER_SHELL: &str = "/bin/sh";
+/// The name under which string and array lifecycle commands are stored.
+const DEFAULT_SCRIPT_NAME: &str = "default";
 
 #[derive(Clone, Debug, Serialize, Eq, PartialEq)]
 struct LifecycleScriptInternal {
@@ -411,7 +413,7 @@ impl LifecycleScript {
         Self::from_args(Self::shell_command(args))
     }
     fn from_args(args: Vec<String>) -> Self {
-        Self::from_map(HashMap::from([("default".to_string(), args)]))
+        Self::from_map(HashMap::from([(DEFAULT_SCRIPT_NAME.to_string(), args)]))
     }
     pub fn script_commands(&self) -> HashMap<String, Command> {
         self.commands(LifecycleScriptInternal::command)
@@ -448,6 +450,11 @@ impl LifecycleScript {
     ) -> Result<(), DevContainerError> {
         for (command_name, mut command) in self.host_script_commands() {
             log::debug!("Running script {command_name}");
+            let label = if command_name == DEFAULT_SCRIPT_NAME {
+                "initializeCommand".to_string()
+            } else {
+                format!("initializeCommand \"{command_name}\"")
+            };
 
             command.current_dir(working_directory);
 
@@ -456,16 +463,19 @@ impl LifecycleScript {
                 .await
                 .map_err(|e| {
                     log::error!("Error running command {command_name}: {e}");
-                    DevContainerError::CommandFailed(command_name.clone())
+                    DevContainerError::CommandFailed(label.clone())
                 })?;
+            let std_out = String::from_utf8_lossy(&output.stdout);
+            log::debug!("Command {command_name} output:\n {std_out}");
+            // The spec stops the whole lifecycle when a command fails, so a failing
+            // initializeCommand must not be followed by building or starting the container.
             if !output.status.success() {
                 let std_err = String::from_utf8_lossy(&output.stderr);
                 log::error!(
                     "Command {command_name} produced a non-successful output. StdErr: {std_err}"
                 );
+                return Err(DevContainerError::CommandFailed(label));
             }
-            let std_out = String::from_utf8_lossy(&output.stdout);
-            log::debug!("Command {command_name} output:\n {std_out}");
         }
         Ok(())
     }
