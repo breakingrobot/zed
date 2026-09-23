@@ -5052,6 +5052,7 @@ dependencies = [
  "serde_json_lenient",
  "serde_yaml",
  "settings",
+ "sha2",
  "shlex 1.3.0",
  "ui",
  "util",

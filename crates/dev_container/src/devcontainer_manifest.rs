@@ -111,16 +111,7 @@ impl DevContainerManifest {
     }
 
     fn devcontainer_id(&self) -> String {
-        let mut labels = self.identifying_labels();
-        labels.sort_by_key(|(key, _)| *key);
-
-        let mut hasher = DefaultHasher::new();
-        for (key, value) in &labels {
-            key.hash(&mut hasher);
-            value.hash(&mut hasher);
-        }
-
-        format!("{:016x}", hasher.finish())
+        devcontainer_id_for_labels(&self.identifying_labels())
     }
 
     fn identifying_labels(&self) -> Vec<(&str, String)> {
@@ -3446,6 +3437,42 @@ fn build_devcontainer_metadata_entry(
         .collect()
 }
 
+/// Computes `${devcontainerId}` the way the Dev Containers specification and the
+/// reference CLI do, so that volumes named after it are shared with other tools
+/// and stay stable across Zed releases: the SHA-256 of the identifying labels
+/// serialized as JSON with sorted keys, rendered as a 52 digit base-32 number.
+fn devcontainer_id_for_labels(labels: &[(&str, String)]) -> String {
+    use sha2::{Digest, Sha256};
+
+    const DIGITS: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
+    const ID_LENGTH: usize = 52;
+
+    let mut sorted_labels = labels.to_vec();
+    sorted_labels.sort_by_key(|(key, _)| *key);
+    let json = serde_json::Value::Object(
+        sorted_labels
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), serde_json::Value::String(value)))
+            .collect(),
+    );
+    let hash = Sha256::digest(json.to_string().as_bytes());
+
+    // 52 base-32 digits hold 260 bits, so the 256-bit hash is left-padded with 4 zero bits.
+    let padding_bits = ID_LENGTH * 5 - hash.len() * 8;
+    (0..ID_LENGTH)
+        .map(|digit_index| {
+            let digit = (0..5).fold(0, |digit, bit_in_digit| {
+                let bit_index = digit_index * 5 + bit_in_digit;
+                let bit = bit_index
+                    .checked_sub(padding_bits)
+                    .map_or(0, |hash_bit| (hash[hash_bit / 8] >> (7 - hash_bit % 8)) & 1);
+                (digit << 1) | bit as usize
+            });
+            DIGITS[digit] as char
+        })
+        .collect()
+}
+
 fn normalize_label_path(path: &str) -> String {
     #[cfg(not(target_os = "windows"))]
     {
@@ -3638,6 +3665,43 @@ mod test {
         .await?;
 
         Ok((test_dependencies, manifest))
+    }
+
+    #[test]
+    fn devcontainer_id_matches_the_reference_cli() {
+        // Expected values were produced by `devcontainerIdForLabels` from the
+        // reference implementation (devcontainers/cli, variableSubstitution.ts).
+        let cases = [
+            (
+                "/home/user/project",
+                "/home/user/project/.devcontainer/devcontainer.json",
+                "0ns9efvs2cg80a2avksvk7nqv06jrab7n2918j79h49700ucligl",
+            ),
+            (
+                r"c:\Users\me\project",
+                r"c:\Users\me\project\.devcontainer\devcontainer.json",
+                "0mfl1je66dl7bt18bbnht38aqjld5l92c85cabuki6e1d3nuk3nd",
+            ),
+            (
+                "/home/user/my project",
+                "/home/user/my project/.devcontainer.json",
+                "1m1qudhvf8dvnfme312qild43k7o3plfkpe577bp0bjisdsp6e1e",
+            ),
+        ];
+
+        for (local_folder, config_file, expected_id) in cases {
+            let labels = [
+                ("devcontainer.local_folder", local_folder.to_string()),
+                ("devcontainer.config_file", config_file.to_string()),
+            ];
+            assert_eq!(super::devcontainer_id_for_labels(&labels), expected_id);
+
+            let reversed_labels = [labels[1].clone(), labels[0].clone()];
+            assert_eq!(
+                super::devcontainer_id_for_labels(&reversed_labels),
+                expected_id
+            );
+        }
     }
 
     #[gpui::test]
@@ -5196,7 +5260,7 @@ ENV DOCKER_BUILDKIT=1
         assert!(
             runtime_config
                 .volumes
-                .contains_key("dind-var-lib-docker-42dad4b4ca7b8ced")
+                .contains_key("dind-var-lib-docker-1e5jbac1rssfqal2a6d6sgbn6phc23i7nvg0n8f8eo7kg9p2gsur")
         )
     }
 
