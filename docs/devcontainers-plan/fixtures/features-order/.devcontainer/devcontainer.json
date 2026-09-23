@@ -1,0 +1,11 @@
+{
+  "name": "features-order",
+  "image": "debian:12",
+  "features": {
+    "./features/c": {},
+    "./features/a": {
+      "flag": true
+    }
+  },
+  "postCreateCommand": "echo user >> /tmp/zed-fixture/feature-hooks"
+}

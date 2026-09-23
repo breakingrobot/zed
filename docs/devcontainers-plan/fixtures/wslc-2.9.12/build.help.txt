@@ -1,0 +1,30 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Génère une image à partir d'un fichier Dockerfile et d'un répertoire en contexte de compilation.
+
+Utilisation : wslc build [options] <path>
+
+Alias :
+  wslc image build, wslc build
+
+Arguments :
+  path  Chemin d’accès au répertoire du contexte de build
+
+Options :
+      --build-arg  Définir les variables au moment de la génération (KEY=VALUE)
+      --pull       Toujours essayer d’extraire une version plus récente de l’image
+      --target     Définissez l’étape de build cible sur build
+  -f  --file       Chemin d'accès au fichier Dockerfile (utilisez "-" pour lire depuis stdin)
+      --iidfile    Écrire l’ID d’image dans le chemin d’accès fourni
+  -l  --label      Définissez des métadonnées sur un objet
+      --no-cache   Ne pas utiliser le cache lors de la création de l’image
+  -o  --output     Destination de sortie de build (spécification de --output pour docker buildx ; par exemple, type=local,dest=path ou type=tar,dest=out.tar)
+      --progress   Définir le type de sortie de progression (auto, tty, plain, quiet) (par défaut : auto)
+      --secret     Exposer le secret à la build (id=NAME[,type=env|file][,env=VAR|,src=PATH]; variable d’environnement NAME par défaut)
+  -t  --tag        Étiquette de l'image construite
+      --verbose    Résultat des détails en mode verbeux
+  -?  --help       Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session    Spécifiez la session à utiliser

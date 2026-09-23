@@ -1,0 +1,51 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+WSLC est l’outil Sous-système Windows pour Linux Container CLI. Il permet la gestion et l’interaction avec WSL conteneurs de la ligne de commande.
+
+Utilisation : wslc [global-options] [<commande>] [options]
+
+Commandes :
+  container  Gérez les conteneurs.
+  image      Gérer les images.
+  network    Gérez les réseaux.
+  registry   Gérez les informations d’identification du Registre.
+  settings   Ouvrir le fichier de paramètres dans l’éditeur par défaut.
+  system     Commandes de niveau système
+  volume     Gérez les volumes.
+  attach     Joindre un conteneur.
+  build      Générer une image à partir d’un Dockerfile.
+  create     Créez un conteneur.
+  exec       Exécuter une commande dans un conteneur en cours d’exécution.
+  export     Exporter le système de fichiers d’un conteneur sous forme d’archive tar.
+  images     Lister les images.
+  import     Importer une image depuis un tarball.
+  info       Afficher les informations système.
+  inspect    Inspectez les objets.
+  kill       Arrêtez un ou plusieurs conteneurs en cours d’exécution.
+  list       Listez les conteneurs.
+  load       Chargez les images.
+  login      Connectez-vous à un registre.
+  logout     Déconnectez-vous d’un registre.
+  logs       Affichez les journaux du conteneur.
+  pull       Extraire les images.
+  push       Chargez une image dans un registre.
+  remove     Supprimer les conteneurs.
+  restart    Redémarrez les conteneurs.
+  rmi        Supprimez les images.
+  run        Exécutez un conteneur.
+  save       Enregistrer les images.
+  start      Démarrer un conteneur.
+  stats      Afficher les statistiques d’utilisation des ressources de conteneur.
+  stop       Arrêtez les conteneurs.
+  tag        Marquer une image.
+  version    Affichez les informations de version.
+
+Pour plus de détails sur une commande spécifique, passez-lui l’option help. [-?]
+
+Options :
+  -v  --version  Afficher les informations de la version de cet outil
+  -?  --help     Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session  Spécifiez la session à utiliser

@@ -1,0 +1,18 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Inspectez les objets.
+
+Utilisation : wslc inspect [options] <object-id>...
+
+Arguments :
+  object-id  Nom ou ID de tout type d’objet
+
+Options :
+  -t  --type     Type de l’objet à inspecter
+  -s  --size     Afficher la taille totale des fichiers si le type est conteneur
+  -f  --format   Formatage de sortie (json pour sortie sur une seule ligne) (Par défaut : JSON indenté)
+  -?  --help     Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session  Spécifiez la session à utiliser

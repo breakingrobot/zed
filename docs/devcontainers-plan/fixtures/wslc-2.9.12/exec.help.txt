@@ -1,0 +1,27 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Exécute une commande dans un conteneur en cours d’exécution.
+
+Utilisation : wslc exec [options] <container-id> <command> [<arguments>...]
+
+Alias :
+  wslc container exec, wslc exec
+
+Arguments :
+  container-id  ID de conteneur
+  command       La commande à exécuter
+  arguments     Arguments à passer à la commande en cours d’exécution dans le conteneur
+
+Options :
+  -d  --detach       Exécutez le conteneur en mode détaché
+  -e  --env          Paires Key=Value des variables d’environnement
+      --env-file     Fichier contenant des paires key=value de variables d’environnement
+  -i  --interactive  Connectez-vous à l'entrée standard et laissez-la ouverte
+  -t  --tty          Ouvrir un TTY avec le processus de conteneur.
+  -u  --user         ID utilisateur pour le processus (name|uid|uid:gid)
+  -w  --workdir      Répertoire de travail à l’intérieur du conteneur
+  -?  --help         Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session      Spécifiez la session à utiliser

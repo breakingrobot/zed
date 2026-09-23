@@ -1,0 +1,9 @@
+services:
+  app:
+    image: debian:12
+    command: sleep infinity
+    volumes:
+      - ..:/workspaces/compose-basic:cached
+  unused:
+    image: debian:12
+    command: sleep infinity

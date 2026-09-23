@@ -1,0 +1,10 @@
+{
+  "name": "env-secrets",
+  "image": "debian:12",
+  "containerEnv": {
+    "FIXTURE_TOKEN": "${localEnv:ZED_FIXTURE_TOKEN}"
+  },
+  "remoteEnv": {
+    "FIXTURE_REMOTE": "visible-${containerEnv:FIXTURE_TOKEN}"
+  }
+}

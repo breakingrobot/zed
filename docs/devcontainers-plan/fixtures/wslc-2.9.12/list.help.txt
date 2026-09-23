@@ -1,0 +1,23 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Listes des conteneurs. Par défaut, seuls les conteneurs en cours d’exécution sont affichés ; utilisez --all pour inclure tous les conteneurs.
+
+Utilisation : wslc list [options]
+
+Alias :
+  wslc container list, wslc container ls, wslc container ps, wslc list, wslc ls, wslc ps
+
+Options :
+  -a  --all       Affichez tout, quel que soit l’état.
+  -f  --filter    Filtrer la sortie en fonction des conditions fournies
+      --format    Mise en forme de sortie (json ou table) (Par défault: table)
+  -n  --last      Afficher n derniers conteneurs créés (inclut tous les états)
+  -l  --latest    Afficher le dernier conteneur créé (inclut tous les états)
+      --no-trunc  Ne tronquez pas la sortie
+  -q  --quiet     Affiche uniquement les ID des conteneurs
+  -s  --size      Display total file sizes
+  -?  --help      Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session   Spécifiez la session à utiliser

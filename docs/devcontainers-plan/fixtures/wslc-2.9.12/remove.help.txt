@@ -1,0 +1,20 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Supprime les conteneurs.
+
+Utilisation : wslc remove [options] <container-id>...
+
+Alias :
+  wslc container remove, wslc container delete, wslc container rm, wslc remove, wslc delete, wslc rm
+
+Arguments :
+  container-id  ID de conteneur
+
+Options :
+  -f  --force    Supprimer les conteneurs même s'ils sont en cours d'exécution
+  -v  --volumes  Supprimer les volumes anonymes associés au conteneur
+  -?  --help     Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session  Spécifiez la session à utiliser

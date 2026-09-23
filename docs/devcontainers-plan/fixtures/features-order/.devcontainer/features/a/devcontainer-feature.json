@@ -1,0 +1,12 @@
+{
+  "id": "a",
+  "version": "1.0.0",
+  "name": "fixture a",
+  "options": {
+    "flag": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "postCreateCommand": "echo a >> /tmp/zed-fixture/feature-hooks"
+}

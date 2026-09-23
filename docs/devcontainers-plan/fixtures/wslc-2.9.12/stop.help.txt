@@ -1,0 +1,20 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Arrête les conteneurs.
+
+Utilisation : wslc stop [options] <container-id>...
+
+Alias :
+  wslc container stop, wslc stop
+
+Arguments :
+  container-id  ID de conteneur
+
+Options :
+  -s  --signal   Signal à envoyer (par défaut : STOPSIGNAL configuré du conteneur, ou SIGTERM si aucun n’est configuré)
+  -t  --time     Secondes à attendre avant de tuer le conteneur (par défaut : délai d’expiration d’arrêt configuré du conteneur)
+  -?  --help     Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session  Spécifiez la session à utiliser

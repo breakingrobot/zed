@@ -1,0 +1,34 @@
+{
+  "algorithm": "JSON.stringify(labels, sortedKeys) -> sha256(utf8) -> BigInt(hex).toString(32).padStart(52,'0')",
+  "source": "devcontainers/cli@5dc7533314 src/spec-common/variableSubstitution.ts:161-171; spec devcontainer-features.md:142-164",
+  "note": "Computed in Python and cross-checked (MATCH x3) with Node running devcontainerIdForLabels copied verbatim from devcontainers/cli@5dc7533314 (2026-09-23).",
+  "vectors": [
+    {
+      "id_labels": {
+        "devcontainer.local_folder": "/home/user/project",
+        "devcontainer.config_file": "/home/user/project/.devcontainer/devcontainer.json"
+      },
+      "stringified": "{\"devcontainer.config_file\":\"/home/user/project/.devcontainer/devcontainer.json\",\"devcontainer.local_folder\":\"/home/user/project\"}",
+      "sha256_hex": "5f8973ffc132080284afd39fa1efaf80d3da967b892144ce989127003ccaca15",
+      "devcontainer_id": "0ns9efvs2cg80a2avksvk7nqv06jrab7n2918j79h49700ucligl"
+    },
+    {
+      "id_labels": {
+        "devcontainer.local_folder": "c:\\Users\\me\\project",
+        "devcontainer.config_file": "c:\\Users\\me\\project\\.devcontainer\\devcontainer.json"
+      },
+      "stringified": "{\"devcontainer.config_file\":\"c:\\\\Users\\\\me\\\\project\\\\.devcontainer\\\\devcontainer.json\",\"devcontainer.local_folder\":\"c:\\\\Users\\\\me\\\\project\"}",
+      "sha256_hex": "59f50cdc6336a75f4285aef1e8d0ad4ead2d522620ac52fd4919c168efea0eed",
+      "devcontainer_id": "0mfl1je66dl7bt18bbnht38aqjld5l92c85cabuki6e1d3nuk3nd"
+    },
+    {
+      "id_labels": {
+        "devcontainer.local_folder": "/home/user/my project",
+        "devcontainer.config_file": "/home/user/my project/.devcontainer.json"
+      },
+      "stringified": "{\"devcontainer.config_file\":\"/home/user/my project/.devcontainer.json\",\"devcontainer.local_folder\":\"/home/user/my project\"}",
+      "sha256_hex": "d83af363f7a1bfbbece1845a955a41d0f81e6afa65c539d7902e72e37993382e",
+      "devcontainer_id": "1m1qudhvf8dvnfme312qild43k7o3plfkpe577bp0bjisdsp6e1e"
+    }
+  ]
+}

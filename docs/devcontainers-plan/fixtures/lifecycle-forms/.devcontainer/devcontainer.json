@@ -1,0 +1,23 @@
+{
+  "name": "lifecycle-forms",
+  "image": "debian:12",
+  "onCreateCommand": "mkdir -p /tmp/zed-fixture && echo created > /tmp/zed-fixture/on-create",
+  "updateContentCommand": [
+    "/bin/sh",
+    "-c",
+    "echo 'two words' > /tmp/zed-fixture/update-content"
+  ],
+  "postCreateCommand": {
+    "first": "echo a > /tmp/zed-fixture/post-create-a",
+    "second": [
+      "touch",
+      "/tmp/zed-fixture/post create b"
+    ]
+  },
+  "postStartCommand": "date +%s >> /tmp/zed-fixture/post-start",
+  "postAttachCommand": [
+    "sh",
+    "-c",
+    "echo \"$HOME\" > /tmp/zed-fixture/post-attach"
+  ]
+}

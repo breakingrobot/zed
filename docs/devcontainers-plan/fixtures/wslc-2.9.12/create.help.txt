@@ -1,0 +1,58 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Crée un conteneur.
+
+Utilisation : wslc create [options] <image> [<command>] [<arguments>...]
+
+Alias :
+  wslc container create, wslc create
+
+Arguments :
+  image      Nom de l’image
+  command    La commande à exécuter
+  arguments  Arguments à passer au processus d'initialisation du conteneur
+
+Options :
+      --cidfile              Écrire l’ID de conteneur dans le chemin d’accès fourni
+      --cpus                 Nombre d’UC (par exemple, 0.5, 1, 2.5)
+      --dns                  Adresse IP du serveur de noms DNS dans resolv.conf
+      --dns-option           Définir les options DNS
+      --dns-search           Set DNS search domains
+      --domainname           Nom de domaine du conteneur
+      --entrypoint           Spécifie l’exécutable du processus d’initialisation du conteneur
+  -e  --env                  Paires Key=Value des variables d’environnement
+      --env-file             Fichier contenant des paires key=value de variables d’environnement
+      --gpus                 Add GPU devices to the container ('all' to pass all GPUs)
+      --health-cmd           Commande à exécuter pour vérifier l’intégrité du conteneur
+      --health-interval      Délai entre l’exécution du contrôle d’intégrité (par exemple, 30s, 1m30s)
+      --health-retries       Échecs consécutifs nécessaires pour signaler le conteneur comme non sain
+      --health-start-period  Période de démarrage pour l’initialisation du conteneur avant le compte à rebours de vérification d’intégrité (par exemple 30s, 1m30s)
+      --health-timeout       Durée maximale d’exécution d’un contrôle d’intégrité (par exemple, 30s, 1m30s)
+  -h  --hostname             Nom d’hôte du conteneur
+  -i  --interactive          Connectez-vous à l'entrée standard et laissez-la ouverte
+      --ip                   Attribuer au conteneur une adresse IPv4 sur le réseau
+  -l  --label                Définissez des métadonnées sur un objet
+  -m  --memory               Limite de mémoire (par exemple 512M, 1G)
+      --mount                Attacher un montage de système de fichiers au conteneur
+      --name                 Nom du conteneur
+      --network              Connectez un conteneur à un réseau
+      --network-alias        Ajouter un alias étendu au réseau pour le conteneur
+      --no-healthcheck       Désactiver toute vérification d’intégrité spécifiée par le conteneur
+  -p  --publish              Publier un port d’un conteneur sur l’hôte
+  -P  --publish-all          Publier tous les ports exposés sur des ports aléatoires de l’hôte
+      --pull                 Politique d’extraction d’image (always|missing|never) (par défaut : missing)
+      --rm                   Supprimez le conteneur après son arrêt
+      --shm-size             Taille de /dev/shm (par exemple, 64 Mo, 1 G)
+      --stop-signal          Signal pour arrêter le conteneur
+      --stop-timeout         Délai d’expiration (en secondes) pour arrêter le conteneur avant de le supprimer (-1 sans délai d’expiration)
+      --tmpfs                Monter tmpfs sur le conteneur au chemin donné
+  -t  --tty                  Ouvrir un TTY avec le processus de conteneur.
+      --ulimit               Options Ulimit (format : <name>=<soft>[:<hard>], utilisez -1 pour un nombre illimité)
+  -u  --user                 ID utilisateur pour le processus (name|uid|uid:gid)
+  -v  --volume               Lier le montage d’un volume sur le conteneur
+  -w  --workdir              Répertoire de travail à l’intérieur du conteneur
+  -?  --help                 Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session              Spécifiez la session à utiliser

@@ -1,0 +1,32 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Gérez le cycle de vie des conteneurs WSL, notamment leur création, leur démarrage, leur arrêt et leur suppression.
+
+Utilisation : wslc container [<commande>] [options]
+
+Commandes :
+  attach   Joindre un conteneur.
+  cp       Copier des fichiers entre un conteneur et le système de fichiers local.
+  create   Créez un conteneur.
+  exec     Exécuter une commande dans un conteneur en cours d’exécution.
+  export   Exporter le système de fichiers d’un conteneur sous forme d’archive tar.
+  inspect  Inspecter un conteneur.
+  kill     Arrêtez un ou plusieurs conteneurs en cours d’exécution.
+  logs     Affichez les journaux du conteneur.
+  list     Listez les conteneurs.
+  prune    Supprimez tous les conteneurs arrêtés.
+  remove   Supprimer les conteneurs.
+  restart  Redémarrez les conteneurs.
+  run      Exécutez un conteneur.
+  start    Démarrer un conteneur.
+  stats    Afficher les statistiques d’utilisation des ressources de conteneur.
+  stop     Arrêtez les conteneurs.
+
+Pour plus de détails sur une commande spécifique, passez-lui l’option help. [-?]
+
+Options :
+  -?  --help     Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session  Spécifiez la session à utiliser

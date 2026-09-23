@@ -1,0 +1,20 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Démarre un conteneur.
+
+Utilisation : wslc start [options] <container-id>
+
+Alias :
+  wslc container start, wslc start
+
+Arguments :
+  container-id  ID de conteneur
+
+Options :
+  -a  --attach       Se connecter à la sortie standard/à la sortie d'erreur standard du conteneur
+  -i  --interactive  Connectez-vous à l'entrée standard et laissez-la ouverte
+  -?  --help         Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session      Spécifiez la session à utiliser

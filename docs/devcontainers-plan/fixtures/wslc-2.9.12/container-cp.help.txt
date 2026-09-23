@@ -1,0 +1,22 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Copiez des fichiers entre un conteneur et le système de fichiers local.
+Utilisation : wslc container cp [OPTIONS] SOURCE DEST
+  Du système local vers le conteneur : wslc container cp LOCAL_PATH CONTAINER:PATH
+  Du conteneur vers le système local : wslc container cp CONTAINER:PATH LOCAL_PATH
+  De l’entrée standard vers le conteneur : wslc container cp – CONTAINER:PATH
+
+Utilisation : wslc container cp [options] <source> <target>
+
+Arguments :
+  source  Source : chemin local, CONTAINER:PATH ou '-' pour stdin
+  target  Destination : chemin d’accès local ou CONTAINER:PATH
+
+Options :
+  -a  --archive  Mode archive (accepté pour la compatibilité avec l’interface de ligne de commande Docker)
+  -q  --quiet    Suppress progress output during copy
+  -?  --help     Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session  Spécifiez la session à utiliser

@@ -1,0 +1,5 @@
+{
+  "name": "initialize-command",
+  "image": "debian:12",
+  "initializeCommand": "echo init > .devcontainer/initialized.txt"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "c",
+  "version": "1.0.0",
+  "name": "fixture c",
+  "options": {
+    "flag": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "postCreateCommand": "echo c >> /tmp/zed-fixture/feature-hooks",
+  "dependsOn": {
+    "./features/b": {}
+  }
+}

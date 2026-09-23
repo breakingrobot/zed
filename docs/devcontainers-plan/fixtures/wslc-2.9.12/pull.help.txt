@@ -1,0 +1,19 @@
+Copyright (c) Microsoft Corporation. Tous droits réservés.
+Pour plus d’informations sur la confidentialité de ce produit, veuillez consulter https://aka.ms/privacy.
+
+Extrait les images.
+
+Utilisation : wslc pull [options] <image>
+
+Alias :
+  wslc image pull, wslc pull
+
+Arguments :
+  image  Nom de l’image
+
+Options :
+  -q  --quiet    Masquer le résultat détaillé
+  -?  --help     Affiche l’aide sur la commande sélectionnée
+
+Options globales :
+      --session  Spécifiez la session à utiliser
