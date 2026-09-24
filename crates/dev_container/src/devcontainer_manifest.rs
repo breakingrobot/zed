@@ -4875,7 +4875,11 @@ mod test {
         let home_directory = temporary_home_directory("create-hook-markers");
         let created_at = "2026-06-23T09:59:00Z";
 
-        for hook in ["onCreateCommand", "updateContentCommand", "postCreateCommand"] {
+        for hook in [
+            "onCreateCommand",
+            "updateContentCommand",
+            "postCreateCommand",
+        ] {
             let first = run_shell_command(
                 super::lifecycle_marker_command(hook, created_at, "container-user"),
                 &home_directory,
