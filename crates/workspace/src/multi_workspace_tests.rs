@@ -70,6 +70,7 @@ fn dev_container_project_group_key_is_stable_across_rebuilds() {
                     use_podman: false,
                     remote_env: Default::default(),
                     host: Default::default(),
+                    forward_ports: Vec::new(),
                 },
             )),
             paths.clone(),

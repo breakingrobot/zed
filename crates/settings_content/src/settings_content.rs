@@ -1403,6 +1403,9 @@ pub struct DevContainerConnection {
     pub ssh_port: Option<u16>,
     /// Extra `ssh` arguments used to reach `ssh_host`.
     pub ssh_args: Option<Vec<String>>,
+    /// Ports the container publishes on its engine host, which Zed forwards to
+    /// this machine when that host is reached over SSH.
+    pub forward_ports: Option<Vec<u16>>,
 }
 
 #[with_fallible_options]

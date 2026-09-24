@@ -67,6 +67,10 @@ pub struct DockerConnectionOptions {
     /// this existed ran the engine locally.
     #[serde(default)]
     pub host: EngineHost,
+    /// Ports the container publishes on `host`, forwarded to this machine while
+    /// connected when `host` is reached over SSH.
+    #[serde(default)]
+    pub forward_ports: Vec<u16>,
 }
 
 impl DockerConnectionOptions {
@@ -845,7 +849,13 @@ impl RemoteConnection for DockerExecConnection {
         if reconnect {
             docker_args.push("--reconnect".to_string());
         }
-        let mut command = self.docker_command(&docker_args);
+        // The proxy lives as long as the connection, and so do its port forwards.
+        let mut host_command = self.connection_options.host.command(self.docker_cli());
+        host_command.args(&docker_args);
+        for port in &self.connection_options.forward_ports {
+            host_command.forward_port(*port);
+        }
+        let mut command = host_command.to_command();
         command
             .kill_on_drop(true)
             .stdin(Stdio::piped())
@@ -1225,6 +1235,7 @@ mod tests {
                     .map(|(key, value)| (key.to_string(), value.to_string()))
                     .collect(),
                 host: EngineHost::Local,
+                forward_ports: Vec::new(),
             },
             remote_platform: None,
             os_version: None,

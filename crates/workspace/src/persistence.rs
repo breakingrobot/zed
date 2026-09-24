@@ -2151,6 +2151,8 @@ impl WorkspaceDb {
                     host: engine_host
                         .and_then(|host| serde_json::from_str(&host).log_err())
                         .unwrap_or_default(),
+                    // Known once the container is up; not stored.
+                    forward_ports: Vec::new(),
                 }))
             }
         }
@@ -4460,6 +4462,7 @@ mod tests {
                 use_podman: false,
                 remote_env: BTreeMap::default(),
                 host: Default::default(),
+                forward_ports: Vec::new(),
             })
         };
 
@@ -4502,6 +4505,7 @@ mod tests {
             use_podman: false,
             remote_env: BTreeMap::default(),
             host: Default::default(),
+            forward_ports: Vec::new(),
         });
         let different = db
             .get_or_create_remote_connection(other_config)
@@ -4530,6 +4534,7 @@ mod tests {
                 use_podman: false,
                 remote_env: BTreeMap::default(),
                 host,
+                forward_ports: Vec::new(),
             })
         };
 

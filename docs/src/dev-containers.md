@@ -55,6 +55,7 @@ You can open a dev container from a project on a Linux or macOS machine you reac
 - SSH must log in without a prompt, for example with a key from your SSH agent or an `IdentityFile` in `~/.ssh/config`. Zed runs `ssh` with `BatchMode=yes` and does not store passwords.
 - `initializeCommand` runs on the SSH host, from your project folder.
 - `${localEnv:VAR}` reads the environment of a login shell on the SSH host.
+- While connected, Zed forwards numeric `forwardPorts` and `appPort` from the SSH host to the same ports on your machine.
 - Zed copies the files it generates for builds (feature content, compose overrides) to a temporary folder on the host, and removes it after the build.
 
 To open one, open your project over SSH, then run "Reopen in Dev Container" from the prompt or choose "Connect Dev Container" in the Remote Projects modal.
@@ -101,7 +102,7 @@ Note that extensions load for the Zed session, so these extensions will exist on
 - **Configuration changes:** Updates to `devcontainer.json` do not trigger automatic rebuilds or reloads; containers must be manually restarted.
 - **Remote projects:** Dev containers open from local, WSL, and SSH projects. SSH hosts running Windows are not supported.
 - **SSH hosts:** The login shell on the host must be POSIX-compatible (such as `bash`, `zsh`, or `sh`).
-- **Ports on SSH hosts:** Numeric `forwardPorts` and `appPort` are published on the SSH host, not on your machine. To reach one, forward it yourself, for example `ssh -L 3000:localhost:3000 your-host`.
+- **Ports on SSH hosts:** If a port that Zed forwards from an SSH host is already in use on your machine, that port is not forwarded.
 
 ## See also
 
