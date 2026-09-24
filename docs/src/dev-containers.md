@@ -62,10 +62,19 @@ To open one, open your project over SSH, then run "Reopen in Dev Container" from
 
 ## Editing the dev container configuration
 
-If you modify `.devcontainer/devcontainer.json`, Zed does not currently rebuild or reload the container automatically. After changing configuration:
+If you modify `.devcontainer/devcontainer.json`, Zed does not rebuild or reload the container automatically. After changing configuration, run {#action projects::RebuildDevContainer} from the dev container window: Zed removes the container, builds it again and reconnects.
 
-- Stop or kill the existing container manually (e.g., via `docker kill <container>`).
-- Reopen the project in the container.
+## Managing a Dev Container {#managing}
+
+From a dev container window, the command palette and the dev container menu in the title bar offer:
+
+- {#action projects::ReconnectDevContainer}: reconnects, starting the container first if it stopped.
+- {#action projects::RestartDevContainer}: stops and starts the container, which ends every process in it, then reconnects.
+- {#action projects::RebuildDevContainer}: removes the container, builds it again and reconnects.
+- {#action projects::StopDevContainer}: stops the container and reopens the project on its host.
+- {#action projects::DeleteDevContainer}: stops and removes the container, then reopens the project on its host. Anything not stored in the project folder or a volume is lost.
+
+These actions work the same for containers running locally, in WSL, or on an SSH host.
 
 ## Working in a Dev Container
 
@@ -99,7 +108,7 @@ Note that extensions load for the Zed session, so these extensions will exist on
 
 > **Note:** This feature is still in development.
 
-- **Configuration changes:** Updates to `devcontainer.json` do not trigger automatic rebuilds or reloads; containers must be manually restarted.
+- **Configuration changes:** Updates to `devcontainer.json` do not trigger an automatic rebuild; run Rebuild Dev Container.
 - **Remote projects:** Dev containers open from local, WSL, and SSH projects. SSH hosts running Windows are not supported.
 - **SSH hosts:** The login shell on the host must be POSIX-compatible (such as `bash`, `zsh`, or `sh`).
 - **Ports on SSH hosts:** If a port that Zed forwards from an SSH host is already in use on your machine, that port is not forwarded.
