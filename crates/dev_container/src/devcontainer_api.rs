@@ -82,6 +82,8 @@ pub enum DevContainerError {
     DevContainerTemplateApplyFailed(String),
     DevContainerScriptsFailed,
     DevContainerUpFailed(String),
+    /// The project's setup can't work with dev containers; the message says why.
+    UnsupportedSetup(String),
     DevContainerNotFound,
     DevContainerParseFailed,
     DevContainerValidationFailed(String),
@@ -114,6 +116,7 @@ impl Display for DevContainerError {
                 DevContainerError::DevContainerUpFailed(_) => {
                     "DevContainer creation failed".to_string()
                 }
+                DevContainerError::UnsupportedSetup(reason) => reason.clone(),
                 DevContainerError::DevContainerTemplateApplyFailed(_) => {
                     "DevContainer template apply failed".to_string()
                 }
@@ -358,6 +361,16 @@ pub async fn start_dev_container_with_config(
 }
 
 async fn check_for_docker(context: &DevContainerContext) -> Result<(), DevContainerError> {
+    if context.engine_host.is_local()
+        && let Ok(docker_host) = std::env::var("DOCKER_HOST")
+        && is_remote_engine_endpoint(&docker_host)
+    {
+        return Err(DevContainerError::UnsupportedSetup(format!(
+            "DOCKER_HOST points to a container engine on another machine ({docker_host}), \
+             which can't mount this project's folders. Open the project over SSH on that \
+             machine instead."
+        )));
+    }
     let cli = if context.use_podman {
         "podman"
     } else {
@@ -373,6 +386,23 @@ async fn check_for_docker(context: &DevContainerContext) -> Result<(), DevContai
             Err(DevContainerError::DockerNotAvailable)
         }
     }
+}
+
+/// Whether a `DOCKER_HOST` value designates an engine on another machine.
+fn is_remote_engine_endpoint(docker_host: &str) -> bool {
+    if docker_host.starts_with("ssh://") {
+        return true;
+    }
+    let Some(address) = docker_host.strip_prefix("tcp://") else {
+        // `unix://`, `npipe://` and friends are local.
+        return false;
+    };
+    let host = address
+        .rsplit_once(':')
+        .map_or(address, |(host, _port)| host)
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    !(host == "localhost" || host == "::1" || host.starts_with("127."))
 }
 
 pub(crate) async fn apply_devcontainer_template(
@@ -539,6 +569,27 @@ fn get_backup_project_name(remote_workspace_folder: &str, container_id: &str) ->
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    #[test]
+    fn recognizes_engines_on_other_machines() {
+        for remote in [
+            "ssh://dev@build.example.com",
+            "tcp://build.example.com:2376",
+            "tcp://10.0.0.5:2375",
+            "tcp://[2001:db8::1]:2376",
+        ] {
+            assert!(super::is_remote_engine_endpoint(remote), "{remote}");
+        }
+        for local in [
+            "unix:///var/run/docker.sock",
+            "npipe:////./pipe/docker_engine",
+            "tcp://localhost:2375",
+            "tcp://127.0.0.1:2375",
+            "tcp://[::1]:2375",
+        ] {
+            assert!(!super::is_remote_engine_endpoint(local), "{local}");
+        }
+    }
 
     use crate::devcontainer_api::{DevContainerConfig, find_configs_in_snapshot};
     use fs::FakeFs;

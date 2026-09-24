@@ -173,18 +173,43 @@ struct DevContainerSettings {
 /// Where the container engine of `project`'s dev containers runs: where its
 /// sources are. `None` when dev containers can't be opened from it.
 pub fn engine_host_for_project(project: &Project, cx: &App) -> Option<EngineHost> {
+    engine_host_or_unsupported_reason(project, cx).ok()
+}
+
+/// Why dev containers can't be opened from `project`, to tell the user; `None`
+/// when they can.
+pub fn unsupported_reason(project: &Project, cx: &App) -> Option<&'static str> {
+    engine_host_or_unsupported_reason(project, cx).err()
+}
+
+fn engine_host_or_unsupported_reason(
+    project: &Project,
+    cx: &App,
+) -> Result<EngineHost, &'static str> {
+    // A guest's project has no connection of its own: its files are the host's.
+    if project.is_via_collab() {
+        return Err("Dev containers can't be opened from a project shared with you.");
+    }
     match project.remote_connection_options(cx) {
-        None => Some(EngineHost::Local),
+        None => Ok(EngineHost::Local),
         // Zed reaches the distribution's files over `\\wsl.localhost`.
-        Some(RemoteConnectionOptions::Wsl(options)) => Some(EngineHost::Wsl(options)),
+        Some(RemoteConnectionOptions::Wsl(options)) => Ok(EngineHost::Wsl(options)),
         Some(RemoteConnectionOptions::Ssh(options)) => {
             // Commands and paths on the host are POSIX.
             let is_posix = project
                 .remote_client()
                 .is_some_and(|client| client.read(cx).path_style() == PathStyle::Unix);
-            is_posix.then(|| EngineHost::Ssh(SshEngineHost::from(&options)))
+            if is_posix {
+                Ok(EngineHost::Ssh(SshEngineHost::from(&options)))
+            } else {
+                Err("Dev containers over SSH need a Linux or macOS host.")
+            }
         }
-        Some(_) => None,
+        Some(RemoteConnectionOptions::Docker(_)) => {
+            Err("This project is already open in a dev container.")
+        }
+        #[allow(unreachable_patterns)]
+        Some(_) => Err("Dev containers can't be opened from this kind of remote project."),
     }
 }
 
