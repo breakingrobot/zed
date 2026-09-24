@@ -6,7 +6,7 @@ pub mod remote_client;
 pub mod remote_identity;
 mod transport;
 
-pub use engine_host::{EngineHost, HostCommand};
+pub use engine_host::{EngineHost, HostCommand, SshEngineHost};
 #[cfg(target_os = "windows")]
 pub use remote_client::OpenWslPath;
 pub use remote_client::{

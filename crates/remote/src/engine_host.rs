@@ -6,7 +6,7 @@ use std::{
 
 use util::command::{Command, Stdio};
 
-use crate::WslConnectionOptions;
+use crate::{SshConnectionOptions, WslConnectionOptions};
 
 /// The machine where a dev container's engine CLI (`docker`, `podman`) runs.
 ///
@@ -30,6 +30,42 @@ pub enum EngineHost {
     Local,
     /// A WSL distribution of the Windows machine running Zed.
     Wsl(WslConnectionOptions),
+    /// A POSIX machine reached over SSH.
+    Ssh(SshEngineHost),
+}
+
+/// How to reach an SSH engine host. It is persisted with the connection, so it
+/// never holds secrets such as passwords: authentication must not prompt.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct SshEngineHost {
+    pub host: String,
+    pub username: Option<String>,
+    pub port: Option<u16>,
+    /// Extra `ssh` arguments, such as `-i <identity file>`.
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+impl From<&SshConnectionOptions> for SshEngineHost {
+    fn from(options: &SshConnectionOptions) -> Self {
+        Self {
+            host: options.host.to_string(),
+            username: options.username.clone(),
+            port: options.port,
+            args: options.args.clone().unwrap_or_default(),
+        }
+    }
 }
 
 impl EngineHost {
@@ -41,6 +77,7 @@ impl EngineHost {
             args: Vec::new(),
             env: Vec::new(),
             current_dir: None,
+            interactive: false,
         }
     }
 
@@ -48,12 +85,19 @@ impl EngineHost {
         matches!(self, Self::Local)
     }
 
+    /// Whether the machine running Zed can open the host's files directly, as
+    /// [`Self::local_path`] returns them. When it cannot, they are read and
+    /// written by running commands on the host.
+    pub fn has_local_files(&self) -> bool {
+        !matches!(self, Self::Ssh(_))
+    }
+
     /// Whether the host runs Windows, which decides how shell scripts run on it
     /// and how its paths look.
     pub fn is_windows(&self) -> bool {
         match self {
             Self::Local => cfg!(windows),
-            Self::Wsl(_) => false,
+            Self::Wsl(_) | Self::Ssh(_) => false,
         }
     }
 
@@ -63,6 +107,8 @@ impl EngineHost {
         match self {
             Self::Local => local.display().to_string(),
             Self::Wsl(options) => wsl_host_path(&local.to_string_lossy(), &options.distro_name),
+            // SSH paths are POSIX; a Windows client joins them with backslashes.
+            Self::Ssh(_) => local.to_string_lossy().replace('\\', "/"),
         }
     }
 
@@ -76,6 +122,7 @@ impl EngineHost {
                 options.distro_name,
                 host.replace('/', r"\")
             )),
+            Self::Ssh(_) => PathBuf::from(host),
         }
     }
 }
@@ -130,6 +177,7 @@ pub struct HostCommand {
     args: Vec<String>,
     env: Vec<(String, String)>,
     current_dir: Option<String>,
+    interactive: bool,
 }
 
 impl HostCommand {
@@ -157,6 +205,12 @@ impl HostCommand {
     /// Sets the working directory, a path on the host.
     pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
         self.current_dir = Some(dir.as_ref().to_string_lossy().into_owned());
+        self
+    }
+
+    /// Whether the command talks to a terminal, e.g. an interactive shell.
+    pub fn interactive(&mut self, interactive: bool) -> &mut Self {
+        self.interactive = interactive;
         self
     }
 
@@ -191,7 +245,49 @@ impl HostCommand {
                 command.args(self.wsl_args(options));
                 command
             }
+            EngineHost::Ssh(options) => {
+                let mut command = Command::new("ssh");
+                command.args(self.ssh_args(options));
+                command
+            }
         }
+    }
+
+    /// `ssh` hands the remote command to the user's login shell as a single
+    /// string, so every part of it is quoted for a POSIX shell.
+    fn ssh_args(&self, options: &SshEngineHost) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(port) = options.port {
+            args.extend(["-p".to_string(), port.to_string()]);
+        }
+        args.extend(options.args.iter().cloned());
+        // Fail instead of waiting for a password nobody can type.
+        args.extend(["-o".to_string(), "BatchMode=yes".to_string()]);
+        args.push(if self.interactive { "-t" } else { "-T" }.to_string());
+        args.push(match &options.username {
+            Some(username) => format!("{username}@{}", options.host),
+            None => options.host.clone(),
+        });
+        args.push("--".to_string());
+
+        let mut script = String::new();
+        if let Some(dir) = &self.current_dir {
+            script.push_str(&format!("cd {} && ", posix_quote(dir)));
+        }
+        script.push_str("exec");
+        if !self.env.is_empty() {
+            script.push_str(" env");
+            for (key, value) in &self.env {
+                script.push(' ');
+                script.push_str(&posix_quote(&format!("{key}={value}")));
+            }
+        }
+        for part in std::iter::once(&self.program).chain(&self.args) {
+            script.push(' ');
+            script.push_str(&posix_quote(part));
+        }
+        args.push(script);
+        args
     }
 
     /// `wsl.exe --exec` runs the program without a shell, so the arguments reach it
@@ -234,6 +330,11 @@ impl HostCommand {
         }
         child.output().await
     }
+}
+
+/// Quotes `value` as a single word for a POSIX shell.
+fn posix_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 impl std::fmt::Display for HostCommand {
@@ -322,6 +423,71 @@ mod tests {
     fn only_local_windows_hosts_are_windows() {
         assert_eq!(EngineHost::Local.is_windows(), cfg!(windows));
         assert!(!wsl(None).is_windows());
+        assert!(!ssh().is_windows());
+    }
+
+    fn ssh() -> EngineHost {
+        EngineHost::Ssh(SshEngineHost {
+            host: "build.example.com".to_string(),
+            username: Some("dev".to_string()),
+            port: Some(2222),
+            args: vec!["-i".to_string(), "/keys/id".to_string()],
+        })
+    }
+
+    #[test]
+    fn ssh_command_quotes_every_word_for_the_remote_shell() {
+        let mut command = ssh().command("docker");
+        command
+            .args(["run", "--label", "it's; rm -rf /", "$HOME"])
+            .env("DOCKER_BUILDKIT", "1")
+            .current_dir("/home/dev/my project");
+        let command = command.to_command();
+        assert_eq!(command.get_program(), "ssh");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "-p",
+                "2222",
+                "-i",
+                "/keys/id",
+                "-o",
+                "BatchMode=yes",
+                "-T",
+                "dev@build.example.com",
+                "--",
+                r"cd '/home/dev/my project' && exec env 'DOCKER_BUILDKIT=1' 'docker' 'run' '--label' 'it'\''s; rm -rf /' '$HOME'",
+            ]
+        );
+    }
+
+    #[test]
+    fn interactive_ssh_commands_allocate_a_terminal() {
+        let mut command = ssh().command("docker");
+        command
+            .args(["exec", "-it", "container", "bash"])
+            .interactive(true);
+        let args = command
+            .to_command()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.contains(&"-t".to_string()));
+        assert_eq!(
+            args.last().unwrap(),
+            "exec 'docker' 'exec' '-it' 'container' 'bash'"
+        );
+    }
+
+    #[test]
+    fn ssh_paths_use_forward_slashes() {
+        let host = ssh();
+        assert!(!host.has_local_files());
+        assert_eq!(
+            host.host_path(Path::new(r"/home/dev/project\.devcontainer")),
+            "/home/dev/project/.devcontainer"
+        );
+        assert_eq!(host.local_path("/home/dev"), PathBuf::from("/home/dev"));
     }
 
     #[test]
