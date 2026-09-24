@@ -18,10 +18,10 @@ use util::{ResultExt, command::Command, normalize_path};
 use crate::{
     DevContainerConfig, DevContainerContext,
     command_json::{CommandRunner, DefaultCommandRunner},
-    devcontainer_api::{DevContainerError, DevContainerUp},
+    devcontainer_api::{DeferredCommand, DeferredHook, DevContainerError, DevContainerUp},
     devcontainer_json::{
         ContainerBuild, DevContainer, DevContainerBuildType, FeatureOptions, ForwardPort,
-        LifecycleScript, MountDefinition, deserialize_devcontainer_json,
+        LifecycleCommand, LifecycleScript, MountDefinition, deserialize_devcontainer_json,
         deserialize_devcontainer_json_from_value, deserialize_devcontainer_json_to_value,
     },
     docker::{
@@ -72,6 +72,8 @@ struct DevContainerManifest {
     build_dir: OnceLock<tempfile::TempDir>,
     /// The copy of `build_dir` on an engine host that can't read our files.
     remote_build_dir: OnceLock<String>,
+    /// Whether hooks after `waitFor` are left for the editor to run once connected.
+    defer_hooks: bool,
 }
 const DEFAULT_REMOTE_PROJECT_DIR: &str = "/workspaces";
 impl DevContainerManifest {
@@ -121,6 +123,7 @@ impl DevContainerManifest {
             features: Vec::new(),
             build_dir: OnceLock::new(),
             remote_build_dir: OnceLock::new(),
+            defer_hooks: false,
         })
     }
 
@@ -1327,6 +1330,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 .as_ref()
                 .and_then(|state| state.started_at.clone()),
             created_at: running_container.created.clone(),
+            deferred_hooks: Vec::new(),
             container_id: running_container.id,
             remote_user,
             remote_workspace_folder: remote_workspace_folder.display().to_string(),
@@ -2652,7 +2656,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
         let devcontainer_up = self.run_dev_container(build_resources).await?;
 
-        self.run_remote_scripts(&devcontainer_up, true, true)
+        let mut devcontainer_up = devcontainer_up;
+        devcontainer_up.deferred_hooks = self
+            .run_remote_scripts(&devcontainer_up, true, true)
             .await?;
 
         Ok(devcontainer_up)
@@ -2663,12 +2669,13 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         devcontainer_up: &DevContainerUp,
         new_container: bool,
         container_started: bool,
-    ) -> Result<(), DevContainerError> {
+    ) -> Result<Vec<DeferredHook>, DevContainerError> {
         let ConfigStatus::VariableParsed(config) = &self.config else {
             log::error!("Config not yet parsed, cannot proceed with remote scripts");
             return Err(DevContainerError::DevContainerScriptsFailed);
         };
         let remote_folder = self.remote_workspace_folder()?.display().to_string();
+        let mut deferred_hooks = Vec::new();
 
         if new_container {
             for (hook, config_script) in [
@@ -2701,6 +2708,10 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                         continue;
                     }
                 }
+                if self.defers_hook(config, hook) {
+                    deferred_hooks.push(deferred_hook(hook, scripts));
+                    continue;
+                }
                 self.run_lifecycle_scripts(devcontainer_up, &remote_folder, hook, scripts)
                     .await?;
             }
@@ -2728,7 +2739,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             } else {
                 container_started
             };
-            if should_run {
+            if should_run && self.defers_hook(config, "postStartCommand") {
+                deferred_hooks.push(deferred_hook("postStartCommand", post_start_scripts));
+            } else if should_run {
                 self.run_lifecycle_scripts(
                     devcontainer_up,
                     &remote_folder,
@@ -2744,15 +2757,44 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             "postAttachCommand",
             &config.post_attach_command,
         )?;
-        self.run_lifecycle_scripts(
-            devcontainer_up,
-            &remote_folder,
-            "postAttachCommand",
-            post_attach_scripts,
-        )
-        .await?;
+        if self.defers_hook(config, "postAttachCommand") {
+            if !post_attach_scripts.is_empty() {
+                deferred_hooks.push(deferred_hook("postAttachCommand", post_attach_scripts));
+            }
+        } else {
+            self.run_lifecycle_scripts(
+                devcontainer_up,
+                &remote_folder,
+                "postAttachCommand",
+                post_attach_scripts,
+            )
+            .await?;
+        }
 
-        Ok(())
+        Ok(deferred_hooks)
+    }
+
+    /// Whether `hook` comes after `waitFor` (by default `updateContentCommand`), so the
+    /// editor can connect before it runs.
+    fn defers_hook(&self, config: &DevContainer, hook: &str) -> bool {
+        if !self.defer_hooks {
+            return false;
+        }
+        let wait_for = match config.wait_for {
+            Some(LifecycleCommand::InitializeCommand) => -1,
+            Some(LifecycleCommand::OnCreateCommand) => 0,
+            None | Some(LifecycleCommand::UpdateContentCommand) => 1,
+            Some(LifecycleCommand::PostCreateCommand) => 2,
+            Some(LifecycleCommand::PostStartCommand) => 3,
+        };
+        let hook = match hook {
+            "onCreateCommand" => 0,
+            "updateContentCommand" => 1,
+            "postCreateCommand" => 2,
+            "postStartCommand" => 3,
+            _ => 4,
+        };
+        hook > wait_for
     }
 
     /// Runs the scripts of one lifecycle hook in order, stopping at the first failure. The
@@ -2840,6 +2882,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                     .as_ref()
                     .and_then(|state| state.started_at.clone()),
                 created_at: docker_inspect.created.clone(),
+                deferred_hooks: Vec::new(),
                 container_id: docker_ps.id,
                 remote_user: remote_user,
                 remote_workspace_folder: remote_folder.display().to_string(),
@@ -2853,7 +2896,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                     .unwrap_or_default(),
             };
 
-            self.run_remote_scripts(&dev_container_up, false, container_started)
+            let mut dev_container_up = dev_container_up;
+            dev_container_up.deferred_hooks = self
+                .run_remote_scripts(&dev_container_up, false, container_started)
                 .await?;
 
             Ok(Some(dev_container_up))
@@ -3102,6 +3147,7 @@ pub(crate) async fn spawn_dev_container(
     config: DevContainerConfig,
     local_project_path: &Path,
     force_rebuild: bool,
+    defer_hooks: bool,
 ) -> Result<DevContainerUp, DevContainerError> {
     let docker = if context.use_podman {
         Docker::new("podman", context.use_buildkit, context.engine_host.clone()).await
@@ -3118,6 +3164,7 @@ pub(crate) async fn spawn_dev_container(
     )
     .await?;
 
+    devcontainer_manifest.defer_hooks = defer_hooks;
     devcontainer_manifest.open(force_rebuild).await
 }
 
@@ -3769,6 +3816,34 @@ fn lifecycle_scripts(
 /// The only interpolated value is `started_at`, an internally generated
 /// timestamp, so, unlike the actual `postStartCommand` text, it never has
 /// to embed arbitrary user-provided command text into shell source.
+/// Turns the scripts of `hook` into commands the editor runs once connected.
+fn deferred_hook(hook: &str, scripts: Vec<(String, LifecycleScript)>) -> DeferredHook {
+    let commands = scripts
+        .into_iter()
+        .flat_map(|(_origin, script)| {
+            let mut commands: Vec<_> = script.script_commands().into_iter().collect();
+            commands.sort_by(|(a, _), (b, _)| a.cmp(b));
+            commands
+        })
+        .map(|(name, command)| DeferredCommand {
+            label: if name == "default" {
+                hook.to_string()
+            } else {
+                format!("{hook} ({name})")
+            },
+            program: command.get_program().to_string_lossy().into_owned(),
+            args: command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+        })
+        .collect();
+    DeferredHook {
+        name: hook.to_string(),
+        commands,
+    }
+}
+
 /// Where the container sees the engine host's SSH agent socket.
 const CONTAINER_SSH_AGENT_SOCKET: &str = "/tmp/zed-ssh-agent.sock";
 /// The Mac's SSH agent, as Docker Desktop for macOS shares it with containers.
@@ -4594,7 +4669,10 @@ mod test {
             mount_type: Some("bind".to_string()),
         }));
         assert_eq!(
-            resources.container_env.get("SSH_AUTH_SOCK").map(String::as_str),
+            resources
+                .container_env
+                .get("SSH_AUTH_SOCK")
+                .map(String::as_str),
             Some("/tmp/zed-ssh-agent.sock")
         );
     }
@@ -4754,6 +4832,7 @@ mod test {
         let devcontainer_up = DevContainerUp {
             started_at: Some("2026-06-23T10:00:00Z".to_string()),
             created_at: None,
+            deferred_hooks: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4829,6 +4908,7 @@ mod test {
         let devcontainer_up = DevContainerUp {
             started_at: Some("2026-06-23T10:00:00Z".to_string()),
             created_at: None,
+            deferred_hooks: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4901,6 +4981,7 @@ mod test {
         let devcontainer_up = DevContainerUp {
             started_at: None,
             created_at: None,
+            deferred_hooks: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4928,6 +5009,73 @@ mod test {
     }
 
     #[gpui::test]
+    async fn defers_lifecycle_hooks_after_wait_for_to_the_editor(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{
+                "image": "test_image:latest",
+                "onCreateCommand": "echo on-create",
+                "postCreateCommand": { "second": "echo second", "first": "echo first" },
+                "postAttachCommand": "echo attach"
+            }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest.defer_hooks = true;
+
+        let metadata = serde_json_lenient::from_str::<Vec<HashMap<String, serde_json_lenient::Value>>>(
+            r#"[{
+                "onCreateCommand": "echo on-create",
+                "postCreateCommand": { "second": "echo second", "first": "echo first" },
+                "postAttachCommand": "echo attach"
+            }]"#,
+        )
+        .unwrap();
+        let devcontainer_up = DevContainerUp {
+            started_at: None,
+            created_at: None,
+            deferred_hooks: Vec::new(),
+            container_id: "container".to_string(),
+            remote_user: "root".to_string(),
+            remote_workspace_folder: "/workspaces/project".to_string(),
+            extension_ids: Vec::new(),
+            remote_env: HashMap::new(),
+            metadata,
+        };
+
+        let deferred = devcontainer_manifest
+            .run_remote_scripts(&devcontainer_up, true, false)
+            .await
+            .unwrap();
+
+        // `waitFor` defaults to `updateContentCommand`: only `onCreateCommand` ran.
+        assert_eq!(
+            recorded_scripts(&test_dependencies),
+            vec!["-c echo on-create"]
+        );
+        assert_eq!(
+            deferred
+                .iter()
+                .map(|hook| (
+                    hook.name.as_str(),
+                    hook.commands
+                        .iter()
+                        .map(|command| command.label.as_str())
+                        .collect::<Vec<_>>()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "postCreateCommand",
+                    vec!["postCreateCommand (first)", "postCreateCommand (second)"]
+                ),
+                ("postAttachCommand", vec!["postAttachCommand"]),
+            ]
+        );
+    }
+
+    #[gpui::test]
     async fn should_run_devcontainer_json_scripts_when_container_has_no_metadata(
         cx: &mut TestAppContext,
     ) {
@@ -4946,6 +5094,7 @@ mod test {
         let devcontainer_up = DevContainerUp {
             started_at: None,
             created_at: None,
+            deferred_hooks: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4983,6 +5132,7 @@ mod test {
         let devcontainer_up = DevContainerUp {
             started_at: None,
             created_at: None,
+            deferred_hooks: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
