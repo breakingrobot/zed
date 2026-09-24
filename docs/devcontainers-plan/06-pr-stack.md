@@ -120,6 +120,11 @@ rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; auc
 | C7 | `c7-wsl-projects` | `16ec2eb299` | Windows ; test manifest WSL ; **e2e réel à faire** |
 | C7 (suite) + C2b (partiel) | `c7b-wsl-followups` | `b02563cadf` | Windows ; suggestion WSL, environnement de login, correctif `zed --dev-container` (fenêtre inactive), test de persistance de l'hôte, doc |
 | C6 | `c6-ssh-projects` | `c8986b84f1` | Windows ; `EngineHost::Ssh` (`BatchMode`, quoting POSIX), fichiers du projet lus sur l'hôte, dossier de build copié par tar, envoi dans le conteneur par `docker exec -i`, doc ; **e2e réel à faire** (sshd de test sur `localhost:2222`) |
+| T1 | `t1-workspace-trust` | `493b3bef82` | porte Workspace Trust (fenêtre de sécurité de Zed), doc ; compilé et testé (Windows) |
+| E2 (SSH) | `e2-ssh-port-forwarding` | `ade9150128` | `-L` sur le proxy ssh pour `forwardPorts`/`appPort` ; compilé et testé (Windows) |
+| C2b | `c2b-host-environment` | `49912efcc5` | `PATH`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `CONTAINER_HOST`… du shell de login passés aux commandes du moteur (création et connexion) ; compilé et testé (Windows) |
+| C8 | `c8-unsupported-setups` | `d4816b32f5` | raisons précises (collab, déjà dans un conteneur, hôte SSH Windows), `DOCKER_HOST` distant avec projet local refusé ; corrige un projet collab traité comme local ; compilé et testé (Windows) |
+| E1 | `e1-lifecycle-actions` | `8551605d9c` | 4 commits d'Alex Berger (actions, opérations, reconnexion, menu) + passage par l'hôte + doc ; sidebar et vue agent de #60975 non repris ; compilé et testé (Windows) |
 
 Écarts au plan :
 
@@ -127,8 +132,8 @@ rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; auc
   en base. C7 passe **avant** C6 (priorité utilisateur : WSL).
 - ADR-002 révisé (section « Révision d'implémentation ») : `EngineHost` dans `remote`, `wsl.exe --exec`, fichiers via
   `\\wsl.localhost`.
-- Reste : T1, A8b, C2b complet (`DOCKER_HOST` de login pour les commandes du moteur), C8, D1/D2, E1, E2 ; SSH
-  sans ControlMaster sous Windows (une connexion par commande) ; e2e WSL et SSH à exécuter.
+- Reste : A8b (gelé), D1/D2 (WSLc), reprise sidebar/vue agent de #60975 ; SSH sans ControlMaster sous
+  Windows (une connexion par commande) ; e2e WSL et SSH à exécuter.
 
 ## 4. Brouillon de proposition (C0) — NON POSTÉ
 
