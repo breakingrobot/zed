@@ -57,9 +57,24 @@ personnel `breakingrobot/zed` (aucune PR ouverte, rien posté sur `zed-industrie
 
 ## Implémentation
 
-État branche par branche : `06-pr-stack.md` §3bis. Résultats de tests : `07-test-strategy.md` §7.
-Correctifs A2–A8a et B1 fusionnés dans `devcontainers/integration` ; piste C (WSL) empilée dessus :
-`c1-engine-host` → `c4-connection-host` → `c7-wsl-projects`.
+État branche par branche : `06-pr-stack.md` §3bis. Résultats de tests : `07-test-strategy.md` §7. Guide de test manuel :
+`09-manual-test-guide.md`.
+
+Toutes les branches sont empilées ; la dernière, **`devcontainers/e1-lifecycle-actions`**, contient tout :
+
+| Étape | Branches | Apport |
+|---|---|---|
+| Correctifs | `integration` (A2–A8a, B1) | `initializeCommand`, hooks des features, `devcontainerId`, build sans BuildKit, Podman, arrêt du proxy, ordre des features, dossier de build privé, identité stable |
+| WSL | `c1-engine-host` → `c4-connection-host` → `c7-wsl-projects` → `c7b-wsl-followups` | moteur dans la distro via `wsl.exe --exec`, fichiers via `\\wsl.localhost`, hôte persisté, suggestion, environnement de login, correctif `zed --dev-container` |
+| SSH | `c6-ssh-projects` → `e2-ssh-port-forwarding` | moteur sur l'hôte via `ssh` (`BatchMode`), fichiers lus par commandes, dossier de build copié par tar, envoi par `docker exec -i`, tunnels `-L` pour les ports |
+| Robustesse | `t1-workspace-trust` → `c2b-host-environment` → `c8-unsupported-setups` | porte de confiance, `PATH`/`DOCKER_HOST` de login, refus explicites |
+| Cycle de vie | `e1-lifecycle-actions` | reconnect / restart / rebuild / stop / delete (commits d'Alex Berger), passage par l'hôte |
+
+Installeurs locaux (Zed Dev, non signés) : `H:\Sources\zed-wtrtifacts\` (`…-c7.exe` WSL, `…-c6.exe` WSL + SSH,
+`…-final.exe` tout).
+
+Reste : e2e réels WSL / SSH / Podman (guide `09`), A8b (gelé par décision), D1/D2 (WSLc), reprise de la barre latérale et
+de la vue agent de #60975, SSH sans ControlMaster sous Windows (une connexion par commande).
 
 ## Documents
 
@@ -77,6 +92,7 @@ Correctifs A2–A8a et B1 fusionnés dans `devcontainers/integration` ; piste C 
 | 7 — Tests | `07-test-strategy.md`, `fixtures/` | ✅ (révisé après 08) |
 | 8 — Revue adverse | `08-adversarial-review.md` (+ §8 suite donnée) | ✅ |
 | 🛑 Point d'arrêt final | | ✅ validé (2026-09-24), C0 non publié |
+| 9 — Guide de test manuel | `09-manual-test-guide.md` | ✅ |
 
 ## Sources analysées (branches locales, lecture seule)
 
