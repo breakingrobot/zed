@@ -1,6 +1,8 @@
 # ADR-008 — Secrets et environnement
 
-- Statut : proposé — **mise en œuvre en suspens** (décision utilisateur du 2026-09-23 : ni PR ni signalement pour l'instant)
+- Statut : proposé.
+  - Dossier temporaire : **accepté** (décision du 2026-09-24), mis en œuvre par A8a (`devcontainers/a8-unique-build-dir`).
+  - Env persisté : **en suspens** (décision utilisateur du 2026-09-23).
 - Contexte :
   - `remote_env` = env complet du conteneur + `remoteEnv` (`devcontainer_manifest.rs:208-223`) ;
   - il est passé en `-e` sur chaque `docker exec` et **persisté en clair** (`workspace/src/persistence.rs:1035, 1754`) ;
@@ -22,4 +24,4 @@
   - **Dossier temporaire** : `temp_dir()/devcontainer-zed/` prévisible + `std::fs::write` qui suit les liens
     (`fs/src/fs.rs:1047`) → sous Linux multi-utilisateur, créer un dossier **unique 0700** par build (`mkdtemp`), refuser
     s'il existe, jamais de noms fixes (lien avec ADR-003).
-  - Statut inchangé : **en suspens** (décision utilisateur).
+  - Dossier temporaire : fait dans A8a (`tempfile::TempDir` 0700 par build, supprimé en fin de build).

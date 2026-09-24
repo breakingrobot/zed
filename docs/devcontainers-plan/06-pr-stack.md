@@ -61,7 +61,8 @@ flowchart TD
 | **A6a** | `dev_container: Apply Podman user namespace options on Linux only` | + retrait de `consistency=cached` hors spec sous Linux | — | S | options selon plateforme | #58500 (à recouper) |
 | **A6b** | `remote: Stop the docker proxy without an external kill` | `Child::kill` au lieu du binaire `kill` | — | S | arrêt sous Windows | — |
 | **A7** | `dev_container: Order features by installsAfter and dependsOn` | tri topologique | — | M | graphes, cycles | #64025 (options) |
-| **A8** | *(en suspens — sécurité)* env persisté, dossier temporaire prévisible | ADR-008 | — | S+S | `fixtures/env-secrets` | **décision utilisateur : rien pour l'instant** |
+| **A8a** | `dev_container: Write generated build files to a private directory` | dossier unique 0700 par build (`tempfile`), supprimé avec le manifest ; remplace les 4 noms fixes de `devcontainer_manifest.rs` | — | S | unicité, droits 0700, suppression | **fait** (branche locale) |
+| **A8b** | *(en suspens — sécurité)* env persisté | ADR-008 | — | S | `fixtures/env-secrets` | **décision utilisateur : rien pour l'instant** |
 | **B1** | `Give dev containers a stable identity across rebuilds` | ADR-005 (hôte = `local`) ; **inclut** `sidebar_threads`/`sidebar_terminal_threads` (sinon #56576 n'est corrigé que pour les nouveaux threads) | S (accord avec alex-berger) | M | rebuild ⇒ même id ; threads existants migrés | #60975 |
 | **C0** | *(Discussion, pas de code)* | §4 | — | — | — | — |
 | **C1** | `dev_container: Route engine commands through an EngineHost` | ADR-002 ; `Local` seulement ; tous les sites | C0 accepté | M | **goldens sur `HostCommand`** (program, args, env, cwd, stdin) avant/après (`07` §4) | #62680 / pupeno-wsl |
@@ -83,7 +84,7 @@ flowchart TD
 | Vague | PRs ouvertes | Préalable |
 |---|---|---|
 | 0 | aucune — C0 posté + soutien S | — |
-| 1 | A4, A6a, A6b | aucun (corrections indépendantes, sans accord de design) |
+| 1 | A4, A6a, A6b (puis A8a) | aucun (corrections indépendantes, sans accord de design) ; A8a relève de la sécurité : se renseigner d'abord sur le canal de signalement |
 | 2 | T1, A5, A7 | réponse du staff à C0 (T1 est une question de design) |
 | 3 | A2, B1 (ou #60975 réduite), A3 si #63034 mergée | T1 mergée |
 | 4 | C1 | accord sur l'architecture dans C0 |

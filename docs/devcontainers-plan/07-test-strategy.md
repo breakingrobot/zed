@@ -43,8 +43,8 @@ Base : `main` = `16c9aa7ea6`. Fixtures : `fixtures/` (décrites en §5). Aucune 
 | T1a Linux | toutes | — | CI Linux (Docker) |
 | T1c Windows natif | lifecycle-forms, initialize-command, compose-basic | Podman machine **ou** Docker Desktop (non installés) | CI Windows : **à vérifier** si Docker est disponible sur les runners Windows de Zed |
 | T2 WSL + Docker Desktop | toutes | Docker Desktop (non installé) | — |
-| T3 WSL + Docker CE | toutes | `docker-ce` dans `Ubuntu` (non installé) | — |
-| T4 SSH | toutes | sshd + Docker CE dans `Ubuntu`, SSH vers `localhost` (non installés) | VM Linux distante |
+| T3 WSL + Docker CE | toutes | **installé le 2026-09-24** : paquets Ubuntu `docker.io` 29.1.3, `docker-buildx` 0.30.1, `docker-compose-v2` 2.40.3 dans `Ubuntu` 26.04 ; `robot` dans le groupe `docker` | — |
+| T4 SSH | toutes | Docker installé dans `Ubuntu` ; sshd et SSH vers `localhost` non configurés | VM Linux distante |
 | T7 Podman | lifecycle-forms, compose-basic | Podman machine (non créée) | CI Linux rootless |
 | T8 WSLc | lifecycle-forms, initialize-command (pas compose, pas features) | **disponible** (`wslc` 2.9.12) — exécuter des conteneurs demande ton accord | — |
 

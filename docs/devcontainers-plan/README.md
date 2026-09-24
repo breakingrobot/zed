@@ -16,6 +16,8 @@ Rien n'a été poussé, posté ni ouvert sur GitHub (`gh` en lecture seule). Bas
    - l'env complet du conteneur est persisté en clair (base `remote_connections` + tables `sidebar_*`) ;
    - un dossier `/tmp` prévisible suit les liens symboliques (Linux multi-utilisateur) ;
    - aucune porte Workspace Trust avant d'exécuter du contenu du dépôt.
+
+   Le dossier `/tmp` est corrigé par A8a ; les deux autres points restent en suspens.
 4. **Contributions existantes** (#60975, #62680, deux branches de pupeno) : utiles mais incompatibles entre elles (3 à 16 fichiers
    en conflit par paire) et largement générées par IA, sans aucune revue de mainteneur ; la tête de #62680 ne compile pas (`02`).
 5. **Cible** (`05`, ADR-001…011) :
@@ -37,19 +39,20 @@ Rien n'a été poussé, posté ni ouvert sur GitHub (`gh` en lecture seule). Bas
    - fixtures prêtes ;
    - vecteurs `devcontainerId` recoupés avec le code du CLI de référence ;
    - contrats `wslc` enregistrés ;
-   - e2e **non exécutés** (aucun moteur installé ici).
+   - e2e **pas encore exécutés** (Docker Engine installé dans WSL le 2026-09-24).
 9. **Revue adverse** (`08`) : 46 références relues (37 ✅ · 7 ⚠️ · 2 ❌) ; les 10 corrections prioritaires ont été revérifiées puis appliquées.
 
 ## Décisions et hypothèses
 
 | Sujet | Statut |
 |---|---|
-| Priorités P0→P3, refus T4w/T5/T6b | hypothèse de travail (proposée au point d'arrêt 2, non contredite) |
-| WSL : connexion via la distro | hypothèse de travail |
-| WSLc : adaptateur CLI, sans compose ni features en v1 | hypothèse de travail |
-| Points sécurité (env persisté, `/tmp`, Workspace Trust) | **en suspens — décision utilisateur : rien pour l'instant** |
-| Installations pour les tests réels | **aucune** faite ; à décider (`07` §3) |
-| Publication de la proposition C0 | brouillon **non posté**, à réécrire par un humain (`06` §4) |
+| Priorités P0→P3, refus T4w/T5/T6b | ✅ **validé** (2026-09-24) |
+| WSL : connexion via la distro | ✅ **validé** (2026-09-24) |
+| WSLc : adaptateur CLI, sans compose ni features en v1, derrière un réglage expérimental | ✅ **validé** (2026-09-24) |
+| Sécurité : dossier `/tmp` prévisible | ✅ **validé** → A8a faite (branche `devcontainers/a8-unique-build-dir`) |
+| Sécurité : env persisté en clair | toujours en suspens (hors décision du 2026-09-24) |
+| Installations pour les tests réels | ✅ **validé** → Docker Engine 29.1.3 + buildx 0.30.1 + compose 2.40.3 dans la distro Ubuntu 26.04 (WSL) |
+| Publication de la proposition C0 | ❌ **refusé pour l'instant** : brouillon conservé, non posté |
 
 ## Documents
 
@@ -66,7 +69,7 @@ Rien n'a été poussé, posté ni ouvert sur GitHub (`gh` en lecture seule). Bas
 | 6 — Pile de PRs | `06-pr-stack.md` (+ brouillon C0 non posté) | ✅ (réécrit après 08) |
 | 7 — Tests | `07-test-strategy.md`, `fixtures/` | ✅ (révisé après 08) |
 | 8 — Revue adverse | `08-adversarial-review.md` (+ §8 suite donnée) | ✅ |
-| 🛑 Point d'arrêt final | | en attente |
+| 🛑 Point d'arrêt final | | ✅ validé (2026-09-24), C0 non publié |
 
 ## Sources analysées (branches locales, lecture seule)
 
