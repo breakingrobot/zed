@@ -32,7 +32,7 @@ use picker::{
     Picker, PickerDelegate, ScrollBehavior,
     highlighted_match_with_paths::{HighlightedMatch, HighlightedMatchWithPaths},
 };
-use project::{Worktree, git_store::Repository};
+use project::{Worktree, git_store::Repository, trusted_worktrees::TrustedWorktrees};
 pub use remote_connections::RemoteSettings;
 pub use remote_servers::RemoteServerProjects;
 use settings::{DefaultOpenBehavior, Settings, WorktreeId};
@@ -301,6 +301,16 @@ pub(crate) fn open_dev_container(
             .ok();
         })
         .detach();
+        return;
+    }
+
+    // Opening a dev container runs code from the repository (`initializeCommand`,
+    // Dockerfiles, features), so it waits until the project is trusted.
+    if TrustedWorktrees::has_restricted_worktrees(
+        &workspace.project().read(cx).worktree_store(),
+        cx,
+    ) {
+        workspace.show_worktree_trust_security_modal(false, window, cx);
         return;
     }
 
