@@ -8,5 +8,5 @@
       "default": false
     }
   },
-  "postCreateCommand": "echo a >> /tmp/zed-fixture/feature-hooks"
+  "postCreateCommand": "mkdir -p /tmp/zed-fixture && echo a >> /tmp/zed-fixture/feature-hooks"
 }
