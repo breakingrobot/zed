@@ -9,6 +9,7 @@ use http_client::anyhow;
 use picker::Picker;
 use picker::PickerDelegate;
 use project::ProjectEnvironment;
+use remote::EngineHost;
 use settings::RegisterSetting;
 use settings::Settings;
 use std::collections::HashMap;
@@ -96,7 +97,10 @@ fn get_safe_id(input: &str) -> String {
 }
 
 pub struct DevContainerContext {
+    /// The project's root folder, as the machine running Zed sees it.
     pub project_directory: Arc<Path>,
+    /// Where the container engine runs, and where the project's sources live.
+    pub engine_host: EngineHost,
     pub use_podman: bool,
     pub use_buildkit: Option<bool>,
     pub fs: Arc<dyn Fs>,
@@ -107,6 +111,7 @@ pub struct DevContainerContext {
 impl DevContainerContext {
     pub fn from_workspace(workspace: &Workspace, cx: &App) -> Option<Self> {
         let project_directory = workspace.project().read(cx).active_project_directory(cx)?;
+        let engine_host = EngineHost::Local;
         let settings = DevContainerSettings::get_global(cx);
         let use_podman = settings.use_podman;
         let use_buildkit = settings.use_buildkit;
@@ -115,6 +120,7 @@ impl DevContainerContext {
         let environment = workspace.project().read(cx).environment().downgrade();
         Some(Self {
             project_directory,
+            engine_host,
             use_podman,
             use_buildkit,
             fs,
@@ -123,7 +129,11 @@ impl DevContainerContext {
         })
     }
 
+    /// The environment of the engine host, where `${localEnv:…}` variables come from.
     pub async fn environment(&self, cx: &mut impl AppContext) -> HashMap<String, String> {
+        if !self.engine_host.is_local() {
+            return host_environment(&self.engine_host).await;
+        }
         let Ok(task) = self.environment.update(cx, |this, cx| {
             this.local_directory_environment(&Shell::System, self.project_directory.clone(), cx)
         }) else {
@@ -133,6 +143,33 @@ impl DevContainerContext {
             .map(|env| env.into_iter().collect::<std::collections::HashMap<_, _>>())
             .unwrap_or_default()
     }
+}
+
+async fn host_environment(host: &EngineHost) -> HashMap<String, String> {
+    let mut command = host.command("env");
+    command.arg("-0");
+    match command.output().await {
+        Ok(output) if output.status.success() => parse_nul_separated_environment(&output.stdout),
+        Ok(output) => {
+            log::error!(
+                "Failed to read the environment of {host:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            HashMap::default()
+        }
+        Err(error) => {
+            log::error!("Failed to read the environment of {host:?}: {error}");
+            HashMap::default()
+        }
+    }
+}
+
+fn parse_nul_separated_environment(output: &[u8]) -> HashMap<String, String> {
+    String::from_utf8_lossy(output)
+        .split('\0')
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
 }
 
 #[derive(RegisterSetting)]

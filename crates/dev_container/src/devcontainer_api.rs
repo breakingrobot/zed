@@ -268,7 +268,7 @@ pub async fn start_dev_container_with_config(
     config: Option<DevContainerConfig>,
     environment: HashMap<String, String>,
 ) -> Result<(DevContainerConnection, String), DevContainerError> {
-    check_for_docker(context.use_podman).await?;
+    check_for_docker(&context).await?;
 
     let Some(actual_config) = config.clone() else {
         return Err(DevContainerError::NotInValidProject);
@@ -306,14 +306,14 @@ pub async fn start_dev_container_with_config(
             // dev container and let us key the connection's identity on the
             // project rather than the ephemeral `container_id`.
             // Normalized exactly like the labels, so `C:\` and `c:\` keep one identity on Windows.
-            let local_folder =
-                normalize_label_path(&context.project_directory.display().to_string());
+            let host = &context.engine_host;
+            let local_folder = normalize_label_path(
+                &host.host_path(&context.project_directory),
+                host.is_windows(),
+            );
             let config_file = normalize_label_path(
-                &context
-                    .project_directory
-                    .join(&actual_config.config_path)
-                    .display()
-                    .to_string(),
+                &host.host_path(&context.project_directory.join(&actual_config.config_path)),
+                host.is_windows(),
             );
 
             let connection = DevContainerConnection {
@@ -337,12 +337,13 @@ pub async fn start_dev_container_with_config(
     }
 }
 
-async fn check_for_docker(use_podman: bool) -> Result<(), DevContainerError> {
-    let mut command = if use_podman {
-        util::command::new_command("podman")
+async fn check_for_docker(context: &DevContainerContext) -> Result<(), DevContainerError> {
+    let cli = if context.use_podman {
+        "podman"
     } else {
-        util::command::new_command("docker")
+        "docker"
     };
+    let mut command = context.engine_host.command(cli);
     command.arg("--version");
 
     match command.output().await {

@@ -5047,6 +5047,7 @@ dependencies = [
  "picker",
  "project",
  "regex",
+ "remote",
  "serde",
  "serde_json",
  "serde_json_lenient",

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt::Display, path::Path, sync::Arc};
 
 use crate::{command_json::CommandRunner, devcontainer_api::DevContainerError};
+use remote::EngineHost;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json_lenient::Value;
 use util::command::Command;
@@ -425,6 +426,24 @@ impl LifecycleScript {
         self.commands(LifecycleScriptInternal::host_command)
     }
 
+    /// [`Self::host_script_commands`] for a POSIX host other than the machine running Zed.
+    fn remote_host_script_commands(
+        &self,
+        host: &EngineHost,
+        working_directory: &Path,
+    ) -> HashMap<String, Command> {
+        self.scripts
+            .iter()
+            .filter_map(|(name, script)| {
+                let mut command = host.command(script.command.as_ref()?);
+                command
+                    .args(&script.args)
+                    .current_dir(host.host_path(working_directory));
+                Some((name.clone(), command.to_command()))
+            })
+            .collect()
+    }
+
     fn commands(
         &self,
         build: fn(&LifecycleScriptInternal) -> Option<Command>,
@@ -443,20 +462,32 @@ impl LifecycleScript {
             .collect()
     }
 
+    /// Runs `initializeCommand` on `host`, in `working_directory`, the project folder as
+    /// the machine running Zed sees it.
     pub async fn run(
         &self,
         command_runnder: &Arc<dyn CommandRunner>,
+        host: &EngineHost,
         working_directory: &Path,
     ) -> Result<(), DevContainerError> {
-        for (command_name, mut command) in self.host_script_commands() {
+        let commands = if host.is_local() {
+            self.host_script_commands()
+                .into_iter()
+                .map(|(name, mut command)| {
+                    command.current_dir(working_directory);
+                    (name, command)
+                })
+                .collect()
+        } else {
+            self.remote_host_script_commands(host, working_directory)
+        };
+        for (command_name, mut command) in commands {
             log::debug!("Running script {command_name}");
             let label = if command_name == DEFAULT_SCRIPT_NAME {
                 "initializeCommand".to_string()
             } else {
                 format!("initializeCommand \"{command_name}\"")
             };
-
-            command.current_dir(working_directory);
 
             let output = command_runnder
                 .run_command(&mut command)
