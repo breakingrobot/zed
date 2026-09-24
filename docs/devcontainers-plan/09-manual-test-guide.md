@@ -38,7 +38,8 @@ Il s'installe dans le profil, sans droits administrateur, sous le nom « Zed Dev
 4. Approuver le projet si demandé, puis `projects: open dev container`.
 5. Attendu : comme en 1 ; `docker ps` montre un second conteneur (labels `…/lifecycle-forms-ssh`).
 6. Ports : ajouter `"forwardPorts": [8765]` au `devcontainer.json`, lancer `projects: rebuild dev container`, puis dans le
-   conteneur `python3 -m http.server 8765` (ou `nc -l -p 8765`) ; depuis Windows, `curl http://localhost:8765` répond.
+   terminal du conteneur (root) : `apt-get update && apt-get install -y python3 && python3 -m http.server 8765`
+   (`debian:12` n'a ni Python ni `nc`) ; depuis Windows, `curl http://localhost:8765` répond.
 
 ## 3. Projet Windows natif (Podman)
 
