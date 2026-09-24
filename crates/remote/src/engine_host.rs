@@ -78,6 +78,7 @@ impl EngineHost {
             env: Vec::new(),
             current_dir: None,
             interactive: false,
+            forwarded_ports: Vec::new(),
         }
     }
 
@@ -178,6 +179,7 @@ pub struct HostCommand {
     env: Vec<(String, String)>,
     current_dir: Option<String>,
     interactive: bool,
+    forwarded_ports: Vec<u16>,
 }
 
 impl HostCommand {
@@ -205,6 +207,14 @@ impl HostCommand {
     /// Sets the working directory, a path on the host.
     pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
         self.current_dir = Some(dir.as_ref().to_string_lossy().into_owned());
+        self
+    }
+
+    /// Forwards `port` of this machine to the same port of an SSH host while the
+    /// command runs. Other hosts share this machine's `localhost`, or reach it
+    /// through WSL's localhost forwarding, so nothing needs forwarding.
+    pub fn forward_port(&mut self, port: u16) -> &mut Self {
+        self.forwarded_ports.push(port);
         self
     }
 
@@ -263,6 +273,9 @@ impl HostCommand {
         args.extend(options.args.iter().cloned());
         // Fail instead of waiting for a password nobody can type.
         args.extend(["-o".to_string(), "BatchMode=yes".to_string()]);
+        for port in &self.forwarded_ports {
+            args.extend(["-L".to_string(), format!("{port}:localhost:{port}")]);
+        }
         args.push(if self.interactive { "-t" } else { "-T" }.to_string());
         args.push(match &options.username {
             Some(username) => format!("{username}@{}", options.host),
@@ -477,6 +490,25 @@ mod tests {
             args.last().unwrap(),
             "exec 'docker' 'exec' '-it' 'container' 'bash'"
         );
+    }
+
+    #[test]
+    fn ssh_commands_forward_ports() {
+        let mut command = ssh().command("docker");
+        command
+            .args(["exec", "-i", "container", "proxy"])
+            .forward_port(3000);
+        let args = command
+            .to_command()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let forward = args.iter().position(|arg| arg == "-L").unwrap();
+        assert_eq!(args[forward + 1], "3000:localhost:3000");
+
+        let mut local = EngineHost::Local.command("docker");
+        local.forward_port(3000);
+        assert!(local.to_command().get_args().all(|arg| arg != "-L"));
     }
 
     #[test]

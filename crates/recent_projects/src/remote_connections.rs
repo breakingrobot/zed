@@ -114,6 +114,7 @@ impl From<Connection> for RemoteConnectionOptions {
                         }),
                         (None, None) => EngineHost::Local,
                     },
+                    forward_ports: conn.forward_ports.unwrap_or_default(),
                 })
             }
         }

@@ -291,15 +291,17 @@ pub async fn start_dev_container_with_config(
             remote_env,
             ..
         }) => {
-            let project_name =
-                match read_devcontainer_configuration(actual_config.clone(), &context, environment)
-                    .await
-                {
-                    Ok(DevContainer {
-                        name: Some(name), ..
-                    }) => name,
-                    _ => get_backup_project_name(&remote_workspace_folder, &container_id),
-                };
+            let configuration =
+                read_devcontainer_configuration(actual_config.clone(), &context, environment).await;
+            let project_name = match &configuration {
+                Ok(DevContainer {
+                    name: Some(name), ..
+                }) => name.clone(),
+                _ => get_backup_project_name(&remote_workspace_folder, &container_id),
+            };
+            let forward_ports = configuration
+                .map(|configuration| configuration.published_host_ports())
+                .unwrap_or_default();
 
             // Derive the same `devcontainer.local_folder`/`devcontainer.config_file`
             // values Zed stamps as container labels (see
@@ -342,6 +344,7 @@ pub async fn start_dev_container_with_config(
                 ssh_username: ssh.as_ref().and_then(|ssh| ssh.username.clone()),
                 ssh_port: ssh.as_ref().and_then(|ssh| ssh.port),
                 ssh_args: ssh.map(|ssh| ssh.args),
+                forward_ports: Some(forward_ports),
             };
 
             Ok((connection, remote_workspace_folder))

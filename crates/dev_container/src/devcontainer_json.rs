@@ -307,6 +307,34 @@ pub(crate) fn deserialize_devcontainer_json(json: &str) -> Result<DevContainer, 
 }
 
 impl DevContainer {
+    /// The engine host ports that `docker run` publishes for this container:
+    /// numeric `forwardPorts` and the host side of `appPort`.
+    pub(crate) fn published_host_ports(&self) -> Vec<u16> {
+        let forward_ports = self
+            .forward_ports
+            .iter()
+            .flatten()
+            .filter_map(|port| match port {
+                ForwardPort::Number(port) => Some(*port),
+                ForwardPort::String(_) => None,
+            });
+        let app_ports = self.app_port.iter().filter_map(|mapping| {
+            // `PORT`, `HOST:CONTAINER` or `IP:HOST:CONTAINER`, optionally `/protocol`.
+            let mapping = mapping.split('/').next()?;
+            let parts: Vec<&str> = mapping.split(':').collect();
+            let host_port = if parts.len() == 1 {
+                parts[0]
+            } else {
+                parts[parts.len() - 2]
+            };
+            host_port.parse().ok()
+        });
+        let mut ports: Vec<u16> = forward_ports.chain(app_ports).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    }
+
     pub(crate) fn build_type(&self) -> DevContainerBuildType {
         if let Some(image) = &self.image {
             DevContainerBuildType::Image(image.clone())
@@ -752,6 +780,22 @@ mod test {
             ZedCustomizationsWrapper, deserialize_devcontainer_json,
         },
     };
+
+    #[test]
+    fn published_host_ports_come_from_numeric_forward_ports_and_app_port() {
+        let config = deserialize_devcontainer_json(
+            r#"{
+                "image": "ubuntu",
+                "forwardPorts": [3000, "db:5432", 3000],
+                "appPort": [8000, "8080:80", "127.0.0.1:9000:90/tcp", "not-a-port"]
+            }"#,
+        )
+        .expect("config");
+        assert_eq!(config.published_host_ports(), [3000, 8000, 8080, 9000]);
+
+        let config = deserialize_devcontainer_json(r#"{"image":"ubuntu"}"#).expect("config");
+        assert!(config.published_host_ports().is_empty());
+    }
 
     #[test]
     fn override_command_defaults_depend_on_build_type() {
