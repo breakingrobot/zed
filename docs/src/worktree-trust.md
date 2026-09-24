@@ -29,6 +29,7 @@ Restricted Mode prevents:
 - Project settings (`.zed/settings.json`) from being parsed and applied
 - Language servers from being installed and spawned
 - MCP servers from being installed and spawned
+- [Dev containers](./dev-containers.md) from being built and opened
 
 ## Configuring broad worktree trust
 
