@@ -1245,6 +1245,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 .state
                 .as_ref()
                 .and_then(|state| state.started_at.clone()),
+            created_at: running_container.created.clone(),
             container_id: running_container.id,
             remote_user,
             remote_workspace_folder: remote_workspace_folder.display().to_string(),
@@ -2592,6 +2593,30 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                 ("postCreateCommand", &config.post_create_command),
             ] {
                 let scripts = lifecycle_scripts(devcontainer_up, hook, config_script)?;
+                if scripts.is_empty() {
+                    continue;
+                }
+                // Like the reference CLI, record the hook against the container's creation
+                // time, so that no tool runs it again for this container.
+                if let Some(created_at) = &devcontainer_up.created_at {
+                    let (should_run, _) = self
+                        .docker_client
+                        .run_docker_exec_status(
+                            &devcontainer_up.container_id,
+                            &remote_folder,
+                            &devcontainer_up.remote_user,
+                            &devcontainer_up.remote_env,
+                            lifecycle_marker_command(
+                                hook,
+                                created_at,
+                                &devcontainer_up.remote_user,
+                            ),
+                        )
+                        .await?;
+                    if !should_run {
+                        continue;
+                    }
+                }
                 self.run_lifecycle_scripts(devcontainer_up, &remote_folder, hook, scripts)
                     .await?;
             }
@@ -2730,6 +2755,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                     .state
                     .as_ref()
                     .and_then(|state| state.started_at.clone()),
+                created_at: docker_inspect.created.clone(),
                 container_id: docker_ps.id,
                 remote_user: remote_user,
                 remote_workspace_folder: remote_folder.display().to_string(),
@@ -3660,7 +3686,14 @@ fn lifecycle_scripts(
 /// timestamp, so, unlike the actual `postStartCommand` text, it never has
 /// to embed arbitrary user-provided command text into shell source.
 fn post_start_marker_command(started_at: &str, remote_user: &str) -> Command {
-    let started_at = shell_single_quote(started_at);
+    lifecycle_marker_command("postStartCommand", started_at, remote_user)
+}
+
+/// Writes `value` to the reference CLI's marker file for `hook`
+/// (`~/.devcontainer/.<hook>Marker`). Exits with 2, without writing, when the marker
+/// already holds `value`: the hook already ran for this container (or start).
+fn lifecycle_marker_command(hook: &str, value: &str, remote_user: &str) -> Command {
+    let value = shell_single_quote(value);
     let remote_home_cmd = get_ent_passwd_shell_command(remote_user);
     let script = format!(
         r#"home_directory="${{HOME:-}}"
@@ -3670,15 +3703,15 @@ fi
 if [ -z "$home_directory" ]; then
   home_directory=/root
 fi
-marker="$home_directory/.devcontainer/.postStartCommandMarker"
+marker="$home_directory/.devcontainer/.{hook}Marker"
 if ! mkdir -p "$home_directory/.devcontainer"; then
   exit 1
 fi
 content="$(cat "$marker" 2>/dev/null || true)"
-if [ "$content" = {started_at} ]; then
+if [ "$content" = {value} ]; then
   exit 2
 fi
-printf '%s' {started_at} > "$marker""#,
+printf '%s' {value} > "$marker""#,
     );
     let mut command = Command::new("/bin/sh");
     command.args(["-c", &script]);
@@ -4074,6 +4107,7 @@ mod test {
         );
         let given_docker_config = DockerInspect {
             id: "docker_id".to_string(),
+            created: None,
             config: DockerInspectConfig {
                 labels: DockerConfigLabels {
                     metadata: Some(vec![metadata]),
@@ -4103,6 +4137,7 @@ mod test {
         );
         let given_docker_config = DockerInspect {
             id: "docker_id".to_string(),
+            created: None,
             config: DockerInspectConfig {
                 labels: DockerConfigLabels {
                     metadata: Some(vec![metadata]),
@@ -4211,6 +4246,7 @@ mod test {
         let build_resources = DockerBuildResources {
             image: DockerInspect {
                 id: "test_image:latest".to_string(),
+                created: None,
                 config: DockerInspectConfig {
                     labels: DockerConfigLabels {
                         metadata: None,
@@ -4329,6 +4365,7 @@ mod test {
         let build_resources = DockerBuildResources {
             image: DockerInspect {
                 id: "mcr.microsoft.com/devcontainers/base:ubuntu".to_string(),
+                created: None,
                 config: DockerInspectConfig {
                     labels: DockerConfigLabels::default(),
                     image_user: None,
@@ -4424,6 +4461,7 @@ mod test {
 
         let base_image = DockerInspect {
             id: "mcr.microsoft.com/devcontainers/base:ubuntu".to_string(),
+            created: None,
             config: DockerInspectConfig {
                 labels: DockerConfigLabels::default(),
                 image_user: None,
@@ -4490,6 +4528,7 @@ mod test {
         .unwrap();
         let base_image = DockerInspect {
             id: "base-image-id".to_string(),
+            created: None,
             config: DockerInspectConfig {
                 labels: DockerConfigLabels {
                     metadata: Some(metadata),
@@ -4557,6 +4596,7 @@ mod test {
 
         let devcontainer_up = DevContainerUp {
             started_at: Some("2026-06-23T10:00:00Z".to_string()),
+            created_at: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4631,6 +4671,7 @@ mod test {
 
         let devcontainer_up = DevContainerUp {
             started_at: Some("2026-06-23T10:00:00Z".to_string()),
+            created_at: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4702,6 +4743,7 @@ mod test {
         .unwrap();
         let devcontainer_up = DevContainerUp {
             started_at: None,
+            created_at: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4746,6 +4788,7 @@ mod test {
 
         let devcontainer_up = DevContainerUp {
             started_at: None,
+            created_at: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4782,6 +4825,7 @@ mod test {
 
         let devcontainer_up = DevContainerUp {
             started_at: None,
+            created_at: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4821,6 +4865,38 @@ mod test {
             std_fs::read_to_string(&marker).expect("marker should be written"),
             started_at
         );
+
+        std_fs::remove_dir_all(home_directory).expect("temporary home should be removed");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn create_hooks_are_marked_with_the_container_creation_time() {
+        let home_directory = temporary_home_directory("create-hook-markers");
+        let created_at = "2026-06-23T09:59:00Z";
+
+        for hook in ["onCreateCommand", "updateContentCommand", "postCreateCommand"] {
+            let first = run_shell_command(
+                super::lifecycle_marker_command(hook, created_at, "container-user"),
+                &home_directory,
+            );
+            assert!(first.status.success(), "{hook} should run the first time");
+            assert_eq!(
+                std_fs::read_to_string(
+                    home_directory
+                        .join(".devcontainer")
+                        .join(format!(".{hook}Marker"))
+                )
+                .expect("marker should be written"),
+                created_at
+            );
+
+            let again = run_shell_command(
+                super::lifecycle_marker_command(hook, created_at, "container-user"),
+                &home_directory,
+            );
+            assert_eq!(again.status.code(), Some(2), "{hook} should not run twice");
+        }
 
         std_fs::remove_dir_all(home_directory).expect("temporary home should be removed");
     }
@@ -8438,6 +8514,7 @@ RUN echo $RUBY_VERSION2
                 return Ok(DockerInspect {
                     id: "sha256:610e6cfca95280188b021774f8cf69dd6f49bdb6eebc34c5ee2010f4d51cc104"
                         .to_string(),
+                    created: None,
                     config: DockerInspectConfig {
                         labels: DockerConfigLabels {
                             metadata: Some(vec![HashMap::from([(
@@ -8457,6 +8534,7 @@ RUN echo $RUBY_VERSION2
                 return Ok(DockerInspect {
                     id: "sha256:39ad1c7264794d60e3bc449d9d8877a8e486d19ad8fba80f5369def6a2408392"
                         .to_string(),
+                    created: None,
                     config: DockerInspectConfig {
                         labels: DockerConfigLabels {
                             metadata: Some(vec![
@@ -8490,6 +8568,7 @@ RUN echo $RUBY_VERSION2
                 return Ok(DockerInspect {
                     id: "sha256:610e6cfca95280188b021774f8cf69dd6f49bdb6eebc34c5ee2010f4d51cc105"
                         .to_string(),
+                    created: None,
                     config: DockerInspectConfig {
                         labels: DockerConfigLabels {
                             metadata: Some(vec![HashMap::from([(
@@ -8509,6 +8588,7 @@ RUN echo $RUBY_VERSION2
                 return Ok(DockerInspect {
                     id: "sha256:610e6cfca95280188b021774f8cf69dd6f49bdb6eebc34c5ee2010f4d51cc105"
                         .to_string(),
+                    created: None,
                     config: DockerInspectConfig {
                         labels: DockerConfigLabels {
                             metadata: Some(vec![HashMap::from([(
@@ -8531,6 +8611,7 @@ RUN echo $RUBY_VERSION2
                 return Ok(DockerInspect {
                     id: "sha256:9da65c34ab809e763b13d238fd7a0f129fcabd533627d340f293308cb63620a0"
                         .to_string(),
+                    created: None,
                     config: DockerInspectConfig {
                         labels: DockerConfigLabels {
                             metadata: Some(vec![
@@ -8564,6 +8645,7 @@ RUN echo $RUBY_VERSION2
                 return Ok(DockerInspect {
                     id: "sha256:610e6cfca95280188b021774f8cf69dd6f49bdb6eebc34c5ee2010f4d51cc104"
                         .to_string(),
+                    created: None,
                     config: DockerInspectConfig {
                         labels: DockerConfigLabels {
                             metadata: Some(vec![HashMap::from([(
