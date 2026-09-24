@@ -10,7 +10,7 @@ use regex::Regex;
 
 use fs::{Fs, RenameOptions};
 use http_client::HttpClient;
-use remote::HostCommand;
+use remote::{EngineHost, HostCommand};
 
 use crate::host_files::HostFiles;
 use util::{ResultExt, command::Command, normalize_path};
@@ -217,6 +217,70 @@ impl DevContainerManifest {
         command.args(["-rf", "--", remote]);
         if let Err(e) = command.output().await {
             log::warn!("Failed to remove {remote} from the engine host: {e}");
+        }
+    }
+
+    /// The engine host's SSH agent socket to share with the container, so that `git`
+    /// and `ssh` in it use the user's keys.
+    ///
+    /// Docker Desktop for macOS exposes the Mac's agent at a fixed path inside its
+    /// VM. Elsewhere the socket must be a path on a Linux engine host. An SSH engine
+    /// host gets a new socket on every connection, which a mount made when the
+    /// container is created can't follow, so it isn't shared.
+    fn ssh_agent_socket(&self) -> Option<String> {
+        let host = self.docker_client.engine_host();
+        if matches!(host, EngineHost::Ssh(_)) || host.is_windows() {
+            return None;
+        }
+        let socket = self
+            .local_environment
+            .get("SSH_AUTH_SOCK")
+            .filter(|socket| socket.starts_with('/'))?;
+        if cfg!(target_os = "macos") && host.is_local() {
+            return Some(DOCKER_DESKTOP_SSH_AGENT_SOCKET.to_string());
+        }
+        Some(socket.clone())
+    }
+
+    /// Reads the engine host user's `~/.gitconfig`, if any.
+    async fn host_git_config(&self) -> Option<String> {
+        let host = self.docker_client.engine_host();
+        if host.is_local() {
+            let path = util::paths::home_dir().join(".gitconfig");
+            return self.fs.load(&path).await.ok();
+        }
+        let mut command = host.command("sh");
+        command.args(["-c", r#"exec cat -- "$HOME/.gitconfig""#]);
+        let output = command.output().await.ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Gives the container user the host user's git identity and settings, like
+    /// VS Code does, unless the container already has a `~/.gitconfig`.
+    async fn copy_git_config(&self, devcontainer_up: &DevContainerUp) {
+        let Some(git_config) = self.host_git_config().await else {
+            return;
+        };
+        let Ok(remote_folder) = self.remote_workspace_folder() else {
+            return;
+        };
+        let result = self
+            .docker_client
+            .run_docker_exec_status(
+                &devcontainer_up.container_id,
+                &remote_folder.display().to_string(),
+                &devcontainer_up.remote_user,
+                &devcontainer_up.remote_env,
+                copy_git_config_command(&git_config, &devcontainer_up.remote_user),
+            )
+            .await;
+        match result {
+            Ok((true, _)) => {}
+            Ok((false, stderr)) => log::warn!("Failed to copy .gitconfig: {stderr}"),
+            Err(e) => log::warn!("Failed to copy .gitconfig: {e:?}"),
         }
     }
 
@@ -1090,6 +1154,17 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
         for mount in dev_container.mounts.clone().unwrap_or_default() {
             append_mount_with_target_override(&mut mounts, mount);
         }
+        let ssh_agent_socket = self.ssh_agent_socket();
+        if let Some(socket) = &ssh_agent_socket {
+            append_mount_with_target_override(
+                &mut mounts,
+                MountDefinition {
+                    source: Some(socket.clone()),
+                    target: CONTAINER_SSH_AGENT_SOCKET.to_string(),
+                    mount_type: Some("bind".to_string()),
+                },
+            );
+        }
         privileged |= dev_container.privileged.unwrap_or(false);
         init |= dev_container.init.unwrap_or(false);
         for cap in dev_container.cap_add.clone().unwrap_or_default() {
@@ -1127,6 +1202,12 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                     }
                 }
             }
+        }
+        if ssh_agent_socket.is_some() {
+            container_env.insert(
+                "SSH_AUTH_SOCK".to_string(),
+                CONTAINER_SSH_AGENT_SOCKET.to_string(),
+            );
         }
         if let Some(config_env) = &dev_container.container_env {
             for (k, v) in config_env {
@@ -2547,16 +2628,19 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         }
 
         log::debug!("Checking for existing container");
-        if !force_rebuild && let Some(devcontainer) = self.check_for_existing_devcontainer().await?
+        let devcontainer_up = if !force_rebuild
+            && let Some(devcontainer) = self.check_for_existing_devcontainer().await?
         {
-            Ok(devcontainer)
+            devcontainer
         } else {
             log::debug!("Existing container not found. Building");
 
             let result = self.build_and_run().await;
             self.remove_remote_build_dir().await;
-            result
-        }
+            result?
+        };
+        self.copy_git_config(&devcontainer_up).await;
+        Ok(devcontainer_up)
     }
 
     async fn build_and_run(&mut self) -> Result<DevContainerUp, DevContainerError> {
@@ -3685,6 +3769,30 @@ fn lifecycle_scripts(
 /// The only interpolated value is `started_at`, an internally generated
 /// timestamp, so, unlike the actual `postStartCommand` text, it never has
 /// to embed arbitrary user-provided command text into shell source.
+/// Where the container sees the engine host's SSH agent socket.
+const CONTAINER_SSH_AGENT_SOCKET: &str = "/tmp/zed-ssh-agent.sock";
+/// The Mac's SSH agent, as Docker Desktop for macOS shares it with containers.
+const DOCKER_DESKTOP_SSH_AGENT_SOCKET: &str = "/run/host-services/ssh-auth.sock";
+
+/// Writes `git_config` to the container user's `~/.gitconfig` unless it exists. The
+/// contents are passed as an argument, never parsed by the shell.
+fn copy_git_config_command(git_config: &str, remote_user: &str) -> Command {
+    let remote_home_cmd = get_ent_passwd_shell_command(remote_user);
+    let script = format!(
+        r#"home_directory="${{HOME:-}}"
+if [ -z "$home_directory" ]; then
+  home_directory="$({remote_home_cmd} | cut -d: -f6)"
+fi
+if [ -z "$home_directory" ] || [ -e "$home_directory/.gitconfig" ]; then
+  exit 0
+fi
+printf '%s' "$1" > "$home_directory/.gitconfig""#,
+    );
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", &script, "sh", git_config]);
+    command
+}
+
 fn post_start_marker_command(started_at: &str, remote_user: &str) -> Command {
     lifecycle_marker_command("postStartCommand", started_at, remote_user)
 }
@@ -4443,6 +4551,55 @@ mod test {
     }
 
     #[gpui::test]
+    async fn shares_the_engine_hosts_ssh_agent_with_the_container(cx: &mut TestAppContext) {
+        let mut docker = FakeDocker::new();
+        docker.engine_host = EngineHost::Wsl(WslConnectionOptions {
+            distro_name: "Ubuntu".to_string(),
+            user: None,
+        });
+        let (_, mut devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            FakeFs::new(cx.executor()),
+            fake_http_client(),
+            Arc::new(docker),
+            Arc::new(TestCommandRunner::new()),
+            HashMap::from([(
+                "SSH_AUTH_SOCK".to_string(),
+                "/tmp/ssh-agent/agent.42".to_string(),
+            )]),
+            r#"{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+
+        let base_image = DockerInspect {
+            id: "mcr.microsoft.com/devcontainers/base:ubuntu".to_string(),
+            created: None,
+            config: DockerInspectConfig {
+                labels: DockerConfigLabels::default(),
+                image_user: None,
+                env: Vec::new(),
+            },
+            mounts: None,
+            state: None,
+        };
+        let resources = devcontainer_manifest
+            .build_merged_resources(base_image, "mcr.microsoft.com/devcontainers/base:ubuntu")
+            .unwrap();
+
+        assert!(resources.additional_mounts.contains(&MountDefinition {
+            source: Some("/tmp/ssh-agent/agent.42".to_string()),
+            target: "/tmp/zed-ssh-agent.sock".to_string(),
+            mount_type: Some("bind".to_string()),
+        }));
+        assert_eq!(
+            resources.container_env.get("SSH_AUTH_SOCK").map(String::as_str),
+            Some("/tmp/zed-ssh-agent.sock")
+        );
+    }
+
+    #[gpui::test]
     async fn should_not_override_entrypoint_when_override_command_is_false(
         cx: &mut TestAppContext,
     ) {
@@ -4864,6 +5021,36 @@ mod test {
         assert_eq!(
             std_fs::read_to_string(&marker).expect("marker should be written"),
             started_at
+        );
+
+        std_fs::remove_dir_all(home_directory).expect("temporary home should be removed");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_config_is_copied_only_when_the_container_has_none() {
+        let home_directory = temporary_home_directory("git-config-copy");
+        let git_config = "[user]\n\tname = Dev $(whoami) 'quoted'\n";
+
+        let first = run_shell_command(
+            super::copy_git_config_command(git_config, "container-user"),
+            &home_directory,
+        );
+        assert!(first.status.success());
+        assert_eq!(
+            std_fs::read_to_string(home_directory.join(".gitconfig")).unwrap(),
+            git_config
+        );
+
+        let second = run_shell_command(
+            super::copy_git_config_command("[user]\n\tname = Other\n", "container-user"),
+            &home_directory,
+        );
+        assert!(second.status.success());
+        assert_eq!(
+            std_fs::read_to_string(home_directory.join(".gitconfig")).unwrap(),
+            git_config,
+            "an existing .gitconfig is kept"
         );
 
         std_fs::remove_dir_all(home_directory).expect("temporary home should be removed");
