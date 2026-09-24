@@ -283,6 +283,51 @@ pub(crate) fn default_open_in_new_window(cx: &App) -> bool {
     )
 }
 
+/// Shows the dev container picker for `workspace`'s project.
+pub(crate) fn open_dev_container(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let project = workspace.project().read(cx);
+    // WSL projects run the container engine in their distribution.
+    let is_wsl_project = matches!(
+        project.remote_connection_options(cx),
+        Some(RemoteConnectionOptions::Wsl(_))
+    );
+    if !project.is_local() && !is_wsl_project {
+        cx.spawn_in(window, async move |_, cx| {
+            cx.prompt(
+                gpui::PromptLevel::Critical,
+                "Cannot open Dev Container from remote project",
+                Some("Dev Containers can be opened from local and WSL projects."),
+                &["OK"],
+            )
+            .await
+            .ok();
+        })
+        .detach();
+        return;
+    }
+
+    let fs = workspace.project().read(cx).fs().clone();
+    let configs = find_devcontainer_configs(workspace, cx);
+    let app_state = workspace.app_state().clone();
+    let dev_container_context = DevContainerContext::from_workspace(workspace, cx);
+    let handle = cx.entity().downgrade();
+    workspace.toggle_modal(window, cx, |window, cx| {
+        RemoteServerProjects::new_dev_container(
+            fs,
+            configs,
+            app_state,
+            dev_container_context,
+            window,
+            handle,
+            cx,
+        )
+    });
+}
+
 pub fn init(cx: &mut App) {
     #[cfg(target_os = "windows")]
     cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenFolderInWsl, cx| {
@@ -504,45 +549,7 @@ pub fn init(cx: &mut App) {
     cx.observe_new(DisconnectedOverlay::register).detach();
 
     cx.on_action(|_: &OpenDevContainer, cx| {
-        with_active_or_new_workspace(cx, move |workspace, window, cx| {
-            let project = workspace.project().read(cx);
-            // WSL projects run the container engine in their distribution.
-            let is_wsl_project = matches!(
-                project.remote_connection_options(cx),
-                Some(RemoteConnectionOptions::Wsl(_))
-            );
-            if !project.is_local() && !is_wsl_project {
-                cx.spawn_in(window, async move |_, cx| {
-                    cx.prompt(
-                        gpui::PromptLevel::Critical,
-                        "Cannot open Dev Container from remote project",
-                        Some("Dev Containers can be opened from local and WSL projects."),
-                        &["OK"],
-                    )
-                    .await
-                    .ok();
-                })
-                .detach();
-                return;
-            }
-
-            let fs = workspace.project().read(cx).fs().clone();
-            let configs = find_devcontainer_configs(workspace, cx);
-            let app_state = workspace.app_state().clone();
-            let dev_container_context = DevContainerContext::from_workspace(workspace, cx);
-            let handle = cx.entity().downgrade();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                RemoteServerProjects::new_dev_container(
-                    fs,
-                    configs,
-                    app_state,
-                    dev_container_context,
-                    window,
-                    handle,
-                    cx,
-                )
-            });
-        });
+        with_active_or_new_workspace(cx, open_dev_container);
     });
 
     // Subscribe to worktree additions to suggest opening the project in a dev container
