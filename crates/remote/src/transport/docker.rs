@@ -90,6 +90,8 @@ impl DockerConnectionOptions {
 
 pub(crate) struct DockerExecConnection {
     proxy_process: Mutex<Option<u32>>,
+    /// Forwards the ports that start listening in the container while connected.
+    port_forwarding: Mutex<Option<Task<()>>>,
     remote_dir_for_server: String,
     remote_binary_relpath: Option<Arc<RelPath>>,
     connection_options: DockerConnectionOptions,
@@ -109,6 +111,7 @@ impl DockerExecConnection {
     ) -> Result<Self> {
         let mut this = Self {
             proxy_process: Mutex::new(None),
+            port_forwarding: Mutex::new(None),
             remote_dir_for_server: "/".to_string(),
             remote_binary_relpath: None,
             connection_options,
@@ -779,6 +782,7 @@ impl DockerExecConnection {
     }
 
     fn kill_inner(&self) -> Result<()> {
+        self.port_forwarding.lock().take();
         if let Some(pid) = self.proxy_process.lock().take() {
             if let Ok(_) = kill_process_command(pid).spawn() {
                 Ok(())
@@ -789,6 +793,146 @@ impl DockerExecConnection {
             Ok(())
         }
     }
+}
+
+/// Forwards ports that listen in the container to the same ports on this machine,
+/// like VS Code's automatic port forwarding. Each accepted connection runs the
+/// remote server's `tcp-relay` in the container through `docker exec`, so it works
+/// wherever the engine runs (locally, in WSL, or over SSH).
+#[derive(Clone)]
+struct PortRelay {
+    connection_options: DockerConnectionOptions,
+    docker_cli: String,
+    engine_environment: Vec<(String, String)>,
+    remote_dir_for_server: String,
+    server_binary: String,
+    executor: gpui::BackgroundExecutor,
+}
+
+impl PortRelay {
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+
+    async fn forward_listening_ports(self) {
+        let mut handled = std::collections::HashSet::new();
+        let mut forwards = Vec::new();
+        loop {
+            match self.listening_ports().await {
+                Ok(ports) => {
+                    for port in ports {
+                        if !handled.insert(port) {
+                            continue;
+                        }
+                        // A port already bound here (e.g. published by `docker run`, or
+                        // used by another program) is left alone.
+                        let Ok(listener) = smol::net::TcpListener::bind(("127.0.0.1", port)).await
+                        else {
+                            continue;
+                        };
+                        log::info!("Forwarding dev container port {port} to localhost:{port}");
+                        forwards.push(self.executor.spawn(self.clone().accept(listener, port)));
+                    }
+                }
+                Err(error) => log::debug!("Failed to list the dev container's ports: {error:#}"),
+            }
+            smol::Timer::after(Self::POLL_INTERVAL).await;
+        }
+    }
+
+    async fn listening_ports(&self) -> Result<std::collections::BTreeSet<u16>> {
+        let mut command = engine_command(
+            &self.connection_options,
+            &self.docker_cli,
+            &self.engine_environment,
+        );
+        command.args([
+            "exec",
+            &self.connection_options.container_id,
+            "sh",
+            "-c",
+            "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null",
+        ]);
+        let output = command.output().await?;
+        Ok(parse_listening_ports(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
+    async fn accept(self, listener: smol::net::TcpListener, port: u16) {
+        while let Ok((stream, _)) = listener.accept().await {
+            let relay = self.clone();
+            self.executor
+                .spawn(async move {
+                    if let Err(error) = relay.relay(stream, port).await {
+                        log::debug!("Port {port} relay ended: {error:#}");
+                    }
+                })
+                .detach();
+        }
+    }
+
+    async fn relay(&self, stream: smol::net::TcpStream, port: u16) -> Result<()> {
+        use futures::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let mut command = engine_command(
+            &self.connection_options,
+            &self.docker_cli,
+            &self.engine_environment,
+        );
+        command.args([
+            "exec",
+            "-i",
+            "-u",
+            &self.connection_options.remote_user,
+            "-w",
+            &self.remote_dir_for_server,
+            &self.connection_options.container_id,
+            &self.server_binary,
+            "tcp-relay",
+            "--port",
+            &port.to_string(),
+        ]);
+        let mut command = command.to_command();
+        command
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn()?;
+        let mut child_stdin = child.stdin.take().context("relay has no stdin")?;
+        let mut child_stdout = child.stdout.take().context("relay has no stdout")?;
+        let (mut from_client, mut to_client) = stream.split();
+        let upload = async {
+            futures::io::copy(&mut from_client, &mut child_stdin)
+                .await
+                .ok();
+            child_stdin.close().await.ok();
+        };
+        let download = async {
+            futures::io::copy(&mut child_stdout, &mut to_client)
+                .await
+                .ok();
+            to_client.close().await.ok();
+        };
+        futures::future::join(upload, download).await;
+        Ok(())
+    }
+}
+
+/// The TCP ports listed as listening (state `0A`) in `/proc/net/tcp` and `tcp6`.
+fn parse_listening_ports(proc_net_tcp: &str) -> std::collections::BTreeSet<u16> {
+    proc_net_tcp
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let local_address = fields.nth(1)?;
+            let state = fields.nth(1)?;
+            if state != "0A" {
+                return None;
+            }
+            let (_, port) = local_address.rsplit_once(':')?;
+            u16::from_str_radix(port, 16).ok()
+        })
+        .collect()
 }
 
 fn engine_command(
@@ -910,6 +1054,18 @@ impl RemoteConnection for DockerExecConnection {
 
         let mut proxy_process = self.proxy_process.lock();
         *proxy_process = Some(child.id());
+
+        let relay = PortRelay {
+            connection_options: self.connection_options.clone(),
+            docker_cli: self.docker_cli().to_string(),
+            engine_environment: self.engine_environment.clone(),
+            remote_dir_for_server: self.remote_dir_for_server.clone(),
+            server_binary: remote_binary_relpath
+                .display(self.path_style())
+                .into_owned(),
+            executor: cx.background_executor().clone(),
+        };
+        *self.port_forwarding.lock() = Some(cx.background_spawn(relay.forward_listening_ports()));
 
         cx.spawn(async move |cx| {
             super::handle_rpc_messages_over_child_process_stdio(
@@ -1151,6 +1307,23 @@ mod tests {
     }
 
     #[test]
+    fn finds_listening_ports_in_proc_net_tcp() {
+        let proc_net_tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:0CEA 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2 1 0000000000000000 100 0 0 10 0
+   2: 0100007F:1F90 0100007F:9C40 01 00000000:00000000 00:00000000 00000000     0        0 3 1 0000000000000000 20 4 30 10 -1
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000000000000:2382 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4 1 0000000000000000 100 0 0 10 0
+";
+        assert_eq!(
+            super::parse_listening_ports(proc_net_tcp)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [3306, 8080, 9090]
+        );
+    }
+
+    #[test]
     fn redacts_forwarded_env() {
         let connection = connection(&[
             ("DATABASE_URL", "postgres://user:password@host/db"),
@@ -1287,6 +1460,7 @@ mod tests {
             path_style: None,
             shell: "/bin/sh".to_string(),
             engine_environment: Vec::new(),
+            port_forwarding: Mutex::new(None),
         }
     }
 

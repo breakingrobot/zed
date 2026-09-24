@@ -83,6 +83,8 @@ Files are linked from your workspace into the container according to the dev con
 
 Zed connects once the container is created and the lifecycle command set by `waitFor` has run (`updateContentCommand` by default). The later lifecycle commands, such as `postCreateCommand`, `postStartCommand` and `postAttachCommand`, then run as tasks in the Terminal Panel, where you can follow their output. If one fails, the ones after it don't run.
 
+When a program in the container starts listening on a TCP port, Zed forwards it to the same port on your machine, so `http://localhost:<port>` reaches it. Zed skips ports that are already in use on your machine, such as those published with `forwardPorts` or `appPort`.
+
 ## Extensions
 
 You can specify extensions in `.devcontainer/devcontainer.json` under the "customizations" field like so:

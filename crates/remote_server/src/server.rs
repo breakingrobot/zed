@@ -80,6 +80,12 @@ pub enum Commands {
         identifier: String,
     },
     Version,
+    /// Relays standard input and output to a TCP port of this machine, so a client
+    /// can forward the port through any command channel, such as `docker exec`.
+    TcpRelay {
+        #[arg(long)]
+        port: u16,
+    },
 }
 
 pub fn run(command: Commands) -> anyhow::Result<()> {
@@ -104,6 +110,7 @@ pub fn run(command: Commands) -> anyhow::Result<()> {
             identifier,
             reconnect,
         } => execute_proxy(identifier, reconnect).context("running proxy on the remote server"),
+        Commands::TcpRelay { port } => execute_tcp_relay(port),
         Commands::Version => {
             let release_channel = *RELEASE_CHANNEL;
             match release_channel {
@@ -124,6 +131,26 @@ pub fn run(command: Commands) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+fn execute_tcp_relay(port: u16) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use std::io::Write as _;
+    use std::net::{Shutdown, TcpStream};
+
+    let socket = TcpStream::connect(("127.0.0.1", port))
+        .or_else(|_| TcpStream::connect(("::1", port)))
+        .with_context(|| format!("connecting to port {port}"))?;
+    let mut to_socket = socket.try_clone()?;
+    std::thread::spawn(move || {
+        std::io::copy(&mut std::io::stdin().lock(), &mut to_socket).log_err();
+        to_socket.shutdown(Shutdown::Write).log_err();
+    });
+    let mut from_socket = socket;
+    let mut stdout = std::io::stdout().lock();
+    std::io::copy(&mut from_socket, &mut stdout)?;
+    stdout.flush()?;
+    Ok(())
 }
 
 pub static VERSION: LazyLock<String> = LazyLock::new(|| match *RELEASE_CHANNEL {
