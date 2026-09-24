@@ -31,6 +31,21 @@ When you open a project that contains the `.devcontainer/devcontainer.json` dire
 If you dismiss the prompt or want to reopen the project inside a container later, you can use Zed's command palette to run the "Project: Open Remote" command and select the option to open the project in a dev container.
 Alternatively, you can reach for the Remote Projects modal (through the {#kb projects::OpenRemote} binding) and choose the "Connect Dev Container" option.
 
+## WSL projects {#wsl-projects}
+
+On Windows, you can open a dev container from a project that lives in a WSL distribution. Zed then runs the container engine inside that distribution, where your sources are:
+
+- `docker` (or `podman`) must be installed in the distribution and available in its `PATH`. Docker Desktop works through its WSL integration.
+- `initializeCommand` runs in the distribution, from your project folder.
+- `${localEnv:VAR}` reads the environment of a login shell in the distribution.
+- Bind mounts use the distribution's paths, such as `/home/you/project`.
+- Ports from numeric `forwardPorts` and `appPort` are published in the distribution. From Windows, reach them through WSL's localhost forwarding.
+
+To open one:
+
+1. Open your project through WSL (for example with `zed --wsl Ubuntu /home/you/project`, or from the Remote Projects modal).
+2. Run "Reopen in Dev Container" from the prompt, or open the Remote Projects modal and choose "Connect Dev Container".
+
 ## Editing the dev container configuration
 
 If you modify `.devcontainer/devcontainer.json`, Zed does not currently rebuild or reload the container automatically. After changing configuration:
@@ -71,6 +86,7 @@ Note that extensions load for the Zed session, so these extensions will exist on
 > **Note:** This feature is still in development.
 
 - **Configuration changes:** Updates to `devcontainer.json` do not trigger automatic rebuilds or reloads; containers must be manually restarted.
+- **Remote projects:** Dev containers open from local and WSL projects only. Projects opened over SSH are not supported yet.
 
 ## See also
 
