@@ -118,6 +118,8 @@ rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; auc
 | C1 + C2 + C3 | `c1-engine-host` (sur `integration`) | `b2a4964540` | Windows ; `EngineHost` (6 tests) |
 | C4 + C5 (partiel) | `c4-connection-host` | `87f237221e` | Windows ; colonne `engine_host` sans test dédié |
 | C7 | `c7-wsl-projects` | `16ec2eb299` | Windows ; test manifest WSL ; **e2e réel à faire** |
+| C7 (suite) + C2b (partiel) | `c7b-wsl-followups` | `b02563cadf` | Windows ; suggestion WSL, environnement de login, correctif `zed --dev-container` (fenêtre inactive), test de persistance de l'hôte, doc |
+| C6 | `c6-ssh-projects` | `c8986b84f1` | Windows ; `EngineHost::Ssh` (`BatchMode`, quoting POSIX), fichiers du projet lus sur l'hôte, dossier de build copié par tar, envoi dans le conteneur par `docker exec -i`, doc ; **e2e réel à faire** (sshd de test sur `localhost:2222`) |
 
 Écarts au plan :
 
@@ -125,9 +127,8 @@ rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; auc
   en base. C7 passe **avant** C6 (priorité utilisateur : WSL).
 - ADR-002 révisé (section « Révision d'implémentation ») : `EngineHost` dans `remote`, `wsl.exe --exec`, fichiers via
   `\\wsl.localhost`.
-- Reste : T1, A8b, C2b (environnement de login), C6 (SSH), C8, D1/D2, E1, E2 ; suggestion automatique pour les projets
-  WSL ; test de migration `engine_host` ; redirection de ports WSL ; `zed --dev-container` sans effet sur `main`
-  (cause non trouvée, voir `07` §7).
+- Reste : T1, A8b, C2b complet (`DOCKER_HOST` de login pour les commandes du moteur), C8, D1/D2, E1, E2 ; SSH
+  sans ControlMaster sous Windows (une connexion par commande) ; e2e WSL et SSH à exécuter.
 
 ## 4. Brouillon de proposition (C0) — NON POSTÉ
 
