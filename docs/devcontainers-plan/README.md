@@ -70,7 +70,7 @@ Toutes les branches sont empilées ; la dernière, **`devcontainers/e1-lifecycle
 | Robustesse | `t1-workspace-trust` → `c2b-host-environment` → `c8-unsupported-setups` | porte de confiance, `PATH`/`DOCKER_HOST` de login, refus explicites |
 | Cycle de vie | `e1-lifecycle-actions` | reconnect / restart / rebuild / stop / delete (commits d'Alex Berger), passage par l'hôte |
 
-Installeurs locaux (Zed Dev, non signés) : `H:\Sources\zed-wtrtifacts\` (`…-c7.exe` WSL, `…-c6.exe` WSL + SSH,
+Installeurs locaux (Zed Dev, non signés) : `H:\Sources\zed-wt\artifacts\` (`…-c7.exe` WSL, `…-c6.exe` WSL + SSH,
 `…-final.exe` tout).
 
 Reste : e2e réels WSL / SSH / Podman (guide `09`), A8b (gelé par décision), D1/D2 (WSLc), reprise de la barre latérale et
