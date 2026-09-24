@@ -124,7 +124,7 @@ rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; auc
 | E2 (SSH) | `e2-ssh-port-forwarding` | `ade9150128` | `-L` sur le proxy ssh pour `forwardPorts`/`appPort` ; compilé et testé (Windows) |
 | C2b | `c2b-host-environment` | `49912efcc5` | `PATH`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `CONTAINER_HOST`… du shell de login passés aux commandes du moteur (création et connexion) ; compilé et testé (Windows) |
 | C8 | `c8-unsupported-setups` | `d4816b32f5` | raisons précises (collab, déjà dans un conteneur, hôte SSH Windows), `DOCKER_HOST` distant avec projet local refusé ; corrige un projet collab traité comme local ; compilé et testé (Windows) |
-| E1 | `e1-lifecycle-actions` | `8551605d9c` | 4 commits d'Alex Berger (actions, opérations, reconnexion, menu) + passage par l'hôte + doc ; sidebar et vue agent de #60975 non repris ; compilé et testé (Windows) |
+| E1 | `e1-lifecycle-actions` | `f6766ae6f1` | 4 commits d'Alex Berger (actions, opérations, reconnexion, menu) + passage par l'hôte + doc ; sidebar et vue agent de #60975 non repris ; compilé et testé (Windows) |
 
 Écarts au plan :
 
