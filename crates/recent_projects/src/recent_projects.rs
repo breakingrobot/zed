@@ -34,7 +34,7 @@ use picker::{
     Picker, PickerDelegate, ScrollBehavior,
     highlighted_match_with_paths::{HighlightedMatch, HighlightedMatchWithPaths},
 };
-use project::{Worktree, git_store::Repository, trusted_worktrees::TrustedWorktrees};
+use project::{Worktree, git_store::Repository};
 pub use remote_connections::RemoteSettings;
 pub use remote_servers::RemoteServerProjects;
 use settings::{DefaultOpenBehavior, Settings, WorktreeId};
