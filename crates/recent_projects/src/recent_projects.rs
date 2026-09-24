@@ -505,12 +505,18 @@ pub fn init(cx: &mut App) {
 
     cx.on_action(|_: &OpenDevContainer, cx| {
         with_active_or_new_workspace(cx, move |workspace, window, cx| {
-            if !workspace.project().read(cx).is_local() {
+            let project = workspace.project().read(cx);
+            // WSL projects run the container engine in their distribution.
+            let is_wsl_project = matches!(
+                project.remote_connection_options(cx),
+                Some(RemoteConnectionOptions::Wsl(_))
+            );
+            if !project.is_local() && !is_wsl_project {
                 cx.spawn_in(window, async move |_, cx| {
                     cx.prompt(
                         gpui::PromptLevel::Critical,
                         "Cannot open Dev Container from remote project",
-                        None,
+                        Some("Dev Containers can be opened from local and WSL projects."),
                         &["OK"],
                     )
                     .await

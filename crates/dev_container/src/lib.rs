@@ -9,7 +9,7 @@ use http_client::anyhow;
 use picker::Picker;
 use picker::PickerDelegate;
 use project::ProjectEnvironment;
-use remote::EngineHost;
+use remote::{EngineHost, RemoteConnectionOptions};
 use settings::RegisterSetting;
 use settings::Settings;
 use std::collections::HashMap;
@@ -110,8 +110,19 @@ pub struct DevContainerContext {
 
 impl DevContainerContext {
     pub fn from_workspace(workspace: &Workspace, cx: &App) -> Option<Self> {
-        let project_directory = workspace.project().read(cx).active_project_directory(cx)?;
-        let engine_host = EngineHost::Local;
+        let project = workspace.project().read(cx);
+        let root = project.active_project_directory(cx)?;
+        // The engine runs where the sources are. For a project opened through WSL,
+        // that is the distribution, and Zed reaches its files over `\\wsl.localhost`.
+        let (engine_host, project_directory) = match project.remote_connection_options(cx) {
+            None => (EngineHost::Local, root),
+            Some(RemoteConnectionOptions::Wsl(options)) => {
+                let host = EngineHost::Wsl(options);
+                let local = host.local_path(&root.to_string_lossy().replace('\\', "/"));
+                (host, Arc::from(local.as_path()))
+            }
+            Some(_) => return None,
+        };
         let settings = DevContainerSettings::get_global(cx);
         let use_podman = settings.use_podman;
         let use_buildkit = settings.use_buildkit;
