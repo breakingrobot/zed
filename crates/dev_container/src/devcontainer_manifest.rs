@@ -2546,8 +2546,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         }
 
         log::debug!("Checking for existing container");
-        if !force_rebuild
-            && let Some(devcontainer) = self.check_for_existing_devcontainer().await?
+        if !force_rebuild && let Some(devcontainer) = self.check_for_existing_devcontainer().await?
         {
             Ok(devcontainer)
         } else {
@@ -4006,7 +4005,7 @@ mod test {
         .await
         .unwrap();
 
-        let devcontainer_up = devcontainer_manifest.open().await.unwrap();
+        let devcontainer_up = devcontainer_manifest.open(false).await.unwrap();
 
         assert_eq!(devcontainer_up.container_id, "found_docker_ps");
         let initialize_commands = test_dependencies.command_runner.commands_by_program("echo");
@@ -4037,7 +4036,7 @@ mod test {
         .await
         .unwrap();
 
-        let result = devcontainer_manifest.open().await;
+        let result = devcontainer_manifest.open(false).await;
 
         let Err(DevContainerError::CommandFailed(label)) = result else {
             panic!("expected initializeCommand to fail, got {result:?}");
@@ -4213,7 +4212,10 @@ mod test {
             image: DockerInspect {
                 id: "test_image:latest".to_string(),
                 config: DockerInspectConfig {
-                    labels: DockerConfigLabels { metadata: None },
+                    labels: DockerConfigLabels {
+                        metadata: None,
+                        ..Default::default()
+                    },
                     image_user: None,
                     env: Vec::new(),
                 },
