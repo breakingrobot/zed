@@ -4511,6 +4511,58 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_dev_container_connection_keeps_its_engine_host() {
+        let db =
+            WorkspaceDb::open_test_db("test_dev_container_connection_keeps_its_engine_host").await;
+
+        let wsl_host = EngineHost::Wsl(WslConnectionOptions {
+            distro_name: "Ubuntu".to_string(),
+            user: None,
+        });
+        let make_options = |host: EngineHost| {
+            RemoteConnectionOptions::Docker(DockerConnectionOptions {
+                name: "project".to_string(),
+                container_id: "container-1".to_string(),
+                remote_user: "vscode".to_string(),
+                local_folder: Some("/home/user/project".to_string()),
+                config_file: Some("/home/user/project/.devcontainer/devcontainer.json".to_string()),
+                upload_binary_over_docker_exec: false,
+                use_podman: false,
+                remote_env: BTreeMap::default(),
+                host,
+            })
+        };
+
+        let on_wsl = db
+            .get_or_create_remote_connection(make_options(wsl_host.clone()))
+            .await
+            .unwrap();
+        let RemoteConnectionOptions::Docker(reloaded) = db.remote_connection(on_wsl).unwrap()
+        else {
+            panic!("expected a docker connection");
+        };
+        assert_eq!(reloaded.host, wsl_host);
+
+        // The same folder on another machine is another dev container.
+        let local = db
+            .get_or_create_remote_connection(make_options(EngineHost::Local))
+            .await
+            .unwrap();
+        assert_ne!(on_wsl, local);
+        let RemoteConnectionOptions::Docker(reloaded) = db.remote_connection(local).unwrap() else {
+            panic!("expected a docker connection");
+        };
+        assert_eq!(reloaded.host, EngineHost::Local);
+
+        assert_eq!(
+            db.get_or_create_remote_connection(make_options(wsl_host))
+                .await
+                .unwrap(),
+            on_wsl
+        );
+    }
+
+    #[gpui::test]
     async fn test_get_or_create_ssh_project_with_null_user() {
         let db = WorkspaceDb::open_test_db("test_get_or_create_ssh_project_with_null_user").await;
 
