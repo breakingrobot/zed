@@ -4,12 +4,16 @@ use std::sync::{Arc, Weak};
 
 use anyhow::Context as _;
 use dev_container::{
-    DeferredHook, DevContainerConfig, DevContainerContext, find_devcontainer_configs,
+    DeferredHook, DevContainerConfig, DevContainerContext, StartedDevContainer,
+    find_devcontainer_configs,
 };
-use gpui::{AsyncApp, AsyncWindowContext, Context, WeakEntity, Window, WindowHandle};
+use gpui::{
+    AppContext as _, AsyncApp, AsyncWindowContext, Context, WeakEntity, Window, WindowHandle,
+};
 use project::TaskSourceKind;
 use remote::{DockerConnectionOptions, RemoteConnectionOptions};
 use task::{TaskContext, TaskTemplate};
+use workspace::notifications::{NotificationId, simple_message_notification::MessageNotification};
 use workspace::{AppState, MultiWorkspace, OpenOptions, Workspace, tasks::ScheduledTaskResult};
 
 use crate::remote_connections::{Connection, RemoteConnectionModal, open_remote_project};
@@ -544,7 +548,12 @@ fn reconnect_connected_dev_container(
         )
         .await;
 
-        let (connection, starting_dir, deferred_hooks) = match start_result {
+        let StartedDevContainer {
+            connection,
+            remote_workspace_folder: starting_dir,
+            deferred_hooks,
+            config_changed,
+        } = match start_result {
             Ok(result) => result,
             Err(e) => {
                 log::error!("Failed to start dev container: {e}");
@@ -571,7 +580,12 @@ fn reconnect_connected_dev_container(
         .await;
 
         match result {
-            Ok(window) => run_deferred_hooks(window, starting_dir, deferred_hooks, cx),
+            Ok(window) => {
+                if config_changed {
+                    suggest_rebuild(window, cx);
+                }
+                run_deferred_hooks(window, starting_dir, deferred_hooks, cx);
+            }
             Err(e) => {
                 log::error!("Failed to reconnect to dev container: {e:#}");
                 prompt_error(cx, "Failed to reconnect", format!("{e:#}")).await;
@@ -579,6 +593,35 @@ fn reconnect_connected_dev_container(
         }
     })
     .detach();
+}
+
+/// Tells the user that the dev container was created from an older configuration,
+/// and offers to rebuild it, as VS Code does.
+pub(crate) fn suggest_rebuild(window: WindowHandle<MultiWorkspace>, cx: &mut AsyncApp) {
+    struct DevContainerConfigChanged;
+
+    window
+        .update(cx, |multi_workspace, _window, cx| {
+            multi_workspace.workspace().update(cx, |workspace, cx| {
+                workspace.show_notification(
+                    NotificationId::unique::<DevContainerConfigChanged>(),
+                    cx,
+                    |cx| {
+                        cx.new(|cx| {
+                            MessageNotification::new(
+                                "The Dev Container configuration changed since the container was created. Rebuild it to apply the changes.",
+                                cx,
+                            )
+                            .primary_message("Rebuild Container")
+                            .primary_on_click(|window, cx| {
+                                window.dispatch_action(Box::new(zed_actions::RebuildDevContainer), cx);
+                            })
+                        })
+                    },
+                );
+            })
+        })
+        .ok();
 }
 
 /// Runs the lifecycle hooks the spec's `waitFor` let through after connecting, as
@@ -727,16 +770,15 @@ pub(crate) async fn rebuild_dev_container_connection(
     let environment = context.environment(cx).await;
 
     // The caller reconnects the existing window itself, so every hook runs before.
-    let (connection, _starting_dir, _deferred_hooks) =
-        dev_container::start_dev_container_with_config(
-            context,
-            Some(config),
-            environment,
-            true,
-            false,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let StartedDevContainer { connection, .. } = dev_container::start_dev_container_with_config(
+        context,
+        Some(config),
+        environment,
+        true,
+        false,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     Ok(Connection::DevContainer(connection).into())
 }

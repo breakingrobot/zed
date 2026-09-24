@@ -62,7 +62,7 @@ To open one, open your project over SSH, then run "Reopen in Dev Container" from
 
 ## Editing the dev container configuration
 
-If you modify `.devcontainer/devcontainer.json`, Zed does not rebuild or reload the container automatically. After changing configuration, run {#action projects::RebuildDevContainer} from the dev container window: Zed removes the container, builds it again and reconnects.
+If you modify `.devcontainer/devcontainer.json`, or the Dockerfile or Compose files it uses, Zed does not rebuild the container automatically. When you next open or reconnect to the container, Zed notices that the configuration changed since the container was created and offers to rebuild it. You can also run {#action projects::RebuildDevContainer} from the dev container window at any time: Zed removes the container, builds it again and reconnects.
 
 ## Managing a Dev Container {#managing}
 
@@ -121,7 +121,7 @@ Note that extensions load for the Zed session, so these extensions will exist on
 
 > **Note:** This feature is still in development.
 
-- **Configuration changes:** Updates to `devcontainer.json` do not trigger an automatic rebuild; run Rebuild Dev Container.
+- **Configuration changes:** Updates to `devcontainer.json` do not trigger an automatic rebuild; Zed offers one when you next open or reconnect to the container.
 - **Remote projects:** Dev containers open from local, WSL, and SSH projects. SSH hosts running Windows are not supported.
 - **SSH hosts:** The login shell on the host must be POSIX-compatible (such as `bash`, `zsh`, or `sh`).
 - **Ports on SSH hosts:** If a port that Zed forwards from an SSH host is already in use on your machine, that port is not forwarded.

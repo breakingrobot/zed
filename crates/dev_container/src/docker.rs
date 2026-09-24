@@ -56,6 +56,10 @@ pub(crate) struct DockerConfigLabels {
     /// container. See `local_folder` above.
     #[serde(default, rename = "devcontainer.config_file")]
     pub(crate) config_file: Option<String>,
+    /// A digest of the configuration the container was created from. See
+    /// `CONFIG_HASH_LABEL`.
+    #[serde(default, rename = "dev.zed.config-hash")]
+    pub(crate) config_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
