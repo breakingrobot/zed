@@ -472,11 +472,27 @@ impl DockerExecConnection {
         src_path: String,
         dst_path: String,
     ) -> Result<()> {
-        // `docker cp` reads the source on the engine host.
-        let host_src_path = connection_options.host.host_path(Path::new(&src_path));
+        if !connection_options.host.has_local_files() {
+            Self::stream_into_container(&docker_cli, &connection_options, &src_path, &dst_path)
+                .await?;
+        } else {
+            Self::copy_into_container(&docker_cli, &connection_options, &src_path, &dst_path)
+                .await?;
+        }
+        Self::chown(&docker_cli, &connection_options, &dst_path).await
+    }
+
+    /// `docker cp` reads the source on the engine host, which must see our files.
+    async fn copy_into_container(
+        docker_cli: &str,
+        connection_options: &DockerConnectionOptions,
+        src_path: &str,
+        dst_path: &str,
+    ) -> Result<()> {
+        let host_src_path = connection_options.host.host_path(Path::new(src_path));
         let mut command = docker_command(
-            &connection_options,
-            &docker_cli,
+            connection_options,
+            docker_cli,
             &[
                 "cp".to_string(),
                 "-a".to_string(),
@@ -498,10 +514,60 @@ impl DockerExecConnection {
                 stderr,
             );
         }
+        Ok(())
+    }
 
+    /// Sends a file or folder of this machine into the container through
+    /// `docker exec`'s standard input, for engine hosts that can't read our files.
+    async fn stream_into_container(
+        docker_cli: &str,
+        connection_options: &DockerConnectionOptions,
+        src_path: &str,
+        dst_path: &str,
+    ) -> Result<()> {
+        let src = Path::new(src_path);
+        let (script, input) = if smol::fs::metadata(src).await?.is_dir() {
+            let mut archive = async_tar::Builder::new(Vec::new());
+            archive.append_dir_all(".", src).await?;
+            (
+                r#"mkdir -p "$1" && tar -xf - -C "$1""#,
+                archive.into_inner().await?,
+            )
+        } else {
+            (
+                r#"mkdir -p "$(dirname "$1")" && cat > "$1""#,
+                smol::fs::read(src).await?,
+            )
+        };
+        let mut command = connection_options.host.command(docker_cli);
+        command.args([
+            "exec",
+            "-i",
+            &connection_options.container_id,
+            "sh",
+            "-c",
+            script,
+            "sh",
+            dst_path,
+        ]);
+        let output = command.output_with_stdin(&input).await?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to upload {src_path} -> {dst_path}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
+    }
+
+    async fn chown(
+        docker_cli: &str,
+        connection_options: &DockerConnectionOptions,
+        dst_path: &str,
+    ) -> Result<()> {
         let mut chown_command = docker_command(
-            &connection_options,
-            &docker_cli,
+            connection_options,
+            docker_cli,
             &[
                 "exec".to_string(),
                 connection_options.container_id.clone(),
@@ -510,7 +576,7 @@ impl DockerExecConnection {
                     "{}:{}",
                     connection_options.remote_user, connection_options.remote_user,
                 ),
-                dst_path.clone(),
+                dst_path.to_string(),
             ],
         );
         chown_command.kill_on_drop(true);
@@ -900,7 +966,11 @@ impl RemoteConnection for DockerExecConnection {
 
         docker_args.append(&mut inner_program);
 
-        let command = self.docker_command(&docker_args);
+        let mut command = self.connection_options.host.command(self.docker_cli());
+        command
+            .args(&docker_args)
+            .interactive(interactive == Interactive::Yes);
+        let command = command.to_command();
         Ok(CommandTemplate {
             program: command.get_program().to_string_lossy().into_owned(),
             args: command
