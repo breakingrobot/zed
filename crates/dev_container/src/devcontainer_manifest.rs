@@ -2227,13 +2227,22 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             }
         };
 
-        if &docker_cli == "podman" {
+        // Like the reference CLI, only rootless Podman on Linux needs these: elsewhere Podman
+        // runs in a VM (`podman machine`) where they are unnecessary, and mapping the host
+        // user into the container only makes sense for a non-root remote user.
+        if &docker_cli == "podman" && cfg!(target_os = "linux") {
             run_if_missing(
                 "--security-opt",
                 "--security-opt=label=disable",
                 &mut command,
             );
-            run_if_missing("--userns", "--userns=keep-id", &mut command);
+            let has_id_mapping = run_args
+                .iter()
+                .any(|arg| arg.starts_with("--uidmap") || arg.starts_with("--gidmap"));
+            let remote_user = get_remote_user_from_config(&build_resources.image, self)?;
+            if !has_id_mapping && remote_user != "root" && remote_user != "0" {
+                run_if_missing("--userns", "--userns=keep-id", &mut command);
+            }
         }
 
         run_if_missing("--sig-proxy", "--sig-proxy=false", &mut command);
@@ -3841,6 +3850,87 @@ mod test {
         assert!(!is_local_feature_ref("ghcr.io/devcontainers/features/go:1"));
         assert!(!is_local_feature_ref("ghcr.io/user/repo/node:18.0.0"));
         assert!(!is_local_feature_ref("https://example.com/feature.tgz"));
+    }
+
+    async fn podman_run_arguments(
+        cx: &mut TestAppContext,
+        devcontainer_contents: &str,
+    ) -> Vec<String> {
+        let mut docker = FakeDocker::new();
+        docker.podman = true;
+        let (_, devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            FakeFs::new(cx.executor()),
+            fake_http_client(),
+            Arc::new(docker),
+            Arc::new(TestCommandRunner::new()),
+            HashMap::new(),
+            devcontainer_contents,
+        )
+        .await
+        .unwrap();
+        let build_resources = DockerBuildResources {
+            image: DockerInspect {
+                id: "test_image:latest".to_string(),
+                config: DockerInspectConfig {
+                    labels: DockerConfigLabels { metadata: None },
+                    image_user: None,
+                    env: Vec::new(),
+                },
+                mounts: None,
+                state: None,
+            },
+            image_tag: "test_image:latest".to_string(),
+            additional_mounts: vec![],
+            container_env: HashMap::new(),
+            privileged: false,
+            init: false,
+            cap_add: vec![],
+            security_opt: vec![],
+            entrypoint_script: None,
+        };
+        let command = devcontainer_manifest
+            .create_docker_run_command(build_resources)
+            .unwrap();
+        command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[gpui::test]
+    async fn podman_user_namespace_options_follow_the_reference_cli(cx: &mut TestAppContext) {
+        let non_root_user = podman_run_arguments(
+            cx,
+            r#"{ "image": "test_image:latest", "remoteUser": "vscode" }"#,
+        )
+        .await;
+        let root_user = podman_run_arguments(
+            cx,
+            r#"{ "image": "test_image:latest", "remoteUser": "root" }"#,
+        )
+        .await;
+        let id_mapped_user = podman_run_arguments(
+            cx,
+            r#"{ "image": "test_image:latest", "remoteUser": "vscode", "runArgs": ["--uidmap=0:1:1"] }"#,
+        )
+        .await;
+
+        let contains = |arguments: &[String], expected: &str| {
+            arguments.iter().any(|argument| argument == expected)
+        };
+        if cfg!(target_os = "linux") {
+            assert!(contains(&non_root_user, "--security-opt=label=disable"));
+            assert!(contains(&non_root_user, "--userns=keep-id"));
+            assert!(contains(&root_user, "--security-opt=label=disable"));
+            assert!(!contains(&root_user, "--userns=keep-id"));
+            assert!(!contains(&id_mapped_user, "--userns=keep-id"));
+        } else {
+            for arguments in [&non_root_user, &root_user, &id_mapped_user] {
+                assert!(!contains(arguments, "--security-opt=label=disable"));
+                assert!(!contains(arguments, "--userns=keep-id"));
+            }
+        }
     }
 
     #[gpui::test]
