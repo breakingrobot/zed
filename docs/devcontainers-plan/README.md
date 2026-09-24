@@ -1,7 +1,8 @@
 # Plan d'ingénierie — support Dev Containers robuste (Zed)
 
 Dossier de travail local (branche `plan/devcontainers`), **hors de l'arbre mdBook publié** (`docs/book.toml` → `src = "src"`).
-Rien n'a été poussé, posté ni ouvert sur GitHub (`gh` en lecture seule). Base : `main` = `16c9aa7ea6` (2026-09-22).
+Plan rédigé sur `main` = `16c9aa7ea6` (2026-09-22) ; branches rebasées sur `a405fb91d5` et poussées sur le fork
+personnel `breakingrobot/zed` (aucune PR ouverte, rien posté sur `zed-industries/zed`).
 
 ## Résumé exécutif
 
@@ -39,7 +40,7 @@ Rien n'a été poussé, posté ni ouvert sur GitHub (`gh` en lecture seule). Bas
    - fixtures prêtes ;
    - vecteurs `devcontainerId` recoupés avec le code du CLI de référence ;
    - contrats `wslc` enregistrés ;
-   - e2e **pas encore exécutés** (Docker Engine installé dans WSL le 2026-09-24).
+   - CLI de référence : 4/4 fixtures conformes ; e2e Zed : voir `07` §7.
 9. **Revue adverse** (`08`) : 46 références relues (37 ✅ · 7 ⚠️ · 2 ❌) ; les 10 corrections prioritaires ont été revérifiées puis appliquées.
 
 ## Décisions et hypothèses
@@ -53,6 +54,12 @@ Rien n'a été poussé, posté ni ouvert sur GitHub (`gh` en lecture seule). Bas
 | Sécurité : env persisté en clair | toujours en suspens (hors décision du 2026-09-24) |
 | Installations pour les tests réels | ✅ **validé** → Docker Engine 29.1.3 + buildx 0.30.1 + compose 2.40.3 dans la distro Ubuntu 26.04 (WSL) |
 | Publication de la proposition C0 | ❌ **refusé pour l'instant** : brouillon conservé, non posté |
+
+## Implémentation
+
+État branche par branche : `06-pr-stack.md` §3bis. Résultats de tests : `07-test-strategy.md` §7.
+Correctifs A2–A8a et B1 fusionnés dans `devcontainers/integration` ; piste C (WSL) empilée dessus :
+`c1-engine-host` → `c4-connection-host` → `c7-wsl-projects`.
 
 ## Documents
 

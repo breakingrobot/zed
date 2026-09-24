@@ -25,3 +25,17 @@
     chemin du CLI, **avant** d'activer SSH/WSL (nouvelle PR C2b).
   - **Performance** : sous Windows, SSH n'a pas de ControlMaster (`remote/src/transport/ssh.rs:236`) → chaque commande ouvre
     une connexion complète ; regrouper les commandes (script unique pour les lectures) et mesurer avant C6.
+- **Révision d'implémentation (2026-09-24, branche `devcontainers/c1-engine-host`)** :
+  - `EngineHost` vit dans le crate **`remote`** (`remote/src/engine_host.rs`), pas dans `dev_container` : la connexion
+    (`DockerExecConnection`) en a besoin et `settings_content`/`workspace` le persistent. Il est sérialisable
+    (`enum { Local, Wsl(WslConnectionOptions) }`), ce qui fusionne `EngineHost` (ADR-002) et `DockerHost` (ADR-004).
+  - Variante WSL : `wsl.exe --distribution <d> [--user u] [--cd dir] --exec [env K=V…] <prog> <args…>`. `--exec` ne passe
+    par **aucun shell** : les arguments arrivent tels quels, sans quoting maison ; l'environnement Windows n'étant pas
+    hérité, il est passé par `env`. On n'utilise donc pas `RemoteConnection::build_command` pour WSL (qui, lui, construit
+    une chaîne pour le shell de l'utilisateur) ; il reste la base prévue pour SSH (C6), où un shell est inévitable.
+  - `HostCommand` porte programme, arguments, env et répertoire ; `to_command()` produit en local **exactement** la commande
+    d'avant (vérifié par les tests existants, inchangés, et `local_command_is_built_as_is`).
+  - Fichiers : pas de `HostFiles` pour WSL ; Zed lit et écrit les fichiers de la distro par `\wsl.localhost\<distro>\…`
+    (`EngineHost::local_path`) et convertit chaque chemin passé au moteur (`EngineHost::host_path` : UNC → `/…`,
+    `C:\…` → `/mnt/c/…`). `HostFiles` par commandes reste nécessaire pour SSH.
+  - Environnement de l'hôte (`${localEnv:…}`) : `env -0` exécuté sur l'hôte, **non-login** (C2b reste à faire).

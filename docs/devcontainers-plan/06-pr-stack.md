@@ -97,6 +97,38 @@ flowchart TD
 Les changements de comportement **visibles** (A2, A3, A4) sont annoncés dans C0 comme « bugfix à comportement visible »,
 avec une note de version.
 
+## 3bis. État d'implémentation (fork `breakingrobot/zed`, 2026-09-24)
+
+Décision utilisateur : le fork est personnel, la pile n'attend plus de réponse du staff (C0 non posté). Branches
+rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; aucune PR ouverte.
+
+| PR | Branche `devcontainers/…` | Commit | Tests |
+|---|---|---|---|
+| — | `base` (rappel de relecture exigé par `.rules`) | `f81eba2016` | — |
+| A2 | `a2-initialize-command` (sur la tête de #63391) | `30bd1764ef` | unitaires |
+| A3 | `a3-feature-lifecycle-hooks` (sur la tête de #63034) | `351a823bf0` | unitaires |
+| A4 | `a4-devcontainer-id` | `45791cb655` | unitaires ; **bug trouvé sous Linux** (test compose réservé à Unix) et corrigé |
+| A5 | `a5-build-without-buildkit` | `218795ffa6` | unitaires |
+| A6a | `a6a-podman-linux-options` | `8b5316f205` | unitaires |
+| A6b | `a6b-proxy-kill` | `989381bccd` | unitaires |
+| A7 | `a7-feature-order` | `79db383757` | unitaires |
+| A8a | `a8-unique-build-dir` | `b96cb2426b` | unitaires ; **bug trouvé sous Linux** (dossier 0755 au lieu de 0700) et corrigé |
+| B1 | `b1-stable-identity` (2 commits d'Alex Berger, auteur conservé) | `343fbb8b93` | unitaires |
+| — | `integration` (fusion des 9 branches ci-dessus) | `26ee159837` | Windows et Linux (`dev_container`, `remote`, `workspace`) |
+| C1 + C2 + C3 | `c1-engine-host` (sur `integration`) | `b2a4964540` | Windows ; `EngineHost` (6 tests) |
+| C4 + C5 (partiel) | `c4-connection-host` | `87f237221e` | Windows ; colonne `engine_host` sans test dédié |
+| C7 | `c7-wsl-projects` | `16ec2eb299` | Windows ; test manifest WSL ; **e2e réel à faire** |
+
+Écarts au plan :
+
+- C2/C3 sont inclus dans C1 (conversions sans effet en local) ; C5 se limite à `engine_host` dans la clé de recherche
+  en base. C7 passe **avant** C6 (priorité utilisateur : WSL).
+- ADR-002 révisé (section « Révision d'implémentation ») : `EngineHost` dans `remote`, `wsl.exe --exec`, fichiers via
+  `\\wsl.localhost`.
+- Reste : T1, A8b, C2b (environnement de login), C6 (SSH), C8, D1/D2, E1, E2 ; suggestion automatique pour les projets
+  WSL ; test de migration `engine_host` ; redirection de ports WSL ; `zed --dev-container` sans effet sur `main`
+  (cause non trouvée, voir `07` §7).
+
 ## 4. Brouillon de proposition (C0) — NON POSTÉ
 
 > **À réécrire par toi, avec tes mots.** Si tu conserves des passages, mets-les en citation et signale-les comme générés

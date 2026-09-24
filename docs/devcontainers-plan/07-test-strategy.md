@@ -84,3 +84,23 @@ Limite assumée : l'égalité « avant/après » ne peut pas être prouvée cont
 - Les conflits **sémantiques** échappent à `git merge-tree` (cas #60975 × #63606) : toujours compiler **les tests** de chaque
   crate touché (`cargo test -p <crate> --no-run`), pas seulement `cargo check`.
 - Exécuter les tests `dev_container` sous Windows **et** Linux : le test rouge de #62680 n'apparaît que sous Windows.
+
+## 7. Résultats d'exécution (2026-09-24)
+
+Environnement : Windows 11 (client), distro WSL `Ubuntu` 26.04 avec Docker Engine 29.1.3, buildx 0.30.1, Compose 2.40.3
+(déplacée sur `H:\WSL\Ubuntu` après saturation de C:), Podman 6.0.2 (machine WSL sur `H:\WSL\podman-machine-default`),
+CLI de référence `@devcontainers/cli` 0.89.0.
+
+| Quoi | Résultat |
+|---|---|
+| CLI de référence sur les 4 fixtures (Linux, Docker) | 4/4 conformes à `EXPECTED.md` : formes chaîne/tableau/objet, `post create b` créé une fois, marqueurs ; `initializeCommand` rejoué à la réouverture ; ordre `a b c` et hooks `a b c user` ; compose : seul `app` démarre. Le CLI de référence utilise `/tmp/devcontainercli-<user>/` (dossier par utilisateur), cf. A8a |
+| Fixtures | 2 défauts corrigés : fins de ligne CRLF sur un checkout Windows (`.gitattributes` `eol=lf`), hooks de features écrivant dans un dossier jamais créé |
+| Tests unitaires, intégration A+B, Linux | `dev_container` 155, `remote` 38, `workspace` 278 : OK après correction de **2 bugs invisibles sous Windows** (A8a : dossier 0755 ; A4 : test compose `cfg(not(windows))`) |
+| Tests unitaires, intégration A+B, Windows | `dev_container` 143, `remote` 38, `workspace` 275 : OK |
+| Tests unitaires, piste C (C1, C4, C7), Windows | `dev_container` 144, `remote` 44, `recent_projects` 35, `workspace` 275 : OK, à chaque étape |
+| e2e Zed `main` (Linux, WSLg, `--dev-container`) | **aucun conteneur créé** : le sélecteur ne trouve pas de worktree visible (« No active project directory for Dev Container »), avec ou sans `trust_all_worktrees`. Cause non trouvée ; l'ouverture par l'interface n'est pas en cause |
+| e2e Zed Windows + projet WSL (C7) | **à faire** par l'utilisateur avec l'installeur local (Zed Dev) |
+
+Leçons de build : une seule grosse compilation à la fois (plusieurs échecs par manque de mémoire, `rustc` terminé par
+`0xc0000409`) ; un dossier `target` partagé a été corrompu (`E0786`) après un arrêt brutal ; l'empaquetage local sous
+Windows PowerShell 5.1 demande d'extraire ConPTY sous un nom `.zip`.
