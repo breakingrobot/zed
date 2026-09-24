@@ -438,20 +438,20 @@ impl DockerClient for Docker {
     }
 
     async fn stop_container(&self, id: &str) -> Result<(), DevContainerError> {
-        let mut command = Command::new(&self.docker_cli);
+        let mut command = self.docker_command();
 
         command.args(&["stop", id]);
 
         let output = command.output().await.map_err(|e| {
             log::error!("Error running docker stop: {e}");
-            DevContainerError::CommandFailed(command.get_program().display().to_string())
+            DevContainerError::CommandFailed(command.get_program().to_string())
         })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             log::error!("Non-success status from docker stop: {stderr}");
             return Err(DevContainerError::CommandFailed(
-                command.get_program().display().to_string(),
+                command.get_program().to_string(),
             ));
         }
 
@@ -459,21 +459,21 @@ impl DockerClient for Docker {
     }
 
     async fn remove_container(&self, id: &str) -> Result<(), DevContainerError> {
-        let mut command = Command::new(&self.docker_cli);
+        let mut command = self.docker_command();
 
         // `-f` also stops the container first if it's still running.
         command.args(&["rm", "-f", id]);
 
         let output = command.output().await.map_err(|e| {
             log::error!("Error running docker rm: {e}");
-            DevContainerError::CommandFailed(command.get_program().display().to_string())
+            DevContainerError::CommandFailed(command.get_program().to_string())
         })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             log::error!("Non-success status from docker rm: {stderr}");
             return Err(DevContainerError::CommandFailed(
-                command.get_program().display().to_string(),
+                command.get_program().to_string(),
             ));
         }
 
