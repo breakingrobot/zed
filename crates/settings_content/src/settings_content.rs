@@ -1396,6 +1396,13 @@ pub struct DevContainerConnection {
     pub wsl_distro_name: Option<String>,
     /// The user of `wsl_distro_name` that runs the container engine.
     pub wsl_user: Option<String>,
+    /// The SSH host running the container engine. Unset when the engine runs on
+    /// the machine running Zed or in WSL.
+    pub ssh_host: Option<String>,
+    pub ssh_username: Option<String>,
+    pub ssh_port: Option<u16>,
+    /// Extra `ssh` arguments used to reach `ssh_host`.
+    pub ssh_args: Option<Vec<String>>,
 }
 
 #[with_fallible_options]

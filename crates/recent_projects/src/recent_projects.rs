@@ -289,18 +289,12 @@ pub(crate) fn open_dev_container(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let project = workspace.project().read(cx);
-    // WSL projects run the container engine in their distribution.
-    let is_wsl_project = matches!(
-        project.remote_connection_options(cx),
-        Some(RemoteConnectionOptions::Wsl(_))
-    );
-    if !project.is_local() && !is_wsl_project {
+    if dev_container::engine_host_for_project(workspace.project().read(cx), cx).is_none() {
         cx.spawn_in(window, async move |_, cx| {
             cx.prompt(
                 gpui::PromptLevel::Critical,
                 "Cannot open Dev Container from remote project",
-                Some("Dev Containers can be opened from local and WSL projects."),
+                Some("Dev Containers can be opened from local, WSL, and SSH projects on Linux or macOS hosts."),
                 &["OK"],
             )
             .await

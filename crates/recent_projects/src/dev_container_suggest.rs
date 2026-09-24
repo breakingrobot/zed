@@ -2,7 +2,6 @@ use db::kvp::KeyValueStore;
 use dev_container::find_configs_in_snapshot;
 use gpui::{App, SharedString, Window};
 use project::{Project, WorktreeId};
-use remote::RemoteConnectionOptions;
 use std::path::Path;
 use std::sync::LazyLock;
 use ui::Tooltip;
@@ -97,12 +96,7 @@ pub fn suggest_on_worktree_updated(
 
     let worktree = worktree.read(cx);
 
-    // WSL projects can be reopened in a dev container, like local ones.
-    let is_wsl_project = matches!(
-        project.read(cx).remote_connection_options(cx),
-        Some(RemoteConnectionOptions::Wsl(_))
-    );
-    if !worktree.is_local() && !is_wsl_project {
+    if dev_container::engine_host_for_project(project.read(cx), cx).is_none() {
         return;
     }
 

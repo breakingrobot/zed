@@ -318,10 +318,14 @@ pub async fn start_dev_container_with_config(
             );
 
             let (wsl_distro_name, wsl_user) = match &context.engine_host {
-                EngineHost::Local => (None, None),
                 EngineHost::Wsl(options) => {
                     (Some(options.distro_name.clone()), options.user.clone())
                 }
+                EngineHost::Local | EngineHost::Ssh(_) => (None, None),
+            };
+            let ssh = match &context.engine_host {
+                EngineHost::Ssh(options) => Some(options.clone()),
+                EngineHost::Local | EngineHost::Wsl(_) => None,
             };
             let connection = DevContainerConnection {
                 name: project_name,
@@ -334,6 +338,10 @@ pub async fn start_dev_container_with_config(
                 remote_env: remote_env.into_iter().collect(),
                 wsl_distro_name,
                 wsl_user,
+                ssh_host: ssh.as_ref().map(|ssh| ssh.host.clone()),
+                ssh_username: ssh.as_ref().and_then(|ssh| ssh.username.clone()),
+                ssh_port: ssh.as_ref().and_then(|ssh| ssh.port),
+                ssh_args: ssh.map(|ssh| ssh.args),
             };
 
             Ok((connection, remote_workspace_folder))

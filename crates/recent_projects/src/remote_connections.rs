@@ -12,7 +12,7 @@ use gpui::{AppContext, AsyncApp, PromptLevel, WindowHandle};
 use project::trusted_worktrees;
 use remote::{
     DockerConnectionOptions, EngineHost, Interactive, RemoteConnection, RemoteConnectionOptions,
-    SshConnectionOptions, WslConnectionOptions,
+    SshConnectionOptions, SshEngineHost, WslConnectionOptions,
 };
 pub use settings::SshConnection;
 use settings::{DevContainerConnection, ExtendingVec, RegisterSetting, Settings, WslConnection};
@@ -101,12 +101,18 @@ impl From<Connection> for RemoteConnectionOptions {
                     upload_binary_over_docker_exec: false,
                     use_podman: conn.use_podman,
                     remote_env: conn.remote_env,
-                    host: match conn.wsl_distro_name {
-                        Some(distro_name) => EngineHost::Wsl(WslConnectionOptions {
+                    host: match (conn.wsl_distro_name, conn.ssh_host) {
+                        (Some(distro_name), _) => EngineHost::Wsl(WslConnectionOptions {
                             distro_name,
                             user: conn.wsl_user,
                         }),
-                        None => EngineHost::Local,
+                        (None, Some(host)) => EngineHost::Ssh(SshEngineHost {
+                            host,
+                            username: conn.ssh_username,
+                            port: conn.ssh_port,
+                            args: conn.ssh_args.unwrap_or_default(),
+                        }),
+                        (None, None) => EngineHost::Local,
                     },
                 })
             }
