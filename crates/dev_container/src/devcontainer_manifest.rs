@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt::Debug,
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
@@ -8,7 +8,7 @@ use std::{
 
 use regex::Regex;
 
-use fs::Fs;
+use fs::{Fs, RenameOptions};
 use http_client::HttpClient;
 use util::{ResultExt, command::Command, normalize_path};
 
@@ -25,7 +25,10 @@ use crate::{
         Docker, DockerClient, DockerComposeConfig, DockerComposeService, DockerComposeServiceBuild,
         DockerComposeServicePort, DockerComposeVolume, DockerInspect, DockerPs,
     },
-    features::{DevContainerFeatureJson, FeatureManifest, parse_oci_feature_ref},
+    features::{
+        DevContainerFeatureJson, FeatureManifest, FeatureOrderNode, FeatureSource,
+        compute_feature_install_order, parse_oci_feature_ref,
+    },
     get_oci_token,
     oci::{TokenResponse, download_oci_tarball, get_oci_manifest},
     safe_id_lower,
@@ -428,6 +431,192 @@ impl DevContainerManifest {
         Ok(())
     }
 
+    /// Downloads (or copies) a feature into `destination` and parses its
+    /// devcontainer-feature.json.
+    async fn fetch_feature_content(
+        &self,
+        feature_ref: &str,
+        destination: &Path,
+    ) -> Result<DevContainerFeatureJson, DevContainerError> {
+        self.fs.create_dir(destination).await.map_err(|e| {
+            log::error!(
+                "Failed to create feature directory for {}: {e}",
+                feature_ref
+            );
+            DevContainerError::FilesystemError
+        })?;
+
+        if is_local_feature_ref(feature_ref) {
+            self.copy_local_feature(feature_ref, destination).await?;
+        } else {
+            let oci_ref = parse_oci_feature_ref(feature_ref).ok_or_else(|| {
+                log::error!(
+                    "Feature '{}' is not a supported OCI feature reference",
+                    feature_ref
+                );
+                DevContainerError::DevContainerParseFailed
+            })?;
+            let TokenResponse { token } =
+                get_oci_token(&oci_ref.registry, &oci_ref.path, &self.http_client)
+                    .await
+                    .map_err(|e| {
+                        log::error!("Failed to get OCI token for feature '{}': {e}", feature_ref);
+                        DevContainerError::ResourceFetchFailed
+                    })?;
+            let manifest = get_oci_manifest(
+                &oci_ref.registry,
+                &oci_ref.path,
+                &token,
+                &self.http_client,
+                &oci_ref.version,
+                None,
+            )
+            .await
+            .map_err(|e| {
+                log::error!(
+                    "Failed to fetch OCI manifest for feature '{}': {e}",
+                    feature_ref
+                );
+                DevContainerError::ResourceFetchFailed
+            })?;
+            let digest = &manifest
+                .layers
+                .first()
+                .ok_or_else(|| {
+                    log::error!(
+                        "OCI manifest for feature '{}' contains no layers",
+                        feature_ref
+                    );
+                    DevContainerError::ResourceFetchFailed
+                })?
+                .digest;
+            download_oci_tarball(
+                &token,
+                &oci_ref.registry,
+                &oci_ref.path,
+                digest,
+                "application/vnd.devcontainers.layer.v1+tar",
+                &destination.to_path_buf(),
+                &self.http_client,
+                &self.fs,
+                None,
+            )
+            .await?;
+        }
+
+        let feature_json_path = &destination.join("devcontainer-feature.json");
+        if !self.fs.is_file(feature_json_path).await {
+            let message = format!(
+                "No devcontainer-feature.json found in {:?}, no defaults to apply",
+                feature_json_path
+            );
+            log::error!("{message}");
+            return Err(DevContainerError::ResourceFetchFailed);
+        }
+
+        let contents = self.fs.load(&feature_json_path).await.map_err(|e| {
+            log::error!("error reading devcontainer-feature.json: {:?}", e);
+            DevContainerError::FilesystemError
+        })?;
+
+        let contents_parsed = self.parse_nonremote_vars_for_content(&contents)?;
+
+        serde_json_lenient::from_value(contents_parsed).map_err(|e| {
+            log::error!("Failed to parse devcontainer-feature.json: {e}");
+            DevContainerError::ResourceFetchFailed
+        })
+    }
+
+    /// Builds the feature dependency graph, fetching every enabled feature
+    /// into a staging directory under `staging_root`.
+    ///
+    /// Mirrors the CLI's `buildDependencyGraph` in `containerFeaturesOrder.ts`:
+    /// `dependsOn` targets missing from devcontainer.json are fetched and
+    /// installed with the options the dependent feature asks for, while
+    /// `installsAfter` targets are only recorded as ordering hints.
+    ///
+    /// Returns the graph nodes alongside their staged content, index for
+    /// index; disabled features have no staged content.
+    async fn resolve_feature_graph(
+        &self,
+        features: &HashMap<String, FeatureOptions>,
+        staging_root: &Path,
+    ) -> Result<(Vec<FeatureOrderNode>, Vec<Option<StagedFeatureContent>>), DevContainerError> {
+        let mut user_features: Vec<(&String, &FeatureOptions)> = features.iter().collect();
+        user_features.sort_by_key(|(feature_ref, _)| feature_ref.as_str());
+        let mut worklist: VecDeque<(String, FeatureOptions)> = user_features
+            .into_iter()
+            .map(|(feature_ref, options)| (feature_ref.clone(), options.clone()))
+            .collect();
+
+        let mut nodes: Vec<FeatureOrderNode> = Vec::new();
+        let mut staged_contents: Vec<Option<StagedFeatureContent>> = Vec::new();
+
+        while let Some((feature_ref, options)) = worklist.pop_front() {
+            let source = FeatureSource::from_reference(&feature_ref, &self.config_directory);
+            if nodes
+                .iter()
+                .any(|node| node.is_same_feature(&source, &options))
+            {
+                continue;
+            }
+
+            let mut node = FeatureOrderNode::new(feature_ref.clone(), source, options);
+            if matches!(node.options, FeatureOptions::Bool(false)) {
+                nodes.push(node);
+                staged_contents.push(None);
+                continue;
+            }
+
+            let staging_directory = staging_root.join(format!("staged-feature-{}", nodes.len()));
+            let feature_json = self
+                .fetch_feature_content(&feature_ref, &staging_directory)
+                .await?;
+
+            let mut dependencies: Vec<(&String, &serde_json_lenient::Value)> =
+                feature_json.depends_on.iter().flatten().collect();
+            dependencies.sort_by_key(|(dependency_ref, _)| dependency_ref.as_str());
+            for (dependency_ref, dependency_options) in dependencies {
+                let dependency_options: FeatureOptions =
+                    serde_json_lenient::from_value(dependency_options.clone()).map_err(|e| {
+                        DevContainerError::FeatureDependencyResolutionFailed(format!(
+                            "Feature '{feature_ref}' declares dependency '{dependency_ref}' \
+                             with unsupported options: {e}"
+                        ))
+                    })?;
+                node.depends_on.push((
+                    FeatureSource::from_reference(dependency_ref, &self.config_directory),
+                    dependency_options.clone(),
+                ));
+                worklist.push_back((dependency_ref.clone(), dependency_options));
+            }
+
+            node.installs_after = feature_json
+                .installs_after
+                .iter()
+                .flatten()
+                .map(|dependency_ref| {
+                    FeatureSource::from_reference(dependency_ref, &self.config_directory)
+                })
+                .collect();
+
+            node.aliases = feature_json
+                .id
+                .iter()
+                .chain(feature_json.legacy_ids.iter().flatten())
+                .map(|alias| alias.to_lowercase())
+                .collect();
+
+            nodes.push(node);
+            staged_contents.push(Some(StagedFeatureContent {
+                staging_directory,
+                feature_json,
+            }));
+        }
+
+        Ok((nodes, staged_contents))
+    }
+
     async fn download_feature_and_dockerfile_resources(&mut self) -> Result<(), DevContainerError> {
         let dev_container = match &self.config {
             ConfigStatus::Deserialized(_) => {
@@ -500,112 +689,56 @@ impl DevContainerManifest {
                 DevContainerError::FilesystemError
             })?;
 
-        let ordered_features =
-            resolve_feature_order(features, &dev_container.override_feature_install_order);
+        // Install order depends on `installsAfter` and `dependsOn`, which are
+        // only known once each feature's devcontainer-feature.json has been
+        // fetched, so everything is staged first and moved into its ordered
+        // directory afterwards.
+        let (order_nodes, mut staged_contents) = self
+            .resolve_feature_graph(features, &build_info.features_content_dir)
+            .await?;
+        let override_install_order: Vec<FeatureSource> = dev_container
+            .override_feature_install_order
+            .iter()
+            .flatten()
+            .map(|reference| FeatureSource::from_reference(reference, &self.config_directory))
+            .collect();
+        let install_order = compute_feature_install_order(&order_nodes, &override_install_order)?;
 
-        for (index, (feature_ref, options)) in ordered_features.iter().enumerate() {
-            if matches!(options, FeatureOptions::Bool(false)) {
+        for (index, node_index) in install_order.into_iter().enumerate() {
+            let (Some(node), Some(staged_content)) = (
+                order_nodes.get(node_index),
+                staged_contents.get_mut(node_index),
+            ) else {
+                continue;
+            };
+            let feature_ref = node.user_feature_id.as_str();
+            let options = &node.options;
+            let Some(StagedFeatureContent {
+                staging_directory,
+                feature_json,
+            }) = staged_content.take()
+            else {
                 log::debug!(
                     "Feature '{}' is disabled (set to false), skipping",
                     feature_ref
                 );
                 continue;
-            }
+            };
 
             let feature_id = extract_feature_id(feature_ref);
             let consecutive_id = format!("{}_{}", feature_id, index);
             let feature_dir = build_info.features_content_dir.join(&consecutive_id);
 
-            self.fs.create_dir(&feature_dir).await.map_err(|e| {
-                log::error!(
-                    "Failed to create feature directory for {}: {e}",
-                    feature_ref
-                );
-                DevContainerError::FilesystemError
-            })?;
-
-            if is_local_feature_ref(feature_ref) {
-                self.copy_local_feature(feature_ref, &feature_dir).await?;
-            } else {
-                let oci_ref = parse_oci_feature_ref(feature_ref).ok_or_else(|| {
-                    log::error!(
-                        "Feature '{}' is not a supported OCI feature reference",
-                        feature_ref
-                    );
-                    DevContainerError::DevContainerParseFailed
-                })?;
-                let TokenResponse { token } =
-                    get_oci_token(&oci_ref.registry, &oci_ref.path, &self.http_client)
-                        .await
-                        .map_err(|e| {
-                            log::error!(
-                                "Failed to get OCI token for feature '{}': {e}",
-                                feature_ref
-                            );
-                            DevContainerError::ResourceFetchFailed
-                        })?;
-                let manifest = get_oci_manifest(
-                    &oci_ref.registry,
-                    &oci_ref.path,
-                    &token,
-                    &self.http_client,
-                    &oci_ref.version,
-                    None,
-                )
+            self.fs
+                .rename(&staging_directory, &feature_dir, RenameOptions::default())
                 .await
                 .map_err(|e| {
                     log::error!(
-                        "Failed to fetch OCI manifest for feature '{}': {e}",
-                        feature_ref
+                        "Failed to move feature content for {} into {:?}: {e}",
+                        feature_ref,
+                        feature_dir
                     );
-                    DevContainerError::ResourceFetchFailed
-                })?;
-                let digest = &manifest
-                    .layers
-                    .first()
-                    .ok_or_else(|| {
-                        log::error!(
-                            "OCI manifest for feature '{}' contains no layers",
-                            feature_ref
-                        );
-                        DevContainerError::ResourceFetchFailed
-                    })?
-                    .digest;
-                download_oci_tarball(
-                    &token,
-                    &oci_ref.registry,
-                    &oci_ref.path,
-                    digest,
-                    "application/vnd.devcontainers.layer.v1+tar",
-                    &feature_dir,
-                    &self.http_client,
-                    &self.fs,
-                    None,
-                )
-                .await?;
-            }
-
-            let feature_json_path = &feature_dir.join("devcontainer-feature.json");
-            if !self.fs.is_file(feature_json_path).await {
-                let message = format!(
-                    "No devcontainer-feature.json found in {:?}, no defaults to apply",
-                    feature_json_path
-                );
-                log::error!("{message}");
-                return Err(DevContainerError::ResourceFetchFailed);
-            }
-
-            let contents = self.fs.load(&feature_json_path).await.map_err(|e| {
-                log::error!("error reading devcontainer-feature.json: {:?}", e);
-                DevContainerError::FilesystemError
-            })?;
-
-            let contents_parsed = self.parse_nonremote_vars_for_content(&contents)?;
-
-            let feature_json: DevContainerFeatureJson =
-                serde_json_lenient::from_value(contents_parsed).map_err(|e| {
-                    log::error!("Failed to parse devcontainer-feature.json: {e}");
-                    DevContainerError::ResourceFetchFailed
+                    DevContainerError::FilesystemError
                 })?;
 
             let feature_manifest = FeatureManifest::new(
@@ -3034,33 +3167,10 @@ fn get_ent_passwd_shell_command(user: &str) -> String {
     )
 }
 
-/// Determines feature installation order, respecting `overrideFeatureInstallOrder`.
-///
-/// Features listed in the override come first (in the specified order), followed
-/// by any remaining features sorted lexicographically by their full reference ID.
-fn resolve_feature_order<'a>(
-    features: &'a HashMap<String, FeatureOptions>,
-    override_order: &Option<Vec<String>>,
-) -> Vec<(&'a String, &'a FeatureOptions)> {
-    if let Some(order) = override_order {
-        let mut ordered: Vec<(&'a String, &'a FeatureOptions)> = Vec::new();
-        for ordered_id in order {
-            if let Some((key, options)) = features.get_key_value(ordered_id) {
-                ordered.push((key, options));
-            }
-        }
-        let mut remaining: Vec<_> = features
-            .iter()
-            .filter(|(id, _)| !order.iter().any(|o| o == *id))
-            .collect();
-        remaining.sort_by_key(|(id, _)| id.as_str());
-        ordered.extend(remaining);
-        ordered
-    } else {
-        let mut entries: Vec<_> = features.iter().collect();
-        entries.sort_by_key(|(id, _)| id.as_str());
-        entries
-    }
+/// A fetched feature waiting for its install position to be known.
+struct StagedFeatureContent {
+    staging_directory: PathBuf,
+    feature_json: DevContainerFeatureJson,
 }
 
 /// Generates the `devcontainer-features-install.sh` wrapper script for one feature.
@@ -6605,6 +6715,147 @@ chmod +x ./install.sh
             install_sh.contains("Installing lsp-devtools"),
             "install.sh should have the original content. Got:\n{}",
             install_sh
+        );
+    }
+
+    async fn insert_local_feature(fs: &FakeFs, id: &str, ordering_properties: &str) {
+        fs.insert_tree(
+            PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer").join(id),
+            serde_json::json!({
+                "devcontainer-feature.json": format!(
+                    r#"{{ "id": "{id}", "version": "1.0.0", "name": "{id}", {ordering_properties} }}"#
+                ),
+                "install.sh": format!("#!/bin/sh\necho 'Installing {id}'"),
+            }),
+        )
+        .await;
+    }
+
+    #[gpui::test]
+    async fn test_orders_features_by_installs_after_and_depends_on(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        env_logger::try_init().ok();
+        let given_devcontainer_contents = r#"
+            {
+              "name": "cli-feature-order-test",
+              "image": "test_image:latest",
+              "features": {
+                "./aa-app": {},
+                "./zz-base": {}
+              }
+            }
+            "#;
+
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, given_devcontainer_contents)
+                .await
+                .unwrap();
+
+        // `aa-app` would come first alphabetically, but it must wait for its
+        // soft dependency `zz-base` and for `aws-cli`, which isn't declared in
+        // devcontainer.json and has to be fetched with the requested options.
+        insert_local_feature(
+            &test_dependencies.fs,
+            "aa-app",
+            r#""installsAfter": ["./zz-base"],
+               "dependsOn": { "ghcr.io/devcontainers/features/aws-cli:1": { "version": "2.0.1" } }"#,
+        )
+        .await;
+        insert_local_feature(&test_dependencies.fs, "zz-base", r#""options": {}"#).await;
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest.build_and_run().await.unwrap();
+
+        let files = test_dependencies.fs.files();
+        let feature_dockerfile = files
+            .iter()
+            .find(|f| {
+                f.file_name()
+                    .is_some_and(|s| s.display().to_string() == "Dockerfile.extended")
+            })
+            .expect("Dockerfile.extended should be generated");
+        let feature_dockerfile = test_dependencies.fs.load(feature_dockerfile).await.unwrap();
+
+        let positions: Vec<usize> = ["zz-base_0", "aws-cli_1", "aa-app_2"]
+            .iter()
+            .map(|consecutive_id| {
+                feature_dockerfile
+                    .find(&format!("source=./{consecutive_id},"))
+                    .unwrap_or_else(|| {
+                        panic!("{consecutive_id} missing from:\n{feature_dockerfile}")
+                    })
+            })
+            .collect();
+        assert!(
+            positions.is_sorted(),
+            "features installed out of order:\n{feature_dockerfile}"
+        );
+
+        let aws_cli_env = files
+            .iter()
+            .find(|f| {
+                f.file_name()
+                    .is_some_and(|s| s.display().to_string() == "devcontainer-features.env")
+                    && f.parent()
+                        .and_then(|parent| parent.file_name())
+                        .is_some_and(|s| s.display().to_string() == "aws-cli_1")
+            })
+            .expect("the dependency should be staged like a declared feature");
+        let aws_cli_env = test_dependencies.fs.load(aws_cli_env).await.unwrap();
+        assert!(
+            aws_cli_env.contains("VERSION=2.0.1"),
+            "dependsOn options should be applied. Got:\n{aws_cli_env}"
+        );
+
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.to_string_lossy().contains("staged-feature-")),
+            "staging directories should all be moved into place"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_feature_dependency_cycle_fails(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        env_logger::try_init().ok();
+        let given_devcontainer_contents = r#"
+            {
+              "name": "cli-feature-cycle-test",
+              "image": "test_image:latest",
+              "features": {
+                "./first": {},
+                "./second": {}
+              }
+            }
+            "#;
+
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, given_devcontainer_contents)
+                .await
+                .unwrap();
+
+        insert_local_feature(
+            &test_dependencies.fs,
+            "first",
+            r#""dependsOn": { "./second": {} }"#,
+        )
+        .await;
+        insert_local_feature(
+            &test_dependencies.fs,
+            "second",
+            r#""installsAfter": ["./first"]"#,
+        )
+        .await;
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        let result = devcontainer_manifest.build_and_run().await;
+        let Err(DevContainerError::FeatureDependencyResolutionFailed(message)) = result else {
+            panic!("expected FeatureDependencyResolutionFailed, got {result:?}");
+        };
+        assert_eq!(
+            message,
+            "Circular dependency detected between features: ./first, ./second"
         );
     }
 
