@@ -60,6 +60,10 @@ pub(crate) struct DevContainerUp {
     pub(crate) remote_env: HashMap<String, String>,
     #[serde(default)]
     pub(crate) started_at: Option<String>,
+    /// The container's `devcontainer.metadata` label entries, which carry the
+    /// lifecycle commands contributed by features.
+    #[serde(skip)]
+    pub(crate) metadata: Vec<HashMap<String, serde_json_lenient::Value>>,
 }
 
 #[derive(Debug)]
