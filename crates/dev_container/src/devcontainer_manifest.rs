@@ -11,6 +11,8 @@ use regex::Regex;
 use fs::{Fs, RenameOptions};
 use http_client::HttpClient;
 use remote::HostCommand;
+
+use crate::host_files::HostFiles;
 use util::{ResultExt, command::Command, normalize_path};
 
 use crate::{
@@ -68,6 +70,8 @@ struct DevContainerManifest {
     /// Private directory for files generated while building, created on first use and removed
     /// when the manifest is dropped.
     build_dir: OnceLock<tempfile::TempDir>,
+    /// The copy of `build_dir` on an engine host that can't read our files.
+    remote_build_dir: OnceLock<String>,
 }
 const DEFAULT_REMOTE_PROJECT_DIR: &str = "/workspaces";
 impl DevContainerManifest {
@@ -81,7 +85,8 @@ impl DevContainerManifest {
     ) -> Result<Self, DevContainerError> {
         let config_path = local_project_path.join(local_config.config_path.clone());
         log::debug!("parsing devcontainer json found in {config_path:?}");
-        let devcontainer_contents = context.fs.load(&config_path).await.map_err(|e| {
+        let host_files = HostFiles::new(context.engine_host.clone(), context.fs.clone());
+        let devcontainer_contents = host_files.load(&config_path).await.map_err(|e| {
             log::error!("Unable to read devcontainer contents: {e}");
             DevContainerError::DevContainerParseFailed
         })?;
@@ -115,6 +120,7 @@ impl DevContainerManifest {
             features_build_info: None,
             features: Vec::new(),
             build_dir: OnceLock::new(),
+            remote_build_dir: OnceLock::new(),
         })
     }
 
@@ -146,11 +152,91 @@ impl DevContainerManifest {
             log::error!("Failed to create build directory: {e}");
             DevContainerError::FilesystemError
         })?;
+        let host = self.docker_client.engine_host();
+        if !host.has_local_files() && self.remote_build_dir.get().is_none() {
+            let mut command = host.command("mktemp");
+            command.args(["-d", "-t", "devcontainer-zed.XXXXXXXX"]);
+            let output = command.output().await.map_err(|e| {
+                log::error!("Failed to create a build directory on {host:?}: {e}");
+                DevContainerError::FilesystemError
+            })?;
+            if !output.status.success() {
+                log::error!(
+                    "Failed to create a build directory on {host:?}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return Err(DevContainerError::FilesystemError);
+            }
+            let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            self.remote_build_dir.get_or_init(|| remote);
+        }
         Ok(path)
+    }
+
+    /// Copies the build directory to an engine host that can't read our files,
+    /// so that the engine sees the files written into it so far.
+    async fn sync_build_dir(&self) -> Result<(), DevContainerError> {
+        let (Some(remote), Some(local)) = (self.remote_build_dir.get(), self.build_dir.get())
+        else {
+            return Ok(());
+        };
+        let mut archive = async_tar::Builder::new(Vec::new());
+        archive
+            .append_dir_all(".", local.path())
+            .await
+            .map_err(|e| {
+                log::error!("Failed to archive the build directory: {e}");
+                DevContainerError::FilesystemError
+            })?;
+        let archive = archive.into_inner().await.map_err(|e| {
+            log::error!("Failed to archive the build directory: {e}");
+            DevContainerError::FilesystemError
+        })?;
+        let mut command = self.docker_client.engine_host().command("sh");
+        command.args(["-c", r#"exec tar -xf - -C "$1""#, "sh", remote]);
+        let output = command.output_with_stdin(&archive).await.map_err(|e| {
+            log::error!("Failed to copy the build directory to the engine host: {e}");
+            DevContainerError::FilesystemError
+        })?;
+        if !output.status.success() {
+            log::error!(
+                "Failed to copy the build directory to the engine host: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Err(DevContainerError::FilesystemError);
+        }
+        Ok(())
+    }
+
+    /// Removes the copy of the build directory from the engine host.
+    async fn remove_remote_build_dir(&self) {
+        let Some(remote) = self.remote_build_dir.get() else {
+            return;
+        };
+        let mut command = self.docker_client.engine_host().command("rm");
+        command.args(["-rf", "--", remote]);
+        if let Err(e) = command.output().await {
+            log::warn!("Failed to remove {remote} from the engine host: {e}");
+        }
+    }
+
+    /// The project's files, on the engine host.
+    fn host_files(&self) -> HostFiles {
+        HostFiles::new(self.docker_client.engine_host(), self.fs.clone())
     }
 
     /// A path as the engine host sees it, to hand to the container engine.
     fn host_path(&self, path: &Path) -> String {
+        if let (Some(remote), Some(local)) = (self.remote_build_dir.get(), self.build_dir.get())
+            && let Ok(relative) = path.strip_prefix(local.path())
+        {
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            return if relative.is_empty() {
+                remote.clone()
+            } else {
+                format!("{remote}/{relative}")
+            };
+        }
         self.docker_client.engine_host().host_path(path)
     }
 
@@ -423,7 +509,7 @@ impl DevContainerManifest {
     ) -> Result<(), DevContainerError> {
         let source_path = normalize_path(&self.config_directory.join(feature_ref));
 
-        if !self.fs.is_dir(&source_path).await {
+        if !self.host_files().is_dir(&source_path).await {
             log::error!(
                 "Local feature directory '{}' not found at {:?}",
                 feature_ref,
@@ -432,41 +518,13 @@ impl DevContainerManifest {
             return Err(DevContainerError::ResourceFetchFailed);
         }
 
-        let items = fs::read_dir_items(&*self.fs, &source_path)
+        self.host_files()
+            .copy_dir_to_local(&source_path, destination)
             .await
             .map_err(|e| {
-                log::error!(
-                    "Failed to read local feature directory {:?}: {e}",
-                    source_path
-                );
+                log::error!("Failed to copy local feature {:?}: {e}", source_path);
                 DevContainerError::FilesystemError
-            })?;
-
-        for (item_path, is_dir) in &items {
-            let relative = item_path.strip_prefix(&source_path).map_err(|e| {
-                log::error!("Failed to compute relative path for {:?}: {e}", item_path);
-                DevContainerError::FilesystemError
-            })?;
-            let dest_path = destination.join(relative);
-
-            if *is_dir {
-                self.fs.create_dir(&dest_path).await.map_err(|e| {
-                    log::error!("Failed to create directory {:?}: {e}", dest_path);
-                    DevContainerError::FilesystemError
-                })?;
-            } else {
-                let content = self.fs.load_bytes(item_path).await.map_err(|e| {
-                    log::error!("Failed to read file {:?}: {e}", item_path);
-                    DevContainerError::FilesystemError
-                })?;
-                self.fs.write(&dest_path, &content).await.map_err(|e| {
-                    log::error!("Failed to write file {:?}: {e}", dest_path);
-                    DevContainerError::FilesystemError
-                })?;
-            }
-        }
-
-        Ok(())
+            })
     }
 
     /// Downloads (or copies) a feature into `destination` and parses its
@@ -814,7 +872,7 @@ impl DevContainerManifest {
         let use_buildkit = self.docker_client.supports_compose_buildkit();
 
         let dockerfile_base_content = if let Some(location) = &self.dockerfile_location().await {
-            self.fs.load(location).await.log_err()
+            self.host_files().load(location).await.log_err()
         } else {
             None
         };
@@ -1349,6 +1407,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
             let project_name = self.project_name().await?;
             let compose_services =
                 compose_service_list(&main_service_name, dev_container.run_services.as_ref());
+            self.sync_build_dir().await?;
             self.docker_client
                 .docker_compose_build(
                     &docker_compose_resources.files,
@@ -1444,6 +1503,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 let project_name = self.project_name().await?;
                 let compose_services =
                     compose_service_list(&main_service_name, dev_container.run_services.as_ref());
+                self.sync_build_dir().await?;
                 self.docker_client
                     .docker_compose_build(
                         &docker_compose_resources.files,
@@ -1771,6 +1831,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
 
         let command = self.create_docker_build()?;
 
+        self.sync_build_dir().await?;
         let output = self
             .command_runner
             .run_command(&mut command.to_command())
@@ -1918,6 +1979,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
         command.args(["--build-arg", &format!("IMAGE_USER={}", image_user)]);
         command.arg(self.host_path(&features_build_info.empty_context_dir));
 
+        self.sync_build_dir().await?;
         let output = self
             .command_runner
             .run_command(&mut command.to_command())
@@ -2025,6 +2087,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             &self.host_path(features_content_dir),
         ]);
 
+        self.sync_build_dir().await?;
         let output = self
             .command_runner
             .run_command(&mut command.to_command())
@@ -2205,6 +2268,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             command.args(services);
         }
 
+        self.sync_build_dir().await?;
         let output = self
             .command_runner
             .run_command(&mut command.to_command())
@@ -2482,7 +2546,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         } else {
             log::debug!("Existing container not found. Building");
 
-            self.build_and_run().await
+            let result = self.build_and_run().await;
+            self.remove_remote_build_dir().await;
+            result
         }
     }
 
@@ -2725,7 +2791,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                 // scanning." Propagating an I/O error here would diverge
                 // from that policy and fail the whole devcontainer flow for
                 // a fragment the CLI would have silently skipped.
-                let contents = match self.fs.load(file).await {
+                let contents = match self.host_files().load(file).await {
                     Ok(contents) => contents,
                     Err(err) => {
                         log::warn!(
@@ -2742,7 +2808,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             }
         }
         let dotenv_path = self.local_project_directory.join(".env");
-        let dotenv_contents = match self.fs.load(&dotenv_path).await {
+        let dotenv_contents = match self.host_files().load(&dotenv_path).await {
             Ok(contents) => Some(contents),
             Err(err) if is_missing_file_error(&err) => None,
             Err(err) => {
@@ -2793,10 +2859,14 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                 .and_then(|b| b.args.clone())
                 .unwrap_or_default(),
         };
-        let contents = self.fs.load(&dockerfile_path).await.map_err(|e| {
-            log::error!("Failed to load Dockerfile: {e}");
-            DevContainerError::FilesystemError
-        })?;
+        let contents = self
+            .host_files()
+            .load(&dockerfile_path)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to load Dockerfile: {e}");
+                DevContainerError::FilesystemError
+            })?;
         let mut parsed_lines: Vec<String> = Vec::new();
         let mut inline_args: Vec<(String, String)> = Vec::new();
         let key_regex = Regex::new(r"(?:^|\s)(\w+)=").expect("valid regex");

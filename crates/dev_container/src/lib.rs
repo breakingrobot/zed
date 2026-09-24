@@ -8,8 +8,8 @@ use gpui::WeakEntity;
 use http_client::anyhow;
 use picker::Picker;
 use picker::PickerDelegate;
-use project::ProjectEnvironment;
-use remote::{EngineHost, RemoteConnectionOptions};
+use project::{Project, ProjectEnvironment};
+use remote::{EngineHost, RemoteConnectionOptions, SshEngineHost};
 use settings::RegisterSetting;
 use settings::Settings;
 use std::collections::HashMap;
@@ -29,6 +29,7 @@ use ui::Tooltip;
 use ui::h_flex;
 use ui::rems_from_px;
 use ui::v_flex;
+use util::paths::PathStyle;
 use util::shell::Shell;
 
 use gpui::{Action, DismissEvent, EventEmitter, FocusHandle, Focusable, RenderOnce};
@@ -50,6 +51,7 @@ mod devcontainer_json;
 mod devcontainer_manifest;
 mod docker;
 mod features;
+mod host_files;
 mod oci;
 
 use devcontainer_api::read_default_devcontainer_configuration;
@@ -112,16 +114,12 @@ impl DevContainerContext {
     pub fn from_workspace(workspace: &Workspace, cx: &App) -> Option<Self> {
         let project = workspace.project().read(cx);
         let root = project.active_project_directory(cx)?;
-        // The engine runs where the sources are. For a project opened through WSL,
-        // that is the distribution, and Zed reaches its files over `\\wsl.localhost`.
-        let (engine_host, project_directory) = match project.remote_connection_options(cx) {
-            None => (EngineHost::Local, root),
-            Some(RemoteConnectionOptions::Wsl(options)) => {
-                let host = EngineHost::Wsl(options);
-                let local = host.local_path(&root.to_string_lossy().replace('\\', "/"));
-                (host, Arc::from(local.as_path()))
-            }
-            Some(_) => return None,
+        let engine_host = engine_host_for_project(project, cx)?;
+        let project_directory = if engine_host.is_local() {
+            root
+        } else {
+            let host_root = root.to_string_lossy().replace('\\', "/");
+            Arc::from(engine_host.local_path(&host_root).as_path())
         };
         let settings = DevContainerSettings::get_global(cx);
         let use_podman = settings.use_podman;
@@ -189,6 +187,24 @@ fn parse_nul_separated_environment(output: &[u8]) -> HashMap<String, String> {
 struct DevContainerSettings {
     use_podman: bool,
     use_buildkit: Option<bool>,
+}
+
+/// Where the container engine of `project`'s dev containers runs: where its
+/// sources are. `None` when dev containers can't be opened from it.
+pub fn engine_host_for_project(project: &Project, cx: &App) -> Option<EngineHost> {
+    match project.remote_connection_options(cx) {
+        None => Some(EngineHost::Local),
+        // Zed reaches the distribution's files over `\\wsl.localhost`.
+        Some(RemoteConnectionOptions::Wsl(options)) => Some(EngineHost::Wsl(options)),
+        Some(RemoteConnectionOptions::Ssh(options)) => {
+            // Commands and paths on the host are POSIX.
+            let is_posix = project
+                .remote_client()
+                .is_some_and(|client| client.read(cx).path_style() == PathStyle::Unix);
+            is_posix.then(|| EngineHost::Ssh(SshEngineHost::from(&options)))
+        }
+        Some(_) => None,
+    }
 }
 
 pub fn use_podman(cx: &App) -> bool {
