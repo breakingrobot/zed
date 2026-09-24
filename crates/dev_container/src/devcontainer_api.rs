@@ -98,6 +98,9 @@ pub(crate) struct DevContainerUp {
     /// When the container was created, which the create-time lifecycle markers hold.
     #[serde(default)]
     pub(crate) created_at: Option<String>,
+    /// Lifecycle hooks after `waitFor`, left to run once Zed is connected.
+    #[serde(skip)]
+    pub(crate) deferred_hooks: Vec<DeferredHook>,
     /// The container's `devcontainer.metadata` label entries, which carry the
     /// lifecycle commands contributed by features.
     #[serde(skip)]
@@ -107,6 +110,22 @@ pub(crate) struct DevContainerUp {
 #[derive(Debug)]
 pub(crate) struct DevContainerApply {
     pub(crate) project_files: Vec<Arc<RelPath>>,
+}
+
+/// A lifecycle hook that the spec's `waitFor` lets run after the editor connects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredHook {
+    /// The hook's name, e.g. `postCreateCommand`.
+    pub name: String,
+    /// Commands that run concurrently, in the container's workspace folder.
+    pub commands: Vec<DeferredCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredCommand {
+    pub label: String,
+    pub program: String,
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,7 +326,8 @@ pub async fn start_dev_container_with_config(
     config: Option<DevContainerConfig>,
     environment: HashMap<String, String>,
     force_rebuild: bool,
-) -> Result<(DevContainerConnection, String), DevContainerError> {
+    defer_hooks: bool,
+) -> Result<(DevContainerConnection, String, Vec<DeferredHook>), DevContainerError> {
     check_for_docker(&context).await?;
 
     let Some(actual_config) = config.clone() else {
@@ -320,6 +340,7 @@ pub async fn start_dev_container_with_config(
         actual_config.clone(),
         context.project_directory.clone().as_ref(),
         force_rebuild,
+        defer_hooks,
     )
     .await
     {
@@ -329,6 +350,7 @@ pub async fn start_dev_container_with_config(
             remote_user,
             extension_ids,
             remote_env,
+            deferred_hooks,
             ..
         }) => {
             let configuration =
@@ -387,7 +409,7 @@ pub async fn start_dev_container_with_config(
                 forward_ports: Some(forward_ports),
             };
 
-            Ok((connection, remote_workspace_folder))
+            Ok((connection, remote_workspace_folder, deferred_hooks))
         }
         Err(err @ DevContainerError::MultipleMatchingContainers(_)) => Err(err),
         Err(err) => {
@@ -577,8 +599,8 @@ pub async fn rebuild_dev_container(
     context: DevContainerContext,
     config: DevContainerConfig,
     environment: HashMap<String, String>,
-) -> Result<(DevContainerConnection, String), DevContainerError> {
-    start_dev_container_with_config(context, Some(config), environment, true).await
+) -> Result<(DevContainerConnection, String, Vec<DeferredHook>), DevContainerError> {
+    start_dev_container_with_config(context, Some(config), environment, true, true).await
 }
 
 pub(crate) async fn apply_devcontainer_template(

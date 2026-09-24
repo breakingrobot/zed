@@ -15045,6 +15045,7 @@ dependencies = [
  "semver",
  "serde_json",
  "settings",
+ "task",
  "telemetry",
  "ui",
  "util",

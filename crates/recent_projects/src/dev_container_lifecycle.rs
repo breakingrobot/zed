@@ -3,10 +3,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
 use anyhow::Context as _;
-use dev_container::{DevContainerConfig, DevContainerContext, find_devcontainer_configs};
+use dev_container::{
+    DeferredHook, DevContainerConfig, DevContainerContext, find_devcontainer_configs,
+};
 use gpui::{AsyncApp, AsyncWindowContext, Context, WeakEntity, Window, WindowHandle};
+use project::TaskSourceKind;
 use remote::{DockerConnectionOptions, RemoteConnectionOptions};
-use workspace::{AppState, MultiWorkspace, OpenOptions, Workspace};
+use task::{TaskContext, TaskTemplate};
+use workspace::{AppState, MultiWorkspace, OpenOptions, Workspace, tasks::ScheduledTaskResult};
 
 use crate::remote_connections::{Connection, RemoteConnectionModal, open_remote_project};
 
@@ -536,10 +540,11 @@ fn reconnect_connected_dev_container(
             Some(origin.config),
             environment,
             force_rebuild,
+            true,
         )
         .await;
 
-        let (connection, starting_dir) = match start_result {
+        let (connection, starting_dir, deferred_hooks) = match start_result {
             Ok(result) => result,
             Err(e) => {
                 log::error!("Failed to start dev container: {e}");
@@ -555,7 +560,7 @@ fn reconnect_connected_dev_container(
 
         let result = open_remote_project(
             Connection::DevContainer(connection).into(),
-            vec![PathBuf::from(starting_dir)],
+            vec![PathBuf::from(&starting_dir)],
             app_state,
             OpenOptions {
                 requesting_window: replace_window,
@@ -565,9 +570,75 @@ fn reconnect_connected_dev_container(
         )
         .await;
 
-        if let Err(e) = result {
-            log::error!("Failed to reconnect to dev container: {e:#}");
-            prompt_error(cx, "Failed to reconnect", format!("{e:#}")).await;
+        match result {
+            Ok(window) => run_deferred_hooks(window, starting_dir, deferred_hooks, cx),
+            Err(e) => {
+                log::error!("Failed to reconnect to dev container: {e:#}");
+                prompt_error(cx, "Failed to reconnect", format!("{e:#}")).await;
+            }
+        }
+    })
+    .detach();
+}
+
+/// Runs the lifecycle hooks the spec's `waitFor` let through after connecting, as
+/// terminal tasks of `window`'s workspace, so their output stays visible. Hooks run in
+/// order, the commands of one hook concurrently, and a failure stops the hooks after it.
+pub(crate) fn run_deferred_hooks(
+    window: WindowHandle<MultiWorkspace>,
+    remote_folder: String,
+    hooks: Vec<DeferredHook>,
+    cx: &mut AsyncApp,
+) {
+    if hooks.is_empty() {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        for hook in hooks {
+            let mut completions = Vec::new();
+            for command in hook.commands {
+                let template = TaskTemplate {
+                    label: command.label,
+                    command: command.program,
+                    args: command.args,
+                    cwd: Some(remote_folder.clone()),
+                    ..TaskTemplate::default()
+                };
+                let Some(task) = template.resolve_task("dev-container", &TaskContext::default())
+                else {
+                    continue;
+                };
+                let (tx, rx) = futures::channel::oneshot::channel();
+                let scheduled = window.update(cx, |multi_workspace, window, cx| {
+                    multi_workspace.workspace().update(cx, |workspace, cx| {
+                        workspace.schedule_resolved_task_with_completion(
+                            TaskSourceKind::UserInput,
+                            task,
+                            true,
+                            move |result, _| {
+                                tx.send(result).ok();
+                            },
+                            window,
+                            cx,
+                        );
+                    })
+                });
+                if scheduled.is_err() {
+                    return;
+                }
+                completions.push(rx);
+            }
+            let results = futures::future::join_all(completions).await;
+            let succeeded = results
+                .into_iter()
+                .all(|result| matches!(result, Ok(ScheduledTaskResult::Success)));
+            if !succeeded {
+                log::error!(
+                    "{} failed; skipping the lifecycle hooks after it",
+                    hook.name
+                );
+                return;
+            }
         }
     })
     .detach();
@@ -655,10 +726,17 @@ pub(crate) async fn rebuild_dev_container_connection(
     })?;
     let environment = context.environment(cx).await;
 
-    let (connection, _starting_dir) =
-        dev_container::start_dev_container_with_config(context, Some(config), environment, true)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // The caller reconnects the existing window itself, so every hook runs before.
+    let (connection, _starting_dir, _deferred_hooks) =
+        dev_container::start_dev_container_with_config(
+            context,
+            Some(config),
+            environment,
+            true,
+            false,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     Ok(Connection::DevContainer(connection).into())
 }

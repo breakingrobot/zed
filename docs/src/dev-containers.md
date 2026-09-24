@@ -81,6 +81,8 @@ These actions work the same for containers running locally, in WSL, or on an SSH
 Once connected, Zed operates inside the container environment for tasks, terminals, and language servers.
 Files are linked from your workspace into the container according to the dev container specification.
 
+Zed connects once the container is created and the lifecycle command set by `waitFor` has run (`updateContentCommand` by default). The later lifecycle commands, such as `postCreateCommand`, `postStartCommand` and `postAttachCommand`, then run as tasks in the Terminal Panel, where you can follow their output. If one fails, the ones after it don't run.
+
 ## Extensions
 
 You can specify extensions in `.devcontainer/devcontainer.json` under the "customizations" field like so:
@@ -103,6 +105,15 @@ You can specify extensions in `.devcontainer/devcontainer.json` under the "custo
 ```
 
 Note that extensions load for the Zed session, so these extensions will exist on your local Zed instances as well.
+
+## Troubleshooting {#troubleshooting}
+
+- **Podman on Windows fails with "controller `pids` is not available":** WSL 2.9 doesn't enable the `pids` cgroup controller, which Podman's default process limit needs. Add this to `%APPDATA%\containers\containers.conf`, then retry:
+
+  ```toml
+  [containers]
+  pids_limit = 0
+  ```
 
 ## Known Limitations
 

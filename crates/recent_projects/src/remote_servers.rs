@@ -2255,11 +2255,17 @@ impl RemoteServerProjects {
         cx.spawn_in(window, async move |entity, cx| {
             let environment = context.environment(cx).await;
 
-            let (dev_container_connection, starting_dir) =
-                match start_dev_container_with_config(context, config, environment, force_rebuild)
-                    .await
+            let (dev_container_connection, starting_dir, deferred_hooks) =
+                match start_dev_container_with_config(
+                    context,
+                    config,
+                    environment,
+                    force_rebuild,
+                    true,
+                )
+                .await
                 {
-                    Ok((c, s)) => (c, s),
+                    Ok(started) => started,
                     Err(e) => {
                         log::error!("Failed to start dev container: {:?}", e);
                         cx.prompt(
@@ -2306,7 +2312,7 @@ impl RemoteServerProjects {
             };
             let result = open_remote_project(
                 Connection::DevContainer(dev_container_connection).into(),
-                vec![starting_dir].into_iter().map(PathBuf::from).collect(),
+                vec![PathBuf::from(&starting_dir)],
                 app_state,
                 OpenOptions {
                     requesting_window: replace_window,
@@ -2315,6 +2321,14 @@ impl RemoteServerProjects {
                 cx,
             )
             .await;
+            if let Ok(window) = &result {
+                crate::dev_container_lifecycle::run_deferred_hooks(
+                    *window,
+                    starting_dir,
+                    deferred_hooks,
+                    cx,
+                );
+            }
             if let Err(e) = result {
                 log::error!("Failed to connect: {e:#}");
                 cx.prompt(

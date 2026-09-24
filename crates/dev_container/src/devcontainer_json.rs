@@ -280,7 +280,7 @@ pub(crate) struct DevContainer {
     pub(crate) post_create_command: Option<LifecycleScript>,
     pub(crate) post_start_command: Option<LifecycleScript>,
     pub(crate) post_attach_command: Option<LifecycleScript>,
-    wait_for: Option<LifecycleCommand>,
+    pub(crate) wait_for: Option<LifecycleCommand>,
     host_requirements: Option<HostRequirements>,
 }
 
