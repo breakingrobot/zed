@@ -8,6 +8,7 @@ use std::{
 use futures::TryFutureExt;
 use gpui::{AsyncWindowContext, Entity};
 use project::Worktree;
+use remote::EngineHost;
 use serde::Deserialize;
 use settings::{DevContainerConnection, infer_json_indent_size, replace_value_in_json_text};
 use util::rel_path::RelPath;
@@ -316,6 +317,12 @@ pub async fn start_dev_container_with_config(
                 host.is_windows(),
             );
 
+            let (wsl_distro_name, wsl_user) = match &context.engine_host {
+                EngineHost::Local => (None, None),
+                EngineHost::Wsl(options) => {
+                    (Some(options.distro_name.clone()), options.user.clone())
+                }
+            };
             let connection = DevContainerConnection {
                 name: project_name,
                 container_id,
@@ -325,6 +332,8 @@ pub async fn start_dev_container_with_config(
                 remote_user,
                 extension_ids,
                 remote_env: remote_env.into_iter().collect(),
+                wsl_distro_name,
+                wsl_user,
             };
 
             Ok((connection, remote_workspace_folder))
