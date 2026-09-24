@@ -18,8 +18,8 @@ use crate::{
     devcontainer_api::{DevContainerError, DevContainerUp},
     devcontainer_json::{
         ContainerBuild, DevContainer, DevContainerBuildType, FeatureOptions, ForwardPort,
-        MountDefinition, deserialize_devcontainer_json, deserialize_devcontainer_json_from_value,
-        deserialize_devcontainer_json_to_value,
+        LifecycleScript, MountDefinition, deserialize_devcontainer_json,
+        deserialize_devcontainer_json_from_value, deserialize_devcontainer_json_to_value,
     },
     docker::{
         Docker, DockerClient, DockerComposeConfig, DockerComposeService, DockerComposeServiceBuild,
@@ -1028,6 +1028,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
             remote_workspace_folder: remote_workspace_folder.display().to_string(),
             extension_ids: self.extension_ids(),
             remote_env,
+            metadata: running_container.config.labels.metadata.unwrap_or_default(),
         })
     }
 
@@ -2332,100 +2333,93 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         let remote_folder = self.remote_workspace_folder()?.display().to_string();
 
         if new_container {
-            if let Some(on_create_command) = &config.on_create_command {
-                for (command_name, command) in on_create_command.script_commands() {
-                    log::debug!("Running on create command {command_name}");
-                    self.docker_client
-                        .run_docker_exec(
-                            &devcontainer_up.container_id,
-                            &remote_folder,
-                            &devcontainer_up.remote_user,
-                            &devcontainer_up.remote_env,
-                            command,
-                        )
-                        .await?;
-                }
-            }
-            if let Some(update_content_command) = &config.update_content_command {
-                for (command_name, command) in update_content_command.script_commands() {
-                    log::debug!("Running update content command {command_name}");
-                    self.docker_client
-                        .run_docker_exec(
-                            &devcontainer_up.container_id,
-                            &remote_folder,
-                            &devcontainer_up.remote_user,
-                            &devcontainer_up.remote_env,
-                            command,
-                        )
-                        .await?;
-                }
-            }
-
-            if let Some(post_create_command) = &config.post_create_command {
-                for (command_name, command) in post_create_command.script_commands() {
-                    log::debug!("Running post create command {command_name}");
-                    self.docker_client
-                        .run_docker_exec(
-                            &devcontainer_up.container_id,
-                            &remote_folder,
-                            &devcontainer_up.remote_user,
-                            &devcontainer_up.remote_env,
-                            command,
-                        )
-                        .await?;
-                }
-            }
-        }
-        if let Some(post_start_command) = &config.post_start_command {
-            let script_commands = post_start_command.script_commands();
-            if !script_commands.is_empty() {
-                // Write marker first, run command second, which matches reference implementation:
-                // https://github.com/devcontainers/cli/blob/33073dbaba2545c51b4f8396e179c18231e80124/src/spec-common/injectHeadless.ts#L433-L437
-                let should_run = if let Some(started_at) = &devcontainer_up.started_at {
-                    self.docker_client
-                        .run_docker_exec_status(
-                            &devcontainer_up.container_id,
-                            &remote_folder,
-                            &devcontainer_up.remote_user,
-                            &devcontainer_up.remote_env,
-                            post_start_marker_command(started_at, &devcontainer_up.remote_user),
-                        )
-                        .await?
-                        .0
-                } else {
-                    container_started
-                };
-                if should_run {
-                    for (command_name, command) in script_commands {
-                        log::debug!("Running post start command {command_name}");
-                        self.docker_client
-                            .run_docker_exec(
-                                &devcontainer_up.container_id,
-                                &remote_folder,
-                                &devcontainer_up.remote_user,
-                                &devcontainer_up.remote_env,
-                                command,
-                            )
-                            .await?;
-                    }
-                }
-            }
-        }
-        if let Some(post_attach_command) = &config.post_attach_command {
-            for (command_name, command) in post_attach_command.script_commands() {
-                log::debug!("Running post attach command {command_name}");
-                self.docker_client
-                    .run_docker_exec(
-                        &devcontainer_up.container_id,
-                        &remote_folder,
-                        &devcontainer_up.remote_user,
-                        &devcontainer_up.remote_env,
-                        command,
-                    )
+            for (hook, config_script) in [
+                ("onCreateCommand", &config.on_create_command),
+                ("updateContentCommand", &config.update_content_command),
+                ("postCreateCommand", &config.post_create_command),
+            ] {
+                let scripts = lifecycle_scripts(devcontainer_up, hook, config_script)?;
+                self.run_lifecycle_scripts(devcontainer_up, &remote_folder, hook, scripts)
                     .await?;
             }
         }
 
+        let post_start_scripts = lifecycle_scripts(
+            devcontainer_up,
+            "postStartCommand",
+            &config.post_start_command,
+        )?;
+        if !post_start_scripts.is_empty() {
+            // Write marker first, run command second, which matches reference implementation:
+            // https://github.com/devcontainers/cli/blob/33073dbaba2545c51b4f8396e179c18231e80124/src/spec-common/injectHeadless.ts#L433-L437
+            let should_run = if let Some(started_at) = &devcontainer_up.started_at {
+                self.docker_client
+                    .run_docker_exec_status(
+                        &devcontainer_up.container_id,
+                        &remote_folder,
+                        &devcontainer_up.remote_user,
+                        &devcontainer_up.remote_env,
+                        post_start_marker_command(started_at, &devcontainer_up.remote_user),
+                    )
+                    .await?
+                    .0
+            } else {
+                container_started
+            };
+            if should_run {
+                self.run_lifecycle_scripts(
+                    devcontainer_up,
+                    &remote_folder,
+                    "postStartCommand",
+                    post_start_scripts,
+                )
+                .await?;
+            }
+        }
+
+        let post_attach_scripts = lifecycle_scripts(
+            devcontainer_up,
+            "postAttachCommand",
+            &config.post_attach_command,
+        )?;
+        self.run_lifecycle_scripts(
+            devcontainer_up,
+            &remote_folder,
+            "postAttachCommand",
+            post_attach_scripts,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    /// Runs the scripts of one lifecycle hook in order, stopping at the first failure. The
+    /// named commands of an object-form script run concurrently, as the spec requires, and
+    /// all of them must succeed.
+    async fn run_lifecycle_scripts(
+        &self,
+        devcontainer_up: &DevContainerUp,
+        remote_folder: &str,
+        hook: &str,
+        scripts: Vec<(String, LifecycleScript)>,
+    ) -> Result<(), DevContainerError> {
+        for (origin, script) in scripts {
+            let mut commands: Vec<_> = script.script_commands().into_iter().collect();
+            commands.sort_by(|(left, _), (right, _)| left.cmp(right));
+            let results =
+                futures::future::join_all(commands.into_iter().map(|(command_name, command)| {
+                    log::debug!("Running {hook} {command_name} from {origin}");
+                    self.docker_client.run_docker_exec(
+                        &devcontainer_up.container_id,
+                        remote_folder,
+                        &devcontainer_up.remote_user,
+                        &devcontainer_up.remote_env,
+                        command,
+                    )
+                }))
+                .await;
+            results.into_iter().collect::<Result<Vec<_>, _>>()?;
+        }
         Ok(())
     }
 
@@ -2484,6 +2478,12 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                 remote_workspace_folder: remote_folder.display().to_string(),
                 extension_ids: self.extension_ids(),
                 remote_env,
+                metadata: docker_inspect
+                    .config
+                    .labels
+                    .metadata
+                    .clone()
+                    .unwrap_or_default(),
             };
 
             self.run_remote_scripts(&dev_container_up, false, container_started)
@@ -3364,6 +3364,45 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Collects the scripts of a lifecycle hook in the order the spec runs them, from the
+/// container's `devcontainer.metadata` label: the base image's entries, then each
+/// feature's, then the one recorded for devcontainer.json when the container was
+/// created. This mirrors the devcontainer CLI reference implementation's
+/// `lifecycleCommandOriginMapFromMetadata`
+/// <https://github.com/devcontainers/cli/blob/5dc7533314b5ba7ec3875c30143dfe1aec644870/src/spec-node/imageMetadata.ts#L124>.
+/// Containers without the label fall back to the parsed devcontainer.json.
+fn lifecycle_scripts(
+    devcontainer_up: &DevContainerUp,
+    hook: &str,
+    config_script: &Option<LifecycleScript>,
+) -> Result<Vec<(String, LifecycleScript)>, DevContainerError> {
+    if devcontainer_up.metadata.is_empty() {
+        return Ok(config_script
+            .iter()
+            .map(|script| ("devcontainer.json".to_string(), script.clone()))
+            .collect());
+    }
+
+    let mut scripts = Vec::new();
+    for entry in &devcontainer_up.metadata {
+        // Only features record an `id`; the image and devcontainer.json entries have none.
+        let origin = entry
+            .get("id")
+            .and_then(|id| id.as_str())
+            .unwrap_or("devcontainer.json");
+        let Some(value) = entry.get(hook).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        let script =
+            serde_json_lenient::from_value::<LifecycleScript>(value.clone()).map_err(|error| {
+                log::error!("Invalid {hook} in the dev container metadata from {origin}: {error}");
+                DevContainerError::DevContainerScriptsFailed
+            })?;
+        scripts.push((origin.to_string(), script));
+    }
+    Ok(scripts)
+}
+
 /// Builds the marker-file check-and-update command for `postStartCommand`.
 ///
 /// Per the devcontainer spec, `postStartCommand` must run each time the
@@ -3986,6 +4025,7 @@ mod test {
             remote_workspace_folder: "/workspaces/project".to_string(),
             extension_ids: Vec::new(),
             remote_env: HashMap::new(),
+            metadata: Vec::new(),
         };
 
         devcontainer_manifest
@@ -4059,6 +4099,7 @@ mod test {
             remote_workspace_folder: "/workspaces/project".to_string(),
             extension_ids: Vec::new(),
             remote_env: HashMap::new(),
+            metadata: Vec::new(),
         };
 
         devcontainer_manifest
@@ -4073,6 +4114,155 @@ mod test {
             .unwrap();
         // Only the marker check runs; postStartCommand itself is skipped.
         assert_eq!(docker_exec_commands.len(), 1);
+    }
+
+    fn recorded_scripts(test_dependencies: &TestDependencies) -> Vec<String> {
+        test_dependencies
+            .docker
+            .exec_commands_recorded
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|recorded| {
+                recorded
+                    ._inner_command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    async fn should_run_lifecycle_scripts_from_container_metadata_in_spec_order(
+        cx: &mut TestAppContext,
+    ) {
+        // The configuration changed after the container was created: the scripts
+        // recorded in its metadata label are the ones that run.
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{
+                "image": "test_image:latest",
+                "postCreateCommand": "echo edited-after-creation"
+            }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+
+        let metadata = serde_json_lenient::from_str::<Vec<HashMap<String, serde_json_lenient::Value>>>(
+            r#"[
+                { "onCreateCommand": "echo image-on-create", "remoteUser": "vscode" },
+                { "id": "ghcr.io/devcontainers/features/a:1", "postCreateCommand": "echo feature-a" },
+                { "id": "ghcr.io/devcontainers/features/b:1", "onCreateCommand": "echo feature-b" },
+                {
+                    "postCreateCommand": { "second": "echo json-second", "first": "echo json-first" },
+                    "postAttachCommand": "echo json-attach"
+                }
+            ]"#,
+        )
+        .unwrap();
+        let devcontainer_up = DevContainerUp {
+            started_at: None,
+            container_id: "container".to_string(),
+            remote_user: "root".to_string(),
+            remote_workspace_folder: "/workspaces/project".to_string(),
+            extension_ids: Vec::new(),
+            remote_env: HashMap::new(),
+            metadata,
+        };
+
+        devcontainer_manifest
+            .run_remote_scripts(&devcontainer_up, true, false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            recorded_scripts(&test_dependencies),
+            vec![
+                "-c echo image-on-create",
+                "-c echo feature-b",
+                "-c echo feature-a",
+                "-c echo json-first",
+                "-c echo json-second",
+                "-c echo json-attach",
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn should_run_devcontainer_json_scripts_when_container_has_no_metadata(
+        cx: &mut TestAppContext,
+    ) {
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{
+                "image": "test_image:latest",
+                "onCreateCommand": "echo on-create",
+                "postCreateCommand": "echo post-create"
+            }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+
+        let devcontainer_up = DevContainerUp {
+            started_at: None,
+            container_id: "container".to_string(),
+            remote_user: "root".to_string(),
+            remote_workspace_folder: "/workspaces/project".to_string(),
+            extension_ids: Vec::new(),
+            remote_env: HashMap::new(),
+            metadata: Vec::new(),
+        };
+
+        devcontainer_manifest
+            .run_remote_scripts(&devcontainer_up, true, false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            recorded_scripts(&test_dependencies),
+            vec!["-c echo on-create", "-c echo post-create"]
+        );
+    }
+
+    #[gpui::test]
+    async fn should_stop_lifecycle_scripts_at_the_first_failure(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{
+                "image": "test_image:latest",
+                "onCreateCommand": "echo on-create",
+                "postCreateCommand": "echo post-create"
+            }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        test_dependencies.docker.set_exec_success(false);
+
+        let devcontainer_up = DevContainerUp {
+            started_at: None,
+            container_id: "container".to_string(),
+            remote_user: "root".to_string(),
+            remote_workspace_folder: "/workspaces/project".to_string(),
+            extension_ids: Vec::new(),
+            remote_env: HashMap::new(),
+            metadata: Vec::new(),
+        };
+
+        assert!(
+            devcontainer_manifest
+                .run_remote_scripts(&devcontainer_up, true, false)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            recorded_scripts(&test_dependencies),
+            vec!["-c echo on-create"]
+        );
     }
 
     #[cfg(not(target_os = "windows"))]
