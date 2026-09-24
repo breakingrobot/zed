@@ -27,8 +27,8 @@ use gpui::{App, AppContext, AsyncApp, Task};
 use rpc::proto::Envelope;
 
 use crate::{
-    EngineHost, RemoteArch, RemoteClientDelegate, RemoteConnection, RemoteConnectionOptions,
-    RemoteOs, RemotePlatform,
+    EngineHost, HostCommand, RemoteArch, RemoteClientDelegate, RemoteConnection,
+    RemoteConnectionOptions, RemoteOs, RemotePlatform,
     remote_client::{CommandTemplate, Interactive},
     transport::parse_platform,
 };
@@ -97,6 +97,8 @@ pub(crate) struct DockerExecConnection {
     os_version: Option<String>,
     path_style: Option<PathStyle>,
     shell: String,
+    /// See [`EngineHost::engine_environment`].
+    engine_environment: Vec<(String, String)>,
 }
 
 impl DockerExecConnection {
@@ -114,7 +116,9 @@ impl DockerExecConnection {
             os_version: None,
             path_style: None,
             shell: "sh".to_owned(),
+            engine_environment: Vec::new(),
         };
+        this.engine_environment = this.connection_options.host.engine_environment().await;
         let (release_channel, version, commit) = cx.update(|cx| {
             (
                 ReleaseChannel::global(cx),
@@ -165,7 +169,12 @@ impl DockerExecConnection {
 
     /// Builds a docker CLI command that runs on the engine host.
     fn docker_command(&self, args: &[impl AsRef<str>]) -> util::command::Command {
-        docker_command(&self.connection_options, self.docker_cli(), args)
+        docker_command(
+            &self.connection_options,
+            self.docker_cli(),
+            &self.engine_environment,
+            args,
+        )
     }
 
     /// Run a shell command inside the container and reliably extract its output
@@ -473,23 +482,32 @@ impl DockerExecConnection {
     async fn upload_and_chown(
         docker_cli: String,
         connection_options: DockerConnectionOptions,
+        engine_environment: Vec<(String, String)>,
         src_path: String,
         dst_path: String,
     ) -> Result<()> {
+        let env = &engine_environment;
         if !connection_options.host.has_local_files() {
-            Self::stream_into_container(&docker_cli, &connection_options, &src_path, &dst_path)
-                .await?;
+            Self::stream_into_container(
+                &docker_cli,
+                &connection_options,
+                env,
+                &src_path,
+                &dst_path,
+            )
+            .await?;
         } else {
-            Self::copy_into_container(&docker_cli, &connection_options, &src_path, &dst_path)
+            Self::copy_into_container(&docker_cli, &connection_options, env, &src_path, &dst_path)
                 .await?;
         }
-        Self::chown(&docker_cli, &connection_options, &dst_path).await
+        Self::chown(&docker_cli, &connection_options, env, &dst_path).await
     }
 
     /// `docker cp` reads the source on the engine host, which must see our files.
     async fn copy_into_container(
         docker_cli: &str,
         connection_options: &DockerConnectionOptions,
+        engine_environment: &[(String, String)],
         src_path: &str,
         dst_path: &str,
     ) -> Result<()> {
@@ -497,6 +515,7 @@ impl DockerExecConnection {
         let mut command = docker_command(
             connection_options,
             docker_cli,
+            engine_environment,
             &[
                 "cp".to_string(),
                 "-a".to_string(),
@@ -526,6 +545,7 @@ impl DockerExecConnection {
     async fn stream_into_container(
         docker_cli: &str,
         connection_options: &DockerConnectionOptions,
+        engine_environment: &[(String, String)],
         src_path: &str,
         dst_path: &str,
     ) -> Result<()> {
@@ -543,7 +563,7 @@ impl DockerExecConnection {
                 smol::fs::read(src).await?,
             )
         };
-        let mut command = connection_options.host.command(docker_cli);
+        let mut command = engine_command(connection_options, docker_cli, engine_environment);
         command.args([
             "exec",
             "-i",
@@ -567,11 +587,13 @@ impl DockerExecConnection {
     async fn chown(
         docker_cli: &str,
         connection_options: &DockerConnectionOptions,
+        engine_environment: &[(String, String)],
         dst_path: &str,
     ) -> Result<()> {
         let mut chown_command = docker_command(
             connection_options,
             docker_cli,
+            engine_environment,
             &[
                 "exec".to_string(),
                 connection_options.container_id.clone(),
@@ -614,6 +636,7 @@ impl DockerExecConnection {
         Self::upload_and_chown(
             self.docker_cli().to_string(),
             self.connection_options.clone(),
+            self.engine_environment.clone(),
             src_path_display,
             full_server_path,
         )
@@ -768,12 +791,25 @@ impl DockerExecConnection {
     }
 }
 
+fn engine_command(
+    connection_options: &DockerConnectionOptions,
+    docker_cli: &str,
+    engine_environment: &[(String, String)],
+) -> HostCommand {
+    let mut command = connection_options.host.command(docker_cli);
+    for (key, value) in engine_environment {
+        command.env(key, value);
+    }
+    command
+}
+
 fn docker_command(
     connection_options: &DockerConnectionOptions,
     docker_cli: &str,
+    engine_environment: &[(String, String)],
     args: &[impl AsRef<str>],
 ) -> util::command::Command {
-    let mut command = connection_options.host.command(docker_cli);
+    let mut command = engine_command(connection_options, docker_cli, engine_environment);
     command.args(args.iter().map(|arg| arg.as_ref()));
     command.to_command()
 }
@@ -850,7 +886,11 @@ impl RemoteConnection for DockerExecConnection {
             docker_args.push("--reconnect".to_string());
         }
         // The proxy lives as long as the connection, and so do its port forwards.
-        let mut host_command = self.connection_options.host.command(self.docker_cli());
+        let mut host_command = engine_command(
+            &self.connection_options,
+            self.docker_cli(),
+            &self.engine_environment,
+        );
         host_command.args(&docker_args);
         for port in &self.connection_options.forward_ports {
             host_command.forward_port(*port);
@@ -901,6 +941,7 @@ impl RemoteConnection for DockerExecConnection {
         let upload_task = Self::upload_and_chown(
             self.docker_cli().to_string(),
             self.connection_options.clone(),
+            self.engine_environment.clone(),
             src_path_display,
             dest_path_str,
         );
@@ -976,7 +1017,11 @@ impl RemoteConnection for DockerExecConnection {
 
         docker_args.append(&mut inner_program);
 
-        let mut command = self.connection_options.host.command(self.docker_cli());
+        let mut command = engine_command(
+            &self.connection_options,
+            self.docker_cli(),
+            &self.engine_environment,
+        );
         command
             .args(&docker_args)
             .interactive(interactive == Interactive::Yes);
@@ -1241,6 +1286,7 @@ mod tests {
             os_version: None,
             path_style: None,
             shell: "/bin/sh".to_string(),
+            engine_environment: Vec::new(),
         }
     }
 

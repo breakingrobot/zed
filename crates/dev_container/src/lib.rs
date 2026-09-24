@@ -154,33 +154,14 @@ impl DevContainerContext {
     }
 }
 
-/// Reads the environment of a login shell on `host`, which is where users set
-/// `PATH` and similar variables (`~/.profile`), as a terminal on that host would see it.
 async fn host_environment(host: &EngineHost) -> HashMap<String, String> {
-    let mut command = host.command("sh");
-    command.args(["-c", r#"exec "${SHELL:-sh}" -lc 'env -0'"#]);
-    match command.output().await {
-        Ok(output) if output.status.success() => parse_nul_separated_environment(&output.stdout),
-        Ok(output) => {
-            log::error!(
-                "Failed to read the environment of {host:?}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+    host.login_environment()
+        .await
+        .map(|environment| environment.into_iter().collect())
+        .unwrap_or_else(|error| {
+            log::error!("{error:#}");
             HashMap::default()
-        }
-        Err(error) => {
-            log::error!("Failed to read the environment of {host:?}: {error}");
-            HashMap::default()
-        }
-    }
-}
-
-fn parse_nul_separated_environment(output: &[u8]) -> HashMap<String, String> {
-    String::from_utf8_lossy(output)
-        .split('\0')
-        .filter_map(|entry| entry.split_once('='))
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect()
+        })
 }
 
 #[derive(RegisterSetting)]
@@ -1751,17 +1732,6 @@ async fn get_ghcr_features(
 #[cfg(test)]
 mod tests {
     use http_client::{FakeHttpClient, anyhow};
-
-    #[test]
-    fn parses_nul_separated_environment() {
-        let environment = super::parse_nul_separated_environment(
-            b"PATH=/usr/bin:/bin\0MULTI=first\nsecond\0EMPTY=\0NO_EQUALS\0",
-        );
-        assert_eq!(environment.len(), 3);
-        assert_eq!(environment["PATH"], "/usr/bin:/bin");
-        assert_eq!(environment["MULTI"], "first\nsecond");
-        assert_eq!(environment["EMPTY"], "");
-    }
 
     use crate::{
         DevContainerTemplatesResponse, devcontainer_templates_repository,

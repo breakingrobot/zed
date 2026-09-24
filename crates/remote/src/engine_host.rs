@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ffi::OsStr,
     path::{Path, PathBuf},
     process::Output,
@@ -102,6 +103,37 @@ impl EngineHost {
         }
     }
 
+    /// Reads the environment of a login shell on the host, where users set `PATH`
+    /// and similar variables (`~/.profile`), as a terminal on the host sees it.
+    pub async fn login_environment(&self) -> anyhow::Result<HashMap<String, String>> {
+        let mut command = self.command("sh");
+        command.args(["-c", r#"exec "${SHELL:-sh}" -lc 'env -0'"#]);
+        let output = command.output().await?;
+        anyhow::ensure!(
+            output.status.success(),
+            "failed to read the environment of {self:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(parse_nul_separated_environment(&output.stdout))
+    }
+
+    /// The variables of the host's login environment that decide which engine the
+    /// container CLI talks to, and where it is. Commands started on a host other
+    /// than the machine running Zed don't go through a login shell, so they are
+    /// passed explicitly. The machine running Zed already loaded its own.
+    pub async fn engine_environment(&self) -> Vec<(String, String)> {
+        if self.is_local() {
+            return Vec::new();
+        }
+        match self.login_environment().await {
+            Ok(environment) => engine_variables(environment),
+            Err(error) => {
+                log::warn!("Using the default engine environment: {error:#}");
+                Vec::new()
+            }
+        }
+    }
+
     /// Converts a path as the machine running Zed sees it into the same path as
     /// the host sees it, e.g. to pass it to the container engine.
     pub fn host_path(&self, local: &Path) -> String {
@@ -126,6 +158,32 @@ impl EngineHost {
             Self::Ssh(_) => PathBuf::from(host),
         }
     }
+}
+
+const ENGINE_VARIABLES: &[&str] = &[
+    "PATH",
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS_VERIFY",
+    "CONTAINER_HOST",
+    "XDG_RUNTIME_DIR",
+];
+
+fn engine_variables(mut environment: HashMap<String, String>) -> Vec<(String, String)> {
+    ENGINE_VARIABLES
+        .iter()
+        .filter_map(|name| Some((name.to_string(), environment.remove(*name)?)))
+        .collect()
+}
+
+pub fn parse_nul_separated_environment(output: &[u8]) -> HashMap<String, String> {
+    String::from_utf8_lossy(output)
+        .split('\0')
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
 }
 
 /// Maps a Windows path to the path a WSL distribution sees: its own files
@@ -489,6 +547,26 @@ mod tests {
         assert_eq!(
             args.last().unwrap(),
             "exec 'docker' 'exec' '-it' 'container' 'bash'"
+        );
+    }
+
+    #[test]
+    fn parses_nul_separated_environment_and_keeps_engine_variables() {
+        let environment = parse_nul_separated_environment(
+            b"PATH=/home/dev/bin:/usr/bin\0DOCKER_HOST=unix:///run/user/1000/docker.sock\0MULTI=a\nb\0EMPTY=\0NO_EQUALS\0",
+        );
+        assert_eq!(environment.len(), 4);
+        assert_eq!(environment["MULTI"], "a\nb");
+        assert_eq!(environment["EMPTY"], "");
+        assert_eq!(
+            engine_variables(environment),
+            [
+                ("PATH".to_string(), "/home/dev/bin:/usr/bin".to_string()),
+                (
+                    "DOCKER_HOST".to_string(),
+                    "unix:///run/user/1000/docker.sock".to_string()
+                ),
+            ]
         );
     }
 
