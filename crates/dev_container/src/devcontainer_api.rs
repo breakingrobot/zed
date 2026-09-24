@@ -86,6 +86,9 @@ pub enum DevContainerError {
     /// expects those labels to be unique per project, so Zed can't choose
     /// which one to connect to. The user must remove the duplicate(s).
     MultipleMatchingContainers(Vec<String>),
+    /// Feature `dependsOn` / `installsAfter` constraints can't be satisfied,
+    /// e.g. because they form a cycle.
+    FeatureDependencyResolutionFailed(String),
 }
 
 impl Display for DevContainerError {
@@ -125,6 +128,8 @@ impl Display for DevContainerError {
                      `docker stop <id>` and `docker rm <id>`, then try again.",
                     ids.join(", ")
                 ),
+                DevContainerError::FeatureDependencyResolutionFailed(reason) =>
+                    format!("Failed to resolve dev container feature install order: {reason}"),
             }
         )
     }
