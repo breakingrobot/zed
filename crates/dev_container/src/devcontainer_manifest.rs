@@ -3,7 +3,7 @@ use std::{
     fmt::Debug,
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use regex::Regex;
@@ -61,6 +61,9 @@ struct DevContainerManifest {
     root_image: Option<DockerInspect>,
     features_build_info: Option<FeaturesBuildInfo>,
     features: Vec<FeatureManifest>,
+    /// Private directory for files generated while building, created on first use and removed
+    /// when the manifest is dropped.
+    build_dir: OnceLock<tempfile::TempDir>,
 }
 const DEFAULT_REMOTE_PROJECT_DIR: &str = "/workspaces";
 impl DevContainerManifest {
@@ -107,7 +110,39 @@ impl DevContainerManifest {
             root_image: None,
             features_build_info: None,
             features: Vec::new(),
+            build_dir: OnceLock::new(),
         })
+    }
+
+    /// Returns the directory where generated build files (extended Dockerfiles, compose
+    /// overrides) are written.
+    ///
+    /// The directory gets a random name and is only accessible to the current user, so other
+    /// users of the machine can neither predict nor pre-create the paths written into it.
+    async fn build_dir(&self) -> Result<PathBuf, DevContainerError> {
+        let path = match self.build_dir.get() {
+            Some(dir) => dir.path().to_path_buf(),
+            None => {
+                let mut builder = tempfile::Builder::new();
+                builder.prefix("devcontainer-zed-");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    builder.permissions(std::fs::Permissions::from_mode(0o700));
+                }
+                let dir = builder.tempdir().map_err(|e| {
+                    log::error!("Failed to create build directory: {e}");
+                    DevContainerError::FilesystemError
+                })?;
+                self.build_dir.get_or_init(|| dir).path().to_path_buf()
+            }
+        };
+        // No-op on the real filesystem; keeps a fake filesystem in sync in tests.
+        self.fs.create_dir(&path).await.map_err(|e| {
+            log::error!("Failed to create build directory: {e}");
+            DevContainerError::FilesystemError
+        })?;
+        Ok(path)
     }
 
     fn devcontainer_id(&self) -> String {
@@ -441,14 +476,9 @@ impl DevContainerManifest {
         let root_image_tag = self.get_base_image_from_config().await?;
         let root_image = self.docker_client.inspect(&root_image_tag).await?;
 
-        let temp_base = std::env::temp_dir().join("devcontainer-zed");
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-
-        let features_content_dir = temp_base.join(format!("container-features-{}", timestamp));
-        let empty_context_dir = temp_base.join("empty-folder");
+        let build_dir = self.build_dir().await?;
+        let features_content_dir = build_dir.join("container-features");
+        let empty_context_dir = build_dir.join("empty-folder");
 
         self.fs
             .create_dir(&features_content_dir)
@@ -1167,8 +1197,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 volumes: HashMap::new(),
             };
 
-            let temp_base = std::env::temp_dir().join("devcontainer-zed");
-            let config_location = temp_base.join("docker_compose_build.json");
+            let config_location = self.build_dir().await?.join("docker_compose_build.json");
 
             let config_json = serde_json_lenient::to_string(&build_override).map_err(|e| {
                 log::error!("Error serializing docker compose runtime override: {e}");
@@ -1266,8 +1295,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                     volumes: HashMap::new(),
                 };
 
-                let temp_base = std::env::temp_dir().join("devcontainer-zed");
-                let config_location = temp_base.join("docker_compose_build.json");
+                let config_location = self.build_dir().await?.join("docker_compose_build.json");
 
                 let config_json = serde_json_lenient::to_string(&build_override).map_err(|e| {
                     log::error!("Error serializing docker compose runtime override: {e}");
@@ -1333,8 +1361,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
     ) -> Result<PathBuf, DevContainerError> {
         let config =
             self.build_runtime_override(main_service_name, network_mode_service, resources)?;
-        let temp_base = std::env::temp_dir().join("devcontainer-zed");
-        let config_location = temp_base.join("docker_compose_runtime.json");
+        let config_location = self.build_dir().await?.join("docker_compose_runtime.json");
 
         let config_json = serde_json_lenient::to_string(&config).map_err(|e| {
             log::error!("Error serializing docker compose runtime override: {e}");
@@ -4235,6 +4262,37 @@ mod test {
             find_primary_service(&given_docker_compose_config, &given_dev_container).unwrap();
 
         assert_eq!(service_name, "found_service".to_string());
+    }
+
+    #[gpui::test]
+    async fn test_build_dir_is_private_and_removed_on_drop(cx: &mut TestAppContext) {
+        let (_, manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }"#,
+        )
+        .await
+        .unwrap();
+        let (_, other_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }"#,
+        )
+        .await
+        .unwrap();
+
+        let build_dir = manifest.build_dir().await.unwrap();
+        assert_eq!(manifest.build_dir().await.unwrap(), build_dir);
+        assert_ne!(other_manifest.build_dir().await.unwrap(), build_dir);
+        assert!(build_dir.is_dir());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&build_dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+
+        drop(manifest);
+        assert!(!build_dir.exists());
     }
 
     #[gpui::test]
