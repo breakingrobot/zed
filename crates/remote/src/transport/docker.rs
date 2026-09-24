@@ -65,6 +65,21 @@ pub struct DockerConnectionOptions {
     pub remote_env: BTreeMap<String, String>,
 }
 
+impl DockerConnectionOptions {
+    /// The `devcontainer.local_folder` and `devcontainer.config_file` labels this
+    /// container was created from, when both are known.
+    pub fn dev_container_labels(&self) -> Option<(&str, &str)> {
+        match (self.local_folder.as_deref(), self.config_file.as_deref()) {
+            (Some(local_folder), Some(config_file))
+                if !local_folder.is_empty() && !config_file.is_empty() =>
+            {
+                Some((local_folder, config_file))
+            }
+            _ => None,
+        }
+    }
+}
+
 pub(crate) struct DockerExecConnection {
     proxy_process: Mutex<Option<u32>>,
     remote_dir_for_server: String,
@@ -1072,6 +1087,8 @@ mod tests {
                 name: "container".to_string(),
                 container_id: "container_id".to_string(),
                 remote_user: "user".to_string(),
+                local_folder: None,
+                config_file: None,
                 upload_binary_over_docker_exec: false,
                 use_podman: false,
                 remote_env: remote_env

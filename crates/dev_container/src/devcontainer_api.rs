@@ -18,7 +18,9 @@ use worktree::Snapshot;
 use crate::{
     DevContainerContext, DevContainerFeature, DevContainerTemplate,
     devcontainer_json::DevContainer,
-    devcontainer_manifest::{read_devcontainer_configuration, spawn_dev_container},
+    devcontainer_manifest::{
+        normalize_label_path, read_devcontainer_configuration, spawn_dev_container,
+    },
     devcontainer_templates_repository, get_latest_oci_manifest, get_oci_token, ghcr_registry,
     oci::download_oci_tarball,
 };
@@ -294,12 +296,16 @@ pub async fn start_dev_container_with_config(
             // `DevContainerManifest::identifying_labels`). These are stable per
             // dev container and let us key the connection's identity on the
             // project rather than the ephemeral `container_id`.
-            let local_folder = context.project_directory.display().to_string();
-            let config_file = context
-                .project_directory
-                .join(&actual_config.config_path)
-                .display()
-                .to_string();
+            // Normalized exactly like the labels, so `C:\` and `c:\` keep one identity on Windows.
+            let local_folder =
+                normalize_label_path(&context.project_directory.display().to_string());
+            let config_file = normalize_label_path(
+                &context
+                    .project_directory
+                    .join(&actual_config.config_path)
+                    .display()
+                    .to_string(),
+            );
 
             let connection = DevContainerConnection {
                 name: project_name,

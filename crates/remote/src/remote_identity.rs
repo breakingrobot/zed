@@ -95,12 +95,12 @@ impl From<&RemoteConnectionOptions> for RemoteConnectionIdentity {
             },
             RemoteConnectionOptions::Docker(options) => Self::Docker {
                 remote_user: options.remote_user.clone(),
-                key: match (&options.local_folder, &options.config_file) {
-                    (Some(local_folder), Some(config_file)) => DockerIdentityKey::DevContainer {
-                        local_folder: local_folder.clone(),
-                        config_file: config_file.clone(),
+                key: match options.dev_container_labels() {
+                    Some((local_folder, config_file)) => DockerIdentityKey::DevContainer {
+                        local_folder: local_folder.to_string(),
+                        config_file: config_file.to_string(),
                     },
-                    _ => DockerIdentityKey::ContainerId(options.container_id.clone()),
+                    None => DockerIdentityKey::ContainerId(options.container_id.clone()),
                 },
             },
             #[cfg(any(test, feature = "test-support"))]
@@ -243,6 +243,29 @@ mod tests {
         });
 
         assert!(same_remote_connection_identity(Some(&before), Some(&after)));
+    }
+
+    #[test]
+    fn empty_dev_container_labels_fall_back_to_the_container_id() {
+        let first = RemoteConnectionOptions::Docker(DockerConnectionOptions {
+            container_id: "container-first".to_string(),
+            remote_user: "anth".to_string(),
+            local_folder: Some(String::new()),
+            config_file: Some(String::new()),
+            ..Default::default()
+        });
+        let second = RemoteConnectionOptions::Docker(DockerConnectionOptions {
+            container_id: "container-second".to_string(),
+            remote_user: "anth".to_string(),
+            local_folder: Some(String::new()),
+            config_file: Some(String::new()),
+            ..Default::default()
+        });
+
+        assert!(!same_remote_connection_identity(
+            Some(&first),
+            Some(&second)
+        ));
     }
 
     #[test]

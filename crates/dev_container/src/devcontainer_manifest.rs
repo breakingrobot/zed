@@ -3446,7 +3446,7 @@ fn build_devcontainer_metadata_entry(
         .collect()
 }
 
-fn normalize_label_path(path: &str) -> String {
+pub(crate) fn normalize_label_path(path: &str) -> String {
     #[cfg(not(target_os = "windows"))]
     {
         path.to_string()

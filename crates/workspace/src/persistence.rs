@@ -1710,14 +1710,12 @@ impl WorkspaceDb {
         // that rebuilding or restarting a container reuses the same row instead
         // of accumulating a fresh one on every cycle (see issue #56576).
         if let RemoteConnectionOptions::Docker(docker) = &options {
-            if let (Some(local_folder), Some(config_file)) =
-                (docker.local_folder.clone(), docker.config_file.clone())
-            {
+            if let Some((local_folder, config_file)) = docker.dev_container_labels() {
                 return Self::get_or_create_dev_container_connection_query(
                     this,
                     docker,
-                    local_folder,
-                    config_file,
+                    local_folder.to_string(),
+                    config_file.to_string(),
                 );
             }
         }
