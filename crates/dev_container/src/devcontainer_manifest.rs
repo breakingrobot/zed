@@ -2384,7 +2384,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         let remote_workspace_mount = self.remote_workspace_mount()?;
 
         let docker_cli = self.docker_client.docker_cli();
-        let mut command = self.docker_client.engine_host().command(&docker_cli);
+        let mut command = self.docker_client.docker_command();
 
         command.arg("run");
 

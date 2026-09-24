@@ -195,6 +195,8 @@ pub(crate) struct Docker {
     docker_cli: String,
     has_buildx: bool,
     host: EngineHost,
+    /// See [`EngineHost::engine_environment`].
+    engine_environment: Vec<(String, String)>,
 }
 
 impl DockerInspect {
@@ -209,6 +211,7 @@ impl Docker {
         use_buildkit: Option<bool>,
         host: EngineHost,
     ) -> Self {
+        let engine_environment = host.engine_environment().await;
         let has_buildx = if docker_cli == "podman" {
             false
         } else if let Some(use_buildkit) = use_buildkit {
@@ -221,11 +224,11 @@ impl Docker {
             // multi-stage `FROM`.
             use_buildkit
         } else {
-            let output = host
-                .command(docker_cli)
-                .args(["buildx", "version"])
-                .output()
-                .await;
+            let mut command = host.command(docker_cli);
+            for (key, value) in &engine_environment {
+                command.env(key, value);
+            }
+            let output = command.args(["buildx", "version"]).output().await;
             output.map(|o| o.status.success()).unwrap_or(false)
         };
         if !has_buildx && docker_cli != "podman" {
@@ -237,6 +240,7 @@ impl Docker {
             docker_cli: docker_cli.to_string(),
             has_buildx,
             host,
+            engine_environment,
         }
     }
 
@@ -245,7 +249,7 @@ impl Docker {
     }
 
     async fn pull_image(&self, image: &String) -> Result<(), DevContainerError> {
-        let mut command = self.host.command(&self.docker_cli);
+        let mut command = self.docker_command();
         command.args(&["pull", "--", image]);
 
         let output = command.output().await.map_err(|e| {
@@ -262,7 +266,7 @@ impl Docker {
     }
 
     fn create_docker_query_containers(&self, filters: Vec<String>) -> HostCommand {
-        let mut command = self.host.command(&self.docker_cli);
+        let mut command = self.docker_command();
         command.args(&["ps", "-a"]);
 
         for filter in filters {
@@ -274,13 +278,13 @@ impl Docker {
     }
 
     fn create_docker_inspect(&self, id: &str) -> HostCommand {
-        let mut command = self.host.command(&self.docker_cli);
+        let mut command = self.docker_command();
         command.args(&["inspect", "--format={{json . }}", id]);
         command
     }
 
     fn create_docker_compose_config_command(&self, config_files: &Vec<PathBuf>) -> HostCommand {
-        let mut command = self.host.command(&self.docker_cli);
+        let mut command = self.docker_command();
         command.arg("compose");
         for file_path in config_files {
             command.args(&["-f", &self.host.host_path(file_path)]);
@@ -327,7 +331,7 @@ impl DockerClient for Docker {
         project_name: &str,
         services: Option<&Vec<String>>,
     ) -> Result<(), DevContainerError> {
-        let mut command = self.host.command(&self.docker_cli);
+        let mut command = self.docker_command();
         if !self.is_podman() {
             if self.has_buildx {
                 command.env("DOCKER_BUILDKIT", "1");
@@ -372,7 +376,7 @@ impl DockerClient for Docker {
         env: &HashMap<String, String>,
         inner_command: Command,
     ) -> Result<(bool, String), DevContainerError> {
-        let mut command = self.host.command(&self.docker_cli);
+        let mut command = self.docker_command();
 
         command.args(&["exec", "-w", remote_folder, "-u", user]);
 
@@ -400,7 +404,7 @@ impl DockerClient for Docker {
     }
 
     async fn start_container(&self, id: &str) -> Result<(), DevContainerError> {
-        let mut command = self.host.command(&self.docker_cli);
+        let mut command = self.docker_command();
 
         command.args(&["start", id]);
 
@@ -454,6 +458,10 @@ impl DockerClient for Docker {
 
     fn engine_host(&self) -> EngineHost {
         self.host.clone()
+    }
+
+    fn engine_environment(&self) -> Vec<(String, String)> {
+        self.engine_environment.clone()
     }
 
     fn supports_compose_buildkit(&self) -> bool {
@@ -554,9 +562,17 @@ pub(crate) trait DockerClient: Send + Sync {
     fn engine_host(&self) -> EngineHost {
         EngineHost::Local
     }
+    /// See [`EngineHost::engine_environment`].
+    fn engine_environment(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// Starts a docker CLI command on [`Self::engine_host`].
     fn docker_command(&self) -> HostCommand {
-        self.engine_host().command(self.docker_cli())
+        let mut command = self.engine_host().command(self.docker_cli());
+        for (key, value) in self.engine_environment() {
+            command.env(key, value);
+        }
+        command
     }
 }
 
@@ -925,6 +941,7 @@ mod test {
             docker_cli: "docker".to_string(),
             has_buildx: false,
             host: EngineHost::Local,
+            engine_environment: Vec::new(),
         };
         let given_id = "given_docker_id";
 
@@ -947,6 +964,7 @@ mod test {
             docker_cli: "false".to_string(),
             has_buildx: false,
             host: EngineHost::Local,
+            engine_environment: Vec::new(),
         };
 
         let result = gpui::block_on(docker.run_docker_exec(
@@ -992,6 +1010,7 @@ mod test {
             docker_cli: fake_docker.display().to_string(),
             has_buildx: false,
             host: EngineHost::Local,
+            engine_environment: Vec::new(),
         };
 
         let mut inner_command = Command::new("/bin/sh");
