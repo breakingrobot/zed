@@ -289,12 +289,12 @@ pub(crate) fn open_dev_container(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    if dev_container::engine_host_for_project(workspace.project().read(cx), cx).is_none() {
+    if let Some(reason) = dev_container::unsupported_reason(workspace.project().read(cx), cx) {
         cx.spawn_in(window, async move |_, cx| {
             cx.prompt(
                 gpui::PromptLevel::Critical,
-                "Cannot open Dev Container from remote project",
-                Some("Dev Containers can be opened from local, WSL, and SSH projects on Linux or macOS hosts."),
+                "Cannot open Dev Container",
+                Some(reason),
                 &["OK"],
             )
             .await
