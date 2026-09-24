@@ -2,6 +2,7 @@ use db::kvp::KeyValueStore;
 use dev_container::find_configs_in_snapshot;
 use gpui::{App, SharedString, Window};
 use project::{Project, WorktreeId};
+use remote::RemoteConnectionOptions;
 use std::path::Path;
 use std::sync::LazyLock;
 use ui::Tooltip;
@@ -96,7 +97,12 @@ pub fn suggest_on_worktree_updated(
 
     let worktree = worktree.read(cx);
 
-    if !worktree.is_local() {
+    // WSL projects can be reopened in a dev container, like local ones.
+    let is_wsl_project = matches!(
+        project.read(cx).remote_connection_options(cx),
+        Some(RemoteConnectionOptions::Wsl(_))
+    );
+    if !worktree.is_local() && !is_wsl_project {
         return;
     }
 
@@ -187,8 +193,11 @@ pub fn open_dev_container_from_cli(
                 .worktrees(cx)
                 .any(|worktree| !find_configs_in_snapshot(worktree.read(cx)).is_empty());
             if has_configs {
-                cx.on_next_frame(window, move |_workspace, window, cx| {
-                    window.dispatch_action(Box::new(zed_actions::OpenDevContainer), cx);
+                // Open the picker in this workspace. Dispatching the action would pick
+                // the active window's workspace, and without one (e.g. a window that
+                // never got focus) a new, empty window.
+                cx.on_next_frame(window, move |workspace, window, cx| {
+                    crate::open_dev_container(workspace, window, cx);
                 });
             } else {
                 log::warn!("--dev-container: no devcontainer configuration found in project");
