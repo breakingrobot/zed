@@ -27,6 +27,7 @@ futures.workspace = true
 log.workspace = true
 menu.workspace = true
 regex.workspace = true
+remote.workspace = true
 picker.workspace = true
 project.workspace = true
 settings.workspace = true
