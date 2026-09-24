@@ -1,7 +1,9 @@
 # 09 — Guide de test manuel (Windows)
 
-Installeur : `H:\Sources\zed-wt\artifacts\Zed-x86_64-final.exe` (branche `devcontainers/e1-lifecycle-actions`, qui
-contient tout : correctifs A, WSL, SSH, confiance, ports, environnement de l'hôte, refus explicites, actions de cycle de vie).
+Installeur : `H:\Sources\zed-wt\artifacts\Zed-x86_64-final.exe`, construit depuis le haut de la pile
+(`devcontainers/f4-config-change` une fois terminée, sinon `f3-port-detection`), qui contient tout : correctifs A, WSL,
+SSH, confiance, ports, environnement de l'hôte, refus explicites, actions de cycle de vie, marqueurs, et la parité VS Code
+(section 6). Le `remote_server-linux-x86_64` doit venir de la même branche (sous-commande `tcp-relay`).
 Il s'installe dans le profil, sans droits administrateur, sous le nom « Zed Dev », à côté d'un Zed habituel.
 
 ## 0. Préparation (une fois)
@@ -67,7 +69,18 @@ Il s'installe dans le profil, sans droits administrateur, sous le nom « Zed Dev
 | hôte SSH Windows | « Dev containers over SSH need a Linux or macOS host. » |
 | projet local avec `DOCKER_HOST=ssh://…` | explique que le moteur est sur une autre machine |
 
-## 6. Que noter en cas d'échec
+## 6. Parité VS Code
+
+| Test | Attendu |
+|---|---|
+| marqueurs : `projects: reconnect dev container` sans rebuild | `on-create`, `update-content`, `post-create-*` ne gagnent pas de ligne |
+| agent SSH (WSL) : `ssh-add -l` dans le terminal du conteneur | liste les clés de l'agent de la distro (`SSH_AUTH_SOCK=/tmp/zed-ssh-agent.sock`) |
+| `git config user.name` dans le conteneur | identique à celui de l'hôte du moteur (copie de `~/.gitconfig`) |
+| `waitFor` par défaut | la fenêtre s'ouvre après `update-content` ; `post-create-*`, `post-start`, `post-attach` tournent en tâches du terminal |
+| port automatique : `python3 -m http.server 9000` dans le conteneur, sans `forwardPorts` | sous 3 s, `curl http://localhost:9000` répond depuis Windows |
+| configuration modifiée : éditer `devcontainer.json` puis `projects: reconnect dev container` | notification « Rebuild Container » ; le bouton reconstruit le conteneur |
+
+## 7. Que noter en cas d'échec
 
 - Le message affiché, et le journal : palette → `zed: open log` (lignes `dev_container` et `remote`).
 - `docker ps -a` et `docker logs <conteneur>` sur l'hôte du moteur.

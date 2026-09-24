@@ -125,6 +125,12 @@ rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; auc
 | C2b | `c2b-host-environment` | `49912efcc5` | `PATH`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `CONTAINER_HOST`… du shell de login passés aux commandes du moteur (création et connexion) ; compilé et testé (Windows) |
 | C8 | `c8-unsupported-setups` | `d4816b32f5` | raisons précises (collab, déjà dans un conteneur, hôte SSH Windows), `DOCKER_HOST` distant avec projet local refusé ; corrige un projet collab traité comme local ; compilé et testé (Windows) |
 | E1 | `e1-lifecycle-actions` | `f6766ae6f1` | 4 commits d'Alex Berger (actions, opérations, reconnexion, menu) + passage par l'hôte + doc ; sidebar et vue agent de #60975 non repris ; compilé et testé (Windows) |
+| E1b | `e1b-lifecycle-ui` | `2263a5dc8c` | actions dans la sidebar et la vue agent ; compilé et testé (Windows) |
+| A3b | `a3b-lifecycle-markers` | `d1040efb3f` | marqueurs de création (date de création du conteneur) pour tous les hooks ; `docker stop`/`rm` passent par l'hôte (bug trouvé en test SSH) ; testé à la main sous WSL |
+| F1 | `f1-credentials` | `b958d36ee4` | agent SSH partagé (`/tmp/zed-ssh-agent.sock`, hôtes Linux/WSL, Docker Desktop macOS), copie de `~/.gitconfig` ; corrige les tests Unix cassés par `EngineHost` ; Windows et Linux |
+| F2 | `f2-wait-for` | `0b4561a1d4` | `waitFor` : hooks suivants lancés en tâches du terminal après connexion ; note Podman `pids_limit` ; Windows |
+| F3 | `f3-port-detection` | `5d92bd3517` | transfert automatique des ports qui écoutent (`/proc/net/tcp`, sous-commande `tcp-relay` du remote server) ; Windows |
+| F4 | `f4-config-change` | en cours | label `dev.zed.config-hash`, notification « Rebuild Container » quand la configuration a changé |
 
 Écarts au plan :
 
@@ -134,6 +140,11 @@ rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; auc
   `\\wsl.localhost`.
 - Reste : A8b (gelé), D1/D2 (WSLc), reprise sidebar/vue agent de #60975 ; SSH sans ControlMaster sous
   Windows (une connexion par commande) ; e2e WSL et SSH à exécuter.
+- Les branches intermédiaires C1 à C2b ont des tests réservés à Unix qui ne compilent pas (champs `host` et
+  `engine_environment` manquants) ; corrigé seulement à partir de F1.
+- Parité VS Code restante : `portsAttributes`, `shutdownAction`, `userEnvProbe`, `hostRequirements`, attache à un
+  conteneur existant, clone dans un volume, dotfiles, rebuild sans cache, journaux de création visibles, identifiants
+  Git HTTPS, agent SSH pour les hôtes SSH.
 
 ## 4. Brouillon de proposition (C0) — NON POSTÉ
 
