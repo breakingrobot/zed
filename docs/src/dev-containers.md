@@ -101,6 +101,7 @@ Note that extensions load for the Zed session, so these extensions will exist on
 - **Configuration changes:** Updates to `devcontainer.json` do not trigger automatic rebuilds or reloads; containers must be manually restarted.
 - **Remote projects:** Dev containers open from local, WSL, and SSH projects. SSH hosts running Windows are not supported.
 - **SSH hosts:** The login shell on the host must be POSIX-compatible (such as `bash`, `zsh`, or `sh`).
+- **Ports on SSH hosts:** Numeric `forwardPorts` and `appPort` are published on the SSH host, not on your machine. To reach one, forward it yourself, for example `ssh -L 3000:localhost:3000 your-host`.
 
 ## See also
 
