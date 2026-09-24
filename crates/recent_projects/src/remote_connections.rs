@@ -93,6 +93,11 @@ impl From<Connection> for RemoteConnectionOptions {
                     name: conn.name,
                     remote_user: conn.remote_user,
                     container_id: conn.container_id,
+                    // Entries saved before these fields existed deserialize them as empty
+                    // strings; treating those as a real identity would merge every such
+                    // dev container into one.
+                    local_folder: (!conn.local_folder.is_empty()).then_some(conn.local_folder),
+                    config_file: (!conn.config_file.is_empty()).then_some(conn.config_file),
                     upload_binary_over_docker_exec: false,
                     use_podman: conn.use_podman,
                     remote_env: conn.remote_env,

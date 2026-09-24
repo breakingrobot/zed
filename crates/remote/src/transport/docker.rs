@@ -49,9 +49,35 @@ pub struct DockerConnectionOptions {
     pub name: String,
     pub container_id: String,
     pub remote_user: String,
+    /// The dev container's host project folder (the `devcontainer.local_folder`
+    /// label). Together with `config_file` this forms the connection's stable
+    /// identity across container rebuilds, whose `container_id` is ephemeral.
+    /// `None` for a hypothetical Docker remote without dev-container labels, in
+    /// which case the identity falls back to `container_id`.
+    #[serde(default)]
+    pub local_folder: Option<String>,
+    /// The dev container's config file on the host (the `devcontainer.config_file`
+    /// label). See `local_folder`.
+    #[serde(default)]
+    pub config_file: Option<String>,
     pub upload_binary_over_docker_exec: bool,
     pub use_podman: bool,
     pub remote_env: BTreeMap<String, String>,
+}
+
+impl DockerConnectionOptions {
+    /// The `devcontainer.local_folder` and `devcontainer.config_file` labels this
+    /// container was created from, when both are known.
+    pub fn dev_container_labels(&self) -> Option<(&str, &str)> {
+        match (self.local_folder.as_deref(), self.config_file.as_deref()) {
+            (Some(local_folder), Some(config_file))
+                if !local_folder.is_empty() && !config_file.is_empty() =>
+            {
+                Some((local_folder, config_file))
+            }
+            _ => None,
+        }
+    }
 }
 
 pub(crate) struct DockerExecConnection {
@@ -1089,6 +1115,8 @@ mod tests {
                 name: "container".to_string(),
                 container_id: "container_id".to_string(),
                 remote_user: "user".to_string(),
+                local_folder: None,
+                config_file: None,
                 upload_binary_over_docker_exec: false,
                 use_podman: false,
                 remote_env: remote_env

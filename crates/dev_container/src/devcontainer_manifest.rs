@@ -3677,7 +3677,7 @@ fn devcontainer_id_for_labels(labels: &[(&str, String)]) -> String {
         .collect()
 }
 
-fn normalize_label_path(path: &str) -> String {
+pub(crate) fn normalize_label_path(path: &str) -> String {
     #[cfg(not(target_os = "windows"))]
     {
         path.to_string()
