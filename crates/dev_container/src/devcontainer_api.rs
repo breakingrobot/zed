@@ -95,6 +95,9 @@ pub(crate) struct DevContainerUp {
     pub(crate) remote_env: HashMap<String, String>,
     #[serde(default)]
     pub(crate) started_at: Option<String>,
+    /// When the container was created, which the create-time lifecycle markers hold.
+    #[serde(default)]
+    pub(crate) created_at: Option<String>,
     /// The container's `devcontainer.metadata` label entries, which carry the
     /// lifecycle commands contributed by features.
     #[serde(skip)]

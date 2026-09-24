@@ -30,6 +30,9 @@ pub(crate) struct DockerState {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct DockerInspect {
     pub(crate) id: String,
+    /// When the container was created; absent for images.
+    #[serde(default)]
+    pub(crate) created: Option<String>,
     pub(crate) config: DockerInspectConfig,
     pub(crate) mounts: Option<Vec<DockerInspectMount>>,
     pub(crate) state: Option<DockerState>,
