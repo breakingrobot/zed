@@ -74,6 +74,9 @@ struct DevContainerManifest {
     remote_build_dir: OnceLock<String>,
     /// Whether hooks after `waitFor` are left for the editor to run once connected.
     defer_hooks: bool,
+    /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
+    /// has been parsed.
+    config_hash: Option<String>,
 }
 const DEFAULT_REMOTE_PROJECT_DIR: &str = "/workspaces";
 impl DevContainerManifest {
@@ -124,6 +127,7 @@ impl DevContainerManifest {
             build_dir: OnceLock::new(),
             remote_build_dir: OnceLock::new(),
             defer_hooks: false,
+            config_hash: None,
         })
     }
 
@@ -1331,6 +1335,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 .and_then(|state| state.started_at.clone()),
             created_at: running_container.created.clone(),
             deferred_hooks: Vec::new(),
+            config_changed: false,
             container_id: running_container.id,
             remote_user,
             remote_workspace_folder: remote_workspace_folder.display().to_string(),
@@ -1701,6 +1706,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
 
         for (k, v) in self.identifying_labels() {
             runtime_labels.insert(k.to_string(), escape_compose_interpolation(&v));
+        }
+        if let Some(config_hash) = &self.config_hash {
+            runtime_labels.insert(CONFIG_HASH_LABEL.to_string(), config_hash.clone());
         }
 
         let config_volumes: HashMap<String, DockerComposeVolume> = resources
@@ -2533,6 +2541,10 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             command.arg("-l");
             command.arg(format!("{}={}", key, val));
         }
+        if let Some(config_hash) = &self.config_hash {
+            command.arg("-l");
+            command.arg(format!("{CONFIG_HASH_LABEL}={config_hash}"));
+        }
 
         {
             let mut metadata_entries: Vec<serde_json_lenient::Value> = Vec::new();
@@ -2622,6 +2634,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
     async fn open(&mut self, force_rebuild: bool) -> Result<DevContainerUp, DevContainerError> {
         self.parse_nonremote_vars()?;
         self.dev_container().validate_environment_names()?;
+        self.config_hash = Some(self.compute_config_hash().await);
 
         // Per the spec, initializeCommand runs on the host every time the dev container is
         // opened, before any existing container is looked up, not only when one is created.
@@ -2645,6 +2658,35 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         };
         self.copy_git_config(&devcontainer_up).await;
         Ok(devcontainer_up)
+    }
+
+    /// A digest of the files that define the container: the configuration, and the
+    /// Dockerfile or Compose files it builds from. Reopening a container whose digest
+    /// differs tells the user that it's out of date, as VS Code does.
+    async fn compute_config_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+
+        let dev_container = self.dev_container();
+        let mut files = Vec::new();
+        if let DevContainerBuildType::Dockerfile(build) = dev_container.build_type() {
+            files.push(normalize_path(
+                &self.config_directory.join(&build.dockerfile),
+            ));
+        }
+        for file in dev_container.docker_compose_file.iter().flatten() {
+            files.push(normalize_path(&self.config_directory.join(file)));
+        }
+
+        let mut hasher = Sha256::new();
+        hasher.update(self.raw_config.as_bytes());
+        let host_files = self.host_files();
+        for file in files {
+            hasher.update([0u8]);
+            if let Ok(contents) = host_files.load(&file).await {
+                hasher.update(contents.as_bytes());
+            }
+        }
+        format!("{:x}", hasher.finalize())
     }
 
     async fn build_and_run(&mut self) -> Result<DevContainerUp, DevContainerError> {
@@ -2883,6 +2925,10 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                     .and_then(|state| state.started_at.clone()),
                 created_at: docker_inspect.created.clone(),
                 deferred_hooks: Vec::new(),
+                config_changed: config_changed(
+                    docker_inspect.config.labels.config_hash.as_deref(),
+                    self.config_hash.as_deref(),
+                ),
                 container_id: docker_ps.id,
                 remote_user: remote_user,
                 remote_workspace_folder: remote_folder.display().to_string(),
@@ -3842,6 +3888,16 @@ fn deferred_hook(hook: &str, scripts: Vec<(String, LifecycleScript)>) -> Deferre
         name: hook.to_string(),
         commands,
     }
+}
+
+/// The label holding `DevContainerManifest::compute_config_hash` for the configuration a
+/// container was created from.
+const CONFIG_HASH_LABEL: &str = "dev.zed.config-hash";
+
+/// Whether a container created with `container_hash` is out of date with the current
+/// configuration. Containers made before Zed stamped the label aren't reported.
+fn config_changed(container_hash: Option<&str>, current_hash: Option<&str>) -> bool {
+    matches!((container_hash, current_hash), (Some(container), Some(current)) if container != current)
 }
 
 /// Where the container sees the engine host's SSH agent socket.
@@ -4833,6 +4889,7 @@ mod test {
             started_at: Some("2026-06-23T10:00:00Z".to_string()),
             created_at: None,
             deferred_hooks: Vec::new(),
+            config_changed: false,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4909,6 +4966,7 @@ mod test {
             started_at: Some("2026-06-23T10:00:00Z".to_string()),
             created_at: None,
             deferred_hooks: Vec::new(),
+            config_changed: false,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4982,6 +5040,7 @@ mod test {
             started_at: None,
             created_at: None,
             deferred_hooks: Vec::new(),
+            config_changed: false,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5024,18 +5083,20 @@ mod test {
         devcontainer_manifest.parse_nonremote_vars().unwrap();
         devcontainer_manifest.defer_hooks = true;
 
-        let metadata = serde_json_lenient::from_str::<Vec<HashMap<String, serde_json_lenient::Value>>>(
-            r#"[{
+        let metadata =
+            serde_json_lenient::from_str::<Vec<HashMap<String, serde_json_lenient::Value>>>(
+                r#"[{
                 "onCreateCommand": "echo on-create",
                 "postCreateCommand": { "second": "echo second", "first": "echo first" },
                 "postAttachCommand": "echo attach"
             }]"#,
-        )
-        .unwrap();
+            )
+            .unwrap();
         let devcontainer_up = DevContainerUp {
             started_at: None,
             created_at: None,
             deferred_hooks: Vec::new(),
+            config_changed: false,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5095,6 +5156,7 @@ mod test {
             started_at: None,
             created_at: None,
             deferred_hooks: Vec::new(),
+            config_changed: false,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5133,6 +5195,7 @@ mod test {
             started_at: None,
             created_at: None,
             deferred_hooks: Vec::new(),
+            config_changed: false,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5174,6 +5237,14 @@ mod test {
         );
 
         std_fs::remove_dir_all(home_directory).expect("temporary home should be removed");
+    }
+
+    #[test]
+    fn config_changes_are_reported_only_for_stamped_containers() {
+        assert!(super::config_changed(Some("old"), Some("new")));
+        assert!(!super::config_changed(Some("same"), Some("same")));
+        assert!(!super::config_changed(None, Some("new")));
+        assert!(!super::config_changed(Some("old"), None));
     }
 
     #[cfg(not(target_os = "windows"))]

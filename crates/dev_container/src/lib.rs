@@ -63,7 +63,7 @@ use crate::oci::get_oci_token;
 
 pub use devcontainer_api::{
     DeferredCommand, DeferredHook, DevContainerConfig, DevContainerError, DevContainerOrigin,
-    dev_container_origin, find_configs_in_snapshot, find_devcontainer_configs,
+    StartedDevContainer, dev_container_origin, find_configs_in_snapshot, find_devcontainer_configs,
     rebuild_dev_container, remove_dev_container, restart_dev_container, start_dev_container,
     start_dev_container_with_config, stop_dev_container,
 };

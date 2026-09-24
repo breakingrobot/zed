@@ -2255,41 +2255,45 @@ impl RemoteServerProjects {
         cx.spawn_in(window, async move |entity, cx| {
             let environment = context.environment(cx).await;
 
-            let (dev_container_connection, starting_dir, deferred_hooks) =
-                match start_dev_container_with_config(
-                    context,
-                    config,
-                    environment,
-                    force_rebuild,
-                    true,
-                )
-                .await
-                {
-                    Ok(started) => started,
-                    Err(e) => {
-                        log::error!("Failed to start dev container: {:?}", e);
-                        cx.prompt(
-                            gpui::PromptLevel::Critical,
-                            "Failed to start Dev Container. See logs for details",
-                            Some(&format!("{e}")),
-                            &["OK"],
-                        )
-                        .await
+            let dev_container::StartedDevContainer {
+                connection: dev_container_connection,
+                remote_workspace_folder: starting_dir,
+                deferred_hooks,
+                config_changed,
+            } = match start_dev_container_with_config(
+                context,
+                config,
+                environment,
+                force_rebuild,
+                true,
+            )
+            .await
+            {
+                Ok(started) => started,
+                Err(e) => {
+                    log::error!("Failed to start dev container: {:?}", e);
+                    cx.prompt(
+                        gpui::PromptLevel::Critical,
+                        "Failed to start Dev Container. See logs for details",
+                        Some(&format!("{e}")),
+                        &["OK"],
+                    )
+                    .await
+                    .ok();
+                    entity
+                        .update_in(cx, |remote_server_projects, window, cx| {
+                            remote_server_projects.allow_dismissal = true;
+                            remote_server_projects.mode =
+                                Mode::CreateRemoteDevContainer(CreateRemoteDevContainer::new(
+                                    DevContainerCreationProgress::Error(format!("{e}")),
+                                    cx,
+                                ));
+                            remote_server_projects.focus_handle(cx).focus(window, cx);
+                        })
                         .ok();
-                        entity
-                            .update_in(cx, |remote_server_projects, window, cx| {
-                                remote_server_projects.allow_dismissal = true;
-                                remote_server_projects.mode =
-                                    Mode::CreateRemoteDevContainer(CreateRemoteDevContainer::new(
-                                        DevContainerCreationProgress::Error(format!("{e}")),
-                                        cx,
-                                    ));
-                                remote_server_projects.focus_handle(cx).focus(window, cx);
-                            })
-                            .ok();
-                        return;
-                    }
-                };
+                    return;
+                }
+            };
             cx.update(|_, cx| {
                 ExtensionStore::global(cx).update(cx, |this, cx| {
                     for extension in &dev_container_connection.extension_ids {
@@ -2322,6 +2326,9 @@ impl RemoteServerProjects {
             )
             .await;
             if let Ok(window) = &result {
+                if config_changed {
+                    crate::dev_container_lifecycle::suggest_rebuild(*window, cx);
+                }
                 crate::dev_container_lifecycle::run_deferred_hooks(
                     *window,
                     starting_dir,
