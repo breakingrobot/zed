@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use project::trusted_worktrees::TrustedWorktrees;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
 use anyhow::Context as _;
@@ -80,22 +80,29 @@ pub(crate) fn stop_dev_container(
     let workspace_handle = cx.entity().downgrade();
 
     cx.spawn_in(window, async move |_, cx| {
-        let origin =
-            match dev_container::dev_container_origin(&options.container_id, options.use_podman)
-                .await
-            {
-                Ok(origin) => origin,
-                Err(e) => {
-                    log::error!("Failed to determine dev container's local folder: {e}");
-                    prompt_error(cx, "Failed to stop Dev Container", &e).await;
-                    return;
-                }
-            };
+        let origin = match dev_container::dev_container_origin(
+            &options.container_id,
+            options.use_podman,
+            &options.host,
+        )
+        .await
+        {
+            Ok(origin) => origin,
+            Err(e) => {
+                log::error!("Failed to determine dev container's local folder: {e}");
+                prompt_error(cx, "Failed to stop Dev Container", &e).await;
+                return;
+            }
+        };
 
         shutdown_remote_connection(&workspace_handle, cx).await;
 
-        if let Err(e) =
-            dev_container::stop_dev_container(&options.container_id, options.use_podman).await
+        if let Err(e) = dev_container::stop_dev_container(
+            &options.container_id,
+            options.use_podman,
+            &options.host,
+        )
+        .await
         {
             log::error!("Failed to stop dev container: {e}");
             prompt_error(cx, "Failed to stop Dev Container", &e).await;
@@ -205,7 +212,13 @@ pub async fn delete_dev_container_with_options(
     // the container's labels *before* removing it; afterwards it can no longer
     // be inspected.
     let local_folder = if reopen.is_some() {
-        match dev_container::dev_container_origin(&options.container_id, options.use_podman).await {
+        match dev_container::dev_container_origin(
+            &options.container_id,
+            options.use_podman,
+            &options.host,
+        )
+        .await
+        {
             Ok(origin) => Some(origin.local_folder),
             Err(e) => {
                 log::error!("Failed to determine dev container's local folder: {e}");
@@ -221,8 +234,12 @@ pub async fn delete_dev_container_with_options(
         shutdown_remote_connection(workspace_handle, cx).await;
     }
 
-    if let Err(e) =
-        dev_container::remove_dev_container(&options.container_id, options.use_podman).await
+    if let Err(e) = dev_container::remove_dev_container(
+        &options.container_id,
+        options.use_podman,
+        &options.host,
+    )
+    .await
     {
         log::error!("Failed to remove dev container: {e}");
         prompt_error(cx, "Failed to delete Dev Container", &e).await;
@@ -357,8 +374,10 @@ pub(crate) fn open_dev_container_modal(
 
     // Opening a dev container runs code from the repository (`initializeCommand`,
     // Dockerfiles, features), so it waits until the project is trusted.
-    if TrustedWorktrees::has_restricted_worktrees(&workspace.project().read(cx).worktree_store(), cx)
-    {
+    if TrustedWorktrees::has_restricted_worktrees(
+        &workspace.project().read(cx).worktree_store(),
+        cx,
+    ) {
         workspace.show_worktree_trust_security_modal(false, window, cx);
         return;
     }
@@ -449,21 +468,25 @@ fn reconnect_connected_dev_container(
     let force_rebuild = matches!(mode, ReconnectMode::Rebuild);
 
     cx.spawn_in(window, async move |_, cx| {
-        let origin =
-            match dev_container::dev_container_origin(&options.container_id, options.use_podman)
-                .await
-            {
-                Ok(origin) => origin,
-                Err(e) => {
-                    log::error!("Failed to determine dev container's local folder: {e}");
-                    prompt_error(cx, error_title, &e).await;
-                    return;
-                }
-            };
+        let origin = match dev_container::dev_container_origin(
+            &options.container_id,
+            options.use_podman,
+            &options.host,
+        )
+        .await
+        {
+            Ok(origin) => origin,
+            Err(e) => {
+                log::error!("Failed to determine dev container's local folder: {e}");
+                prompt_error(cx, error_title, &e).await;
+                return;
+            }
+        };
 
         let context = match workspace_handle.update(cx, |workspace, cx| {
             DevContainerContext::for_local_directory(
                 Arc::from(origin.local_folder.as_path()),
+                options.host.clone(),
                 workspace,
                 cx,
             )
@@ -494,8 +517,12 @@ fn reconnect_connected_dev_container(
         // handles teardown itself, and resume intentionally leaves a running
         // container running.
         if matches!(mode, ReconnectMode::Restart) {
-            if let Err(e) =
-                dev_container::stop_dev_container(&options.container_id, options.use_podman).await
+            if let Err(e) = dev_container::stop_dev_container(
+                &options.container_id,
+                options.use_podman,
+                &options.host,
+            )
+            .await
             {
                 log::error!("Failed to stop dev container before restart: {e}");
                 dismiss_lifecycle_status(&workspace_handle, cx);
@@ -612,11 +639,19 @@ pub(crate) async fn rebuild_dev_container_connection(
         .config_file
         .clone()
         .context("dev container connection is missing its config_file label")?;
-    let local_folder: Arc<Path> = Arc::from(PathBuf::from(&local_folder).as_path());
-    let config = DevContainerConfig::from_recovered_paths(&local_folder, Path::new(&config_file));
+    let local_folder: Arc<Path> = Arc::from(options.host.local_path(&local_folder).as_path());
+    let config = DevContainerConfig::from_recovered_paths(
+        &local_folder,
+        &options.host.local_path(&config_file),
+    );
 
     let context = workspace.update(cx, |workspace, cx| {
-        DevContainerContext::for_local_directory(local_folder.clone(), workspace, cx)
+        DevContainerContext::for_local_directory(
+            local_folder.clone(),
+            options.host.clone(),
+            workspace,
+            cx,
+        )
     })?;
     let environment = context.environment(cx).await;
 
@@ -636,7 +671,7 @@ pub(crate) async fn rebuild_dev_container_connection(
 /// Like the other lifecycle side effects, this only runs on an explicit user
 /// action.
 pub(crate) async fn start_dev_container(options: &DockerConnectionOptions) -> anyhow::Result<()> {
-    dev_container::start_dev_container(&options.container_id, options.use_podman)
+    dev_container::start_dev_container(&options.container_id, options.use_podman, &options.host)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
@@ -648,7 +683,7 @@ pub(crate) async fn start_dev_container(options: &DockerConnectionOptions) -> an
 /// This must only ever be invoked in response to an explicit user action:
 /// restarting a container is side-effecting and the user has to opt into it.
 pub(crate) async fn restart_dev_container(options: &DockerConnectionOptions) -> anyhow::Result<()> {
-    dev_container::restart_dev_container(&options.container_id, options.use_podman)
+    dev_container::restart_dev_container(&options.container_id, options.use_podman, &options.host)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
 }

@@ -2546,8 +2546,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         }
 
         log::debug!("Checking for existing container");
-        if !force_rebuild
-            && let Some(devcontainer) = self.check_for_existing_devcontainer().await?
+        if !force_rebuild && let Some(devcontainer) = self.check_for_existing_devcontainer().await?
         {
             Ok(devcontainer)
         } else {
