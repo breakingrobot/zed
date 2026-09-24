@@ -27,8 +27,8 @@ use gpui::{App, AppContext, AsyncApp, Task};
 use rpc::proto::Envelope;
 
 use crate::{
-    RemoteArch, RemoteClientDelegate, RemoteConnection, RemoteConnectionOptions, RemoteOs,
-    RemotePlatform,
+    EngineHost, RemoteArch, RemoteClientDelegate, RemoteConnection, RemoteConnectionOptions,
+    RemoteOs, RemotePlatform,
     remote_client::{CommandTemplate, Interactive},
     transport::parse_platform,
 };
@@ -63,6 +63,10 @@ pub struct DockerConnectionOptions {
     pub upload_binary_over_docker_exec: bool,
     pub use_podman: bool,
     pub remote_env: BTreeMap<String, String>,
+    /// The machine where the container engine runs. Connections saved before
+    /// this existed ran the engine locally.
+    #[serde(default)]
+    pub host: EngineHost,
 }
 
 impl DockerConnectionOptions {
@@ -153,6 +157,11 @@ impl DockerExecConnection {
         } else {
             "docker"
         }
+    }
+
+    /// Builds a docker CLI command that runs on the engine host.
+    fn docker_command(&self, args: &[impl AsRef<str>]) -> util::command::Command {
+        docker_command(&self.connection_options, self.docker_cli(), args)
     }
 
     /// Run a shell command inside the container and reliably extract its output
@@ -463,12 +472,19 @@ impl DockerExecConnection {
         src_path: String,
         dst_path: String,
     ) -> Result<()> {
-        let mut command = util::command::new_command(&docker_cli);
+        // `docker cp` reads the source on the engine host.
+        let host_src_path = connection_options.host.host_path(Path::new(&src_path));
+        let mut command = docker_command(
+            &connection_options,
+            &docker_cli,
+            &[
+                "cp".to_string(),
+                "-a".to_string(),
+                host_src_path,
+                format!("{}:{}", connection_options.container_id, dst_path),
+            ],
+        );
         command.kill_on_drop(true);
-        command.arg("cp");
-        command.arg("-a");
-        command.arg(&src_path);
-        command.arg(format!("{}:{}", connection_options.container_id, dst_path));
 
         let output = command.output().await?;
 
@@ -483,16 +499,21 @@ impl DockerExecConnection {
             );
         }
 
-        let mut chown_command = util::command::new_command(&docker_cli);
+        let mut chown_command = docker_command(
+            &connection_options,
+            &docker_cli,
+            &[
+                "exec".to_string(),
+                connection_options.container_id.clone(),
+                "chown".to_string(),
+                format!(
+                    "{}:{}",
+                    connection_options.remote_user, connection_options.remote_user,
+                ),
+                dst_path.clone(),
+            ],
+        );
         chown_command.kill_on_drop(true);
-        chown_command.arg("exec");
-        chown_command.arg(connection_options.container_id);
-        chown_command.arg("chown");
-        chown_command.arg(format!(
-            "{}:{}",
-            connection_options.remote_user, connection_options.remote_user,
-        ));
-        chown_command.arg(&dst_path);
 
         let output = chown_command.output().await?;
 
@@ -534,12 +555,9 @@ impl DockerExecConnection {
         subcommand: &str,
         args: &[impl AsRef<str>],
     ) -> Result<String> {
-        let mut command = util::command::new_command(self.docker_cli());
-        command.arg(subcommand);
-        for arg in args {
-            command.arg(arg.as_ref());
-        }
-        let output = command.output().await?;
+        let mut all_args = vec![subcommand.to_string()];
+        all_args.extend(args.iter().map(|arg| arg.as_ref().to_string()));
+        let output = self.docker_command(&all_args).output().await?;
         log::debug!(
             "{}: {:?}",
             redact_arguments(self.docker_cli(), subcommand, args),
@@ -680,6 +698,16 @@ impl DockerExecConnection {
     }
 }
 
+fn docker_command(
+    connection_options: &DockerConnectionOptions,
+    docker_cli: &str,
+    args: &[impl AsRef<str>],
+) -> util::command::Command {
+    let mut command = connection_options.host.command(docker_cli);
+    command.args(args.iter().map(|arg| arg.as_ref()));
+    command.to_command()
+}
+
 /// Builds the command that stops the local `docker exec` proxy process. Windows has
 /// no `kill` executable, so reconnecting to a dev container failed there before this.
 fn kill_process_command(pid: u32) -> util::command::Command {
@@ -751,13 +779,12 @@ impl RemoteConnection for DockerExecConnection {
         if reconnect {
             docker_args.push("--reconnect".to_string());
         }
-        let mut command = util::command::new_command(self.docker_cli());
+        let mut command = self.docker_command(&docker_args);
         command
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .args(docker_args);
+            .stderr(Stdio::piped());
 
         let Ok(child) = command.spawn() else {
             return Task::ready(Err(anyhow::anyhow!(
@@ -873,9 +900,13 @@ impl RemoteConnection for DockerExecConnection {
 
         docker_args.append(&mut inner_program);
 
+        let command = self.docker_command(&docker_args);
         Ok(CommandTemplate {
-            program: self.docker_cli().to_string(),
-            args: docker_args,
+            program: command.get_program().to_string_lossy().into_owned(),
+            args: command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
             // Docker-exec pipes in environment via the "-e" argument
             env: Default::default(),
         })
@@ -1123,6 +1154,7 @@ mod tests {
                     .iter()
                     .map(|(key, value)| (key.to_string(), value.to_string()))
                     .collect(),
+                host: EngineHost::Local,
             },
             remote_platform: None,
             os_version: None,

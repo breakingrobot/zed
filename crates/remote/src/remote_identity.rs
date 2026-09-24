@@ -204,6 +204,7 @@ mod tests {
             upload_binary_over_docker_exec: true,
             use_podman: true,
             remote_env: BTreeMap::from([("FOO".to_string(), "BAR".to_string())]),
+            host: Default::default(),
         });
         let right = RemoteConnectionOptions::Docker(DockerConnectionOptions {
             name: "zed-dev".to_string(),
@@ -214,6 +215,7 @@ mod tests {
             upload_binary_over_docker_exec: false,
             use_podman: false,
             remote_env: BTreeMap::new(),
+            host: Default::default(),
         });
 
         assert!(same_remote_connection_identity(Some(&left), Some(&right),));

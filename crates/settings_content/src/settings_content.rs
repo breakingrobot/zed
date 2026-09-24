@@ -1391,6 +1391,11 @@ pub struct DevContainerConnection {
     pub use_podman: bool,
     pub extension_ids: Vec<String>,
     pub remote_env: BTreeMap<String, String>,
+    /// The WSL distribution running the container engine. Unset when the engine
+    /// runs on the machine running Zed.
+    pub wsl_distro_name: Option<String>,
+    /// The user of `wsl_distro_name` that runs the container engine.
+    pub wsl_user: Option<String>,
 }
 
 #[with_fallible_options]

@@ -29,8 +29,9 @@ use project::{
 
 use language::{LanguageName, Toolchain, ToolchainScope};
 use remote::{
-    DockerConnectionOptions, DockerIdentityKey, RemoteConnectionIdentity, RemoteConnectionOptions,
-    SshConnectionOptions, WslConnectionOptions, remote_connection_identity,
+    DockerConnectionOptions, DockerIdentityKey, EngineHost, RemoteConnectionIdentity,
+    RemoteConnectionOptions, SshConnectionOptions, WslConnectionOptions,
+    remote_connection_identity,
 };
 use serde::{Deserialize, Serialize};
 use sqlez::{
@@ -1069,6 +1070,9 @@ impl Domain for WorkspaceDb {
             ALTER TABLE remote_connections ADD COLUMN local_folder TEXT;
             ALTER TABLE remote_connections ADD COLUMN config_file TEXT;
         ),
+        sql!(
+            ALTER TABLE remote_connections ADD COLUMN engine_host TEXT;
+        ),
     ];
 
     // Allow recovering from bad migration that was initially shipped to nightly
@@ -1080,6 +1084,16 @@ impl Domain for WorkspaceDb {
 }
 
 db::static_connection!(WorkspaceDb, []);
+
+/// `None` for an engine on the machine running Zed, so that those rows keep
+/// matching the ones saved before engines could run elsewhere.
+fn serialize_engine_host(host: &EngineHost) -> Option<String> {
+    if host.is_local() {
+        None
+    } else {
+        serde_json::to_string(host).log_err()
+    }
+}
 
 impl WorkspaceDb {
     /// Returns a serialized workspace for the given worktree_roots. If the passed array
@@ -1807,6 +1821,9 @@ impl WorkspaceDb {
         let container_id = docker.container_id.clone();
         let use_podman = docker.use_podman;
         let remote_env = serde_json::to_string(&docker.remote_env).ok();
+        // Rows of local engines, including those saved before this column existed,
+        // leave it NULL.
+        let engine_host = serialize_engine_host(&docker.host);
 
         if let Some(id) = this.select_row_bound(sql!(
             SELECT id
@@ -1815,13 +1832,15 @@ impl WorkspaceDb {
                 kind IS ? AND
                 user IS ? AND
                 local_folder IS ? AND
-                config_file IS ?
+                config_file IS ? AND
+                engine_host IS ?
             LIMIT 1
         ))?((
             kind,
             user.clone(),
             local_folder.clone(),
             config_file.clone(),
+            engine_host.clone(),
         ))? {
             this.exec_bound(sql!(
                 UPDATE remote_connections
@@ -1839,8 +1858,9 @@ impl WorkspaceDb {
                     use_podman,
                     remote_env,
                     local_folder,
-                    config_file
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    config_file,
+                    engine_host
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 RETURNING id
             ))?((
                 kind,
@@ -1848,9 +1868,7 @@ impl WorkspaceDb {
                 name,
                 container_id,
                 use_podman,
-                remote_env,
-                local_folder,
-                config_file,
+                (remote_env, local_folder, config_file, engine_host),
             ))?
             .context("failed to insert dev container remote connection")?;
             Ok(RemoteConnectionId(id))
@@ -2036,13 +2054,13 @@ impl WorkspaceDb {
     fn remote_connections(&self) -> Result<HashMap<RemoteConnectionId, RemoteConnectionOptions>> {
         Ok(self.select(sql!(
             SELECT
-                id, kind, host, port, user, distro, container_id, name, use_podman, remote_env, local_folder, config_file
+                id, kind, host, port, user, distro, container_id, name, use_podman, remote_env, local_folder, config_file, engine_host
             FROM
                 remote_connections
         ))?()?
         .into_iter()
         .filter_map(
-            |(id, kind, host, port, user, distro, container_id, name, use_podman, (remote_env, local_folder, config_file))| {
+            |(id, kind, host, port, user, distro, container_id, name, use_podman, (remote_env, local_folder, config_file, engine_host))| {
                 Some((
                     RemoteConnectionId(id),
                     Self::remote_connection_from_row(
@@ -2057,6 +2075,7 @@ impl WorkspaceDb {
                         remote_env,
                         local_folder,
                         config_file,
+                        engine_host,
                     )?,
                 ))
             },
@@ -2068,9 +2087,9 @@ impl WorkspaceDb {
         &self,
         id: RemoteConnectionId,
     ) -> Result<RemoteConnectionOptions> {
-        let (kind, host, port, user, distro, container_id, name, use_podman, (remote_env, local_folder, config_file)) =
+        let (kind, host, port, user, distro, container_id, name, use_podman, (remote_env, local_folder, config_file, engine_host)) =
             self.select_row_bound(sql!(
-                SELECT kind, host, port, user, distro, container_id, name, use_podman, remote_env, local_folder, config_file
+                SELECT kind, host, port, user, distro, container_id, name, use_podman, remote_env, local_folder, config_file, engine_host
                 FROM remote_connections
                 WHERE id = ?
             ))?(id.0)?
@@ -2087,6 +2106,7 @@ impl WorkspaceDb {
             remote_env,
             local_folder,
             config_file,
+            engine_host,
         )
         .context("invalid remote_connection row")
     }
@@ -2103,6 +2123,7 @@ impl WorkspaceDb {
         remote_env: Option<String>,
         local_folder: Option<String>,
         config_file: Option<String>,
+        engine_host: Option<String>,
     ) -> Option<RemoteConnectionOptions> {
         match RemoteConnectionKind::deserialize(&kind)? {
             RemoteConnectionKind::Wsl => Some(RemoteConnectionOptions::Wsl(WslConnectionOptions {
@@ -2127,6 +2148,9 @@ impl WorkspaceDb {
                     upload_binary_over_docker_exec: false,
                     use_podman: use_podman?,
                     remote_env,
+                    host: engine_host
+                        .and_then(|host| serde_json::from_str(&host).log_err())
+                        .unwrap_or_default(),
                 }))
             }
         }
@@ -4435,6 +4459,7 @@ mod tests {
                 upload_binary_over_docker_exec: false,
                 use_podman: false,
                 remote_env: BTreeMap::default(),
+                host: Default::default(),
             })
         };
 
@@ -4476,6 +4501,7 @@ mod tests {
             upload_binary_over_docker_exec: false,
             use_podman: false,
             remote_env: BTreeMap::default(),
+            host: Default::default(),
         });
         let different = db
             .get_or_create_remote_connection(other_config)

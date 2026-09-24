@@ -69,6 +69,7 @@ fn dev_container_project_group_key_is_stable_across_rebuilds() {
                     upload_binary_over_docker_exec: false,
                     use_podman: false,
                     remote_env: Default::default(),
+                    host: Default::default(),
                 },
             )),
             paths.clone(),
