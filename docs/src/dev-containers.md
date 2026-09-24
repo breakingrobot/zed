@@ -46,6 +46,18 @@ To open one:
 1. Open your project through WSL (for example with `zed --wsl Ubuntu /home/you/project`, or from the Remote Projects modal).
 2. Run "Reopen in Dev Container" from the prompt, or open the Remote Projects modal and choose "Connect Dev Container".
 
+## SSH projects {#ssh-projects}
+
+You can open a dev container from a project on a Linux or macOS machine you reach over SSH. Zed runs the container engine on that machine, where your sources are:
+
+- `docker` (or `podman`) must be installed on the SSH host.
+- SSH must log in without a prompt, for example with a key from your SSH agent or an `IdentityFile` in `~/.ssh/config`. Zed runs `ssh` with `BatchMode=yes` and does not store passwords.
+- `initializeCommand` runs on the SSH host, from your project folder.
+- `${localEnv:VAR}` reads the environment of a login shell on the SSH host.
+- Zed copies the files it generates for builds (feature content, compose overrides) to a temporary folder on the host, and removes it after the build.
+
+To open one, open your project over SSH, then run "Reopen in Dev Container" from the prompt or choose "Connect Dev Container" in the Remote Projects modal.
+
 ## Editing the dev container configuration
 
 If you modify `.devcontainer/devcontainer.json`, Zed does not currently rebuild or reload the container automatically. After changing configuration:
@@ -86,7 +98,8 @@ Note that extensions load for the Zed session, so these extensions will exist on
 > **Note:** This feature is still in development.
 
 - **Configuration changes:** Updates to `devcontainer.json` do not trigger automatic rebuilds or reloads; containers must be manually restarted.
-- **Remote projects:** Dev containers open from local and WSL projects only. Projects opened over SSH are not supported yet.
+- **Remote projects:** Dev containers open from local, WSL, and SSH projects. SSH hosts running Windows are not supported.
+- **SSH hosts:** The login shell on the host must be POSIX-compatible (such as `bash`, `zsh`, or `sh`).
 
 ## See also
 
