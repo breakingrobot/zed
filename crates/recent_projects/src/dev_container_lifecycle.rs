@@ -1064,6 +1064,21 @@ pub(crate) fn show_warnings(
     }
 }
 
+/// The command line of a lifecycle hook's task. The terminal runs a task's command
+/// through the user's shell, joining its arguments without quoting them, which would
+/// make `/bin/sh -c 'sudo update-ca-certificates'` run `sudo` alone.
+fn hook_command_line(program: &str, args: &[String]) -> Option<String> {
+    std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .map(|part| {
+            util::shell::ShellKind::Posix
+                .try_quote(part)
+                .map(|quoted| quoted.into_owned())
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|parts| parts.join(" "))
+}
+
 /// Runs the lifecycle hooks the spec's `waitFor` let through after connecting, as
 /// terminal tasks of `window`'s workspace, so their output stays visible. Hooks run in
 /// order, the commands of one hook concurrently, and a failure stops the hooks after it.
@@ -1099,10 +1114,16 @@ pub(crate) fn run_deferred_hooks(
         for hook in hooks {
             let mut completions = Vec::new();
             for command in hook.commands {
+                let Some(command_line) = hook_command_line(&command.program, &command.args) else {
+                    log::error!(
+                        "Can't run {}: it can't be quoted for a shell",
+                        command.label
+                    );
+                    return;
+                };
                 let template = TaskTemplate {
                     label: command.label,
-                    command: command.program,
-                    args: command.args,
+                    command: command_line,
                     cwd: Some(remote_folder.clone()),
                     ..TaskTemplate::default()
                 };
@@ -1248,4 +1269,19 @@ pub(crate) async fn restart_dev_container(options: &DockerConnectionOptions) -> 
     dev_container::restart_dev_container(&options.container_id, options.use_podman, &options.host)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hook_commands_keep_their_arguments() {
+        assert_eq!(
+            super::hook_command_line(
+                "/bin/sh",
+                &["-c".to_string(), "sudo update-ca-certificates".to_string()]
+            )
+            .as_deref(),
+            Some("/bin/sh -c 'sudo update-ca-certificates'")
+        );
+    }
 }
