@@ -1298,16 +1298,25 @@ mod test {
             engine_environment: Vec::new(),
         };
 
-        let mut inner_command = Command::new("/bin/sh");
-        inner_command.args(&["-c", "npm install"]);
-
-        let result = gpui::block_on(docker.run_docker_exec(
-            "container",
-            "/workspace",
-            "root",
-            &HashMap::new(),
-            inner_command,
-        ));
+        // Another test forking while the script above is still open for writing
+        // makes executing it fail with "text file busy" until that child execs.
+        let mut attempts = 0;
+        let result = loop {
+            let mut inner_command = Command::new("/bin/sh");
+            inner_command.args(&["-c", "npm install"]);
+            let result = gpui::block_on(docker.run_docker_exec(
+                "container",
+                "/workspace",
+                "root",
+                &HashMap::new(),
+                inner_command,
+            ));
+            attempts += 1;
+            if result.is_ok() || attempts == 10 {
+                break result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
         assert!(result.is_ok(), "docker exec failed: {result:?}");
 
         let received_args = std::fs::read_to_string(temp_dir.path().join("args")).unwrap();

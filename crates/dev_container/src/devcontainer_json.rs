@@ -228,7 +228,7 @@ pub struct LifecycleScript {
     scripts: HashMap<String, LifecycleScriptInternal>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostRequirements {
     cpus: Option<u16>,
@@ -240,11 +240,11 @@ pub(crate) struct HostRequirements {
 
 /// `hostRequirements.gpu`: `true`, `"optional"`, or an object of minimums, which
 /// require a GPU. Zed doesn't check the minimums.
-#[derive(Clone, Copy, Debug, Serialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Eq, PartialEq, PartialOrd, Ord)]
 pub(crate) enum GpuRequirement {
-    Required,
-    Optional,
     NotNeeded,
+    Optional,
+    Required,
 }
 
 fn deserialize_gpu_requirement<'de, D>(deserializer: D) -> Result<Option<GpuRequirement>, D::Error>
@@ -349,6 +349,36 @@ pub(crate) fn deserialize_devcontainer_json(json: &str) -> Result<DevContainer, 
 }
 
 impl HostRequirements {
+    /// Reads the `hostRequirements` of a `devcontainer.metadata` entry, e.g. from
+    /// an image built from a dev container configuration.
+    pub(crate) fn from_metadata(entry: &HashMap<String, Value>) -> Option<Self> {
+        let requirements = entry.get("hostRequirements")?;
+        serde_json_lenient::from_value(requirements.clone())
+            .map_err(|error| log::warn!("Ignoring hostRequirements {requirements}: {error}"))
+            .ok()
+    }
+
+    /// Combines requirements from several sources by keeping the highest of each,
+    /// like the reference CLI does for an image's metadata and the configuration.
+    pub(crate) fn merge(self, other: Self) -> Self {
+        let larger_size = |left: Option<String>, right: Option<String>| match (left, right) {
+            (Some(left), Some(right)) => {
+                if parse_byte_size(&right) > parse_byte_size(&left) {
+                    Some(right)
+                } else {
+                    Some(left)
+                }
+            }
+            (left, right) => left.or(right),
+        };
+        Self {
+            cpus: self.cpus.max(other.cpus),
+            memory: larger_size(self.memory, other.memory),
+            storage: larger_size(self.storage, other.storage),
+            gpu: self.gpu.max(other.gpu),
+        }
+    }
+
     /// The requirements that `resources` falls short of, described for the user.
     /// `storage` isn't checked: engines don't reliably report the space left for
     /// containers.
@@ -1035,6 +1065,49 @@ mod test {
             ..resources
         })));
         assert!(!met.uses_gpu(Some(&resources)));
+    }
+
+    #[test]
+    fn host_requirements_keep_the_highest_of_each_source() {
+        let from_image = HostRequirements::from_metadata(&HashMap::from([(
+            "hostRequirements".to_string(),
+            serde_json_lenient::json!({ "cpus": 4, "memory": "16gb", "gpu": "optional" }),
+        )]))
+        .unwrap();
+        let from_config = HostRequirements {
+            cpus: Some(8),
+            memory: Some("512mb".to_string()),
+            storage: Some("32gb".to_string()),
+            gpu: None,
+        };
+        assert_eq!(
+            from_image.merge(from_config),
+            HostRequirements {
+                cpus: Some(8),
+                memory: Some("16gb".to_string()),
+                storage: Some("32gb".to_string()),
+                gpu: Some(GpuRequirement::Optional),
+            }
+        );
+        assert_eq!(
+            HostRequirements {
+                gpu: Some(GpuRequirement::Optional),
+                ..Default::default()
+            }
+            .merge(HostRequirements {
+                gpu: Some(GpuRequirement::Required),
+                ..Default::default()
+            })
+            .gpu,
+            Some(GpuRequirement::Required)
+        );
+        assert_eq!(
+            HostRequirements::from_metadata(&HashMap::from([(
+                "id".to_string(),
+                serde_json_lenient::json!("ghcr.io/devcontainers/features/node:1"),
+            )])),
+            None
+        );
     }
 
     #[test]

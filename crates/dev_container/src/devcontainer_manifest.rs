@@ -23,8 +23,9 @@ use crate::{
     },
     devcontainer_json::{
         ContainerBuild, DevContainer, DevContainerBuildType, FeatureOptions, ForwardPort,
-        LifecycleCommand, LifecycleScript, MountDefinition, deserialize_devcontainer_json,
-        deserialize_devcontainer_json_from_value, deserialize_devcontainer_json_to_value,
+        HostRequirements, LifecycleCommand, LifecycleScript, MountDefinition,
+        deserialize_devcontainer_json, deserialize_devcontainer_json_from_value,
+        deserialize_devcontainer_json_to_value,
     },
     docker::{
         Docker, DockerClient, DockerComposeConfig, DockerComposeDeploy, DockerComposeService,
@@ -2779,9 +2780,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
     async fn build_and_run(&mut self) -> Result<DevContainerUp, DevContainerError> {
         self.dev_container().validate_devcontainer_contents()?;
 
-        let warnings = self.check_host_requirements().await;
-
         self.download_feature_and_dockerfile_resources().await?;
+
+        let warnings = self.check_host_requirements().await;
 
         let build_resources = self.build_resources().await?;
 
@@ -2799,8 +2800,19 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
     /// Decides whether the container gets the engine's GPUs. Like VS Code, a
     /// container whose `hostRequirements` exceed what the engine has is still
     /// created, with a warning for the user.
+    /// The configuration's `hostRequirements` combined with those in the metadata
+    /// of the image it starts from.
+    fn host_requirements(&self) -> Option<HostRequirements> {
+        self.root_image
+            .iter()
+            .flat_map(|image| image.config.labels.metadata.iter().flatten())
+            .filter_map(HostRequirements::from_metadata)
+            .chain(self.dev_container().host_requirements().cloned())
+            .reduce(HostRequirements::merge)
+    }
+
     async fn check_host_requirements(&mut self) -> Vec<String> {
-        let Some(requirements) = self.dev_container().host_requirements().cloned() else {
+        let Some(requirements) = self.host_requirements() else {
             return Vec::new();
         };
         let resources = self.docker_client.engine_resources().await;
@@ -4871,6 +4883,37 @@ mod test {
                 "gpu: {gpu}, engine GPU: {engine_has_gpu}"
             );
         }
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{ "image": "test_image:latest", "hostRequirements": { "cpus": 2 } }"#,
+        )
+        .await
+        .unwrap();
+        test_dependencies
+            .docker
+            .set_engine_resources(EngineResources {
+                cpus: 8,
+                memory_bytes: 16 << 30,
+                gpu: false,
+            });
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        let mut image = build_resources().image;
+        image.config.labels.metadata = Some(vec![HashMap::from([(
+            "hostRequirements".to_string(),
+            serde_json_lenient::json!({ "gpu": true }),
+        )])]);
+        devcontainer_manifest.root_image = Some(image);
+        assert_eq!(
+            devcontainer_manifest.check_host_requirements().await,
+            vec![
+                "This dev container needs more than its container engine has: a GPU (the \
+                 container engine has none). It may run slowly or fail."
+                    .to_string()
+            ],
+            "the image's metadata asks for a GPU"
+        );
+        assert!(devcontainer_manifest.uses_gpu);
+
         assert_eq!(
             serde_json::to_value(DockerComposeDeploy::all_gpus()).unwrap(),
             serde_json::json!({
