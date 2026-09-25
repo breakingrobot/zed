@@ -441,6 +441,9 @@ messages!(
     (EnableGitCredentialForwarding, Background),
     (ForwardGitCredential, Background),
     (ForwardGitCredentialResponse, Background),
+    (EnableSshAgentForwarding, Background),
+    (ForwardSshAgentMessage, Background),
+    (ForwardSshAgentMessageResponse, Background),
 );
 
 request_messages!(
@@ -684,6 +687,8 @@ request_messages!(
     (OpenPortTunnel, OpenPortTunnelResponse),
     (EnableGitCredentialForwarding, Ack),
     (ForwardGitCredential, ForwardGitCredentialResponse),
+    (EnableSshAgentForwarding, Ack),
+    (ForwardSshAgentMessage, ForwardSshAgentMessageResponse),
 );
 
 lsp_messages!(
@@ -922,7 +927,8 @@ entity_messages!(
     OpenPortTunnel,
     PortTunnelData,
     ClosePortTunnel,
-    EnableGitCredentialForwarding
+    EnableGitCredentialForwarding,
+    EnableSshAgentForwarding
 );
 
 entity_messages!(

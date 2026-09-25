@@ -1096,6 +1096,9 @@ impl DockerExecConnection {
 /// The volume that keeps the remote server binaries, mounted in the dev containers
 /// Zed creates so that they share one download, like VS Code's `vscode` volume.
 pub const SERVER_CACHE_VOLUME: &str = "zed-remote-server";
+/// Where `SSH_AUTH_SOCK` points in dev containers: the engine host's agent, when Zed
+/// can mount it, or else the remote server's relay to the agent of Zed's machine.
+pub const CONTAINER_SSH_AGENT_SOCKET: &str = "/tmp/zed-ssh-agent.sock";
 /// Where [`SERVER_CACHE_VOLUME`] is mounted in dev containers.
 pub const SERVER_CACHE_PATH: &str = "/zed-remote-server";
 
@@ -1550,8 +1553,8 @@ mod tests {
                 super::CACHE_SERVER_SCRIPT,
                 &[installed.as_os_str(), cached.as_os_str()]
             )
-                .status
-                .success()
+            .status
+            .success()
         );
         assert!(!cached.exists());
         assert!(
@@ -1559,8 +1562,8 @@ mod tests {
                 super::RESTORE_CACHED_SERVER_SCRIPT,
                 &[cached.as_os_str(), installed.as_os_str(), digest]
             )
-                .status
-                .success()
+            .status
+            .success()
         );
 
         std::fs::create_dir(&cache).unwrap();
@@ -1569,8 +1572,8 @@ mod tests {
                 super::CACHE_SERVER_SCRIPT,
                 &[installed.as_os_str(), cached.as_os_str()]
             )
-                .status
-                .success()
+            .status
+            .success()
         );
         assert!(cached.is_file());
 
