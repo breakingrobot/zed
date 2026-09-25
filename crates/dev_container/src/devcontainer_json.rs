@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Display, path::Path, sync::Arc};
 use crate::{
     command_json::CommandRunner, devcontainer_api::DevContainerError, docker::EngineResources,
 };
-use remote::{AutoForwardPorts, AutoForwardRule, EngineHost};
+use remote::{AutoForwardPorts, AutoForwardRule, EngineHost, ForwardNotice};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json_lenient::Value;
 use util::command::Command;
@@ -33,6 +33,19 @@ pub(crate) enum OnAutoForward {
     OpenPreview,
     Silent,
     Ignore,
+}
+
+impl OnAutoForward {
+    /// How a forwarded port is announced. Zed has no preview browser, so
+    /// `openPreview` opens the system's.
+    fn notice(&self) -> ForwardNotice {
+        match self {
+            OnAutoForward::Notify | OnAutoForward::Ignore => ForwardNotice::Notify,
+            OnAutoForward::OpenBrowser | OnAutoForward::OpenPreview => ForwardNotice::OpenBrowser,
+            OnAutoForward::OpenBrowserOnce => ForwardNotice::OpenBrowserOnce,
+            OnAutoForward::Silent => ForwardNotice::Silent,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -434,6 +447,8 @@ impl DevContainer {
                     start,
                     end,
                     forward: attributes.on_auto_forward != OnAutoForward::Ignore,
+                    label: attributes.label.clone(),
+                    notice: attributes.on_auto_forward.notice(),
                 })
             })
             .collect();
@@ -445,6 +460,12 @@ impl DevContainer {
                 .other_ports_attributes
                 .as_ref()
                 .is_some_and(|attributes| attributes.on_auto_forward == OnAutoForward::Ignore),
+            other_ports_notice: self
+                .other_ports_attributes
+                .as_ref()
+                .map_or(ForwardNotice::Notify, |attributes| {
+                    attributes.on_auto_forward.notice()
+                }),
         }
     }
 
@@ -884,7 +905,7 @@ where
 mod test {
     use std::collections::HashMap;
 
-    use remote::AutoForwardPorts;
+    use remote::{AutoForwardPorts, ForwardNotice};
 
     use crate::{
         devcontainer_api::DevContainerError,
@@ -969,6 +990,44 @@ mod test {
 
         let defaults = deserialize_devcontainer_json(r#"{ "image": "debian" }"#).unwrap();
         assert_eq!(defaults.auto_forward_ports(), AutoForwardPorts::default());
+    }
+
+    #[test]
+    fn auto_forward_notices_come_from_on_auto_forward() {
+        let dev_container = deserialize_devcontainer_json(
+            r#"{
+                "image": "debian",
+                "portsAttributes": {
+                    "3000": { "label": "Web", "onAutoForward": "openBrowser" },
+                    "3001": { "onAutoForward": "openBrowserOnce" },
+                    "3002": { "onAutoForward": "openPreview" },
+                    "3003": { "label": "Metrics" }
+                },
+                "otherPortsAttributes": { "onAutoForward": "silent" }
+            }"#,
+        )
+        .unwrap();
+        let auto_forward = dev_container.auto_forward_ports();
+        assert_eq!(
+            auto_forward.forwarding(3000),
+            Some((Some("Web"), ForwardNotice::OpenBrowser))
+        );
+        assert_eq!(
+            auto_forward.forwarding(3001),
+            Some((None, ForwardNotice::OpenBrowserOnce))
+        );
+        assert_eq!(
+            auto_forward.forwarding(3002),
+            Some((None, ForwardNotice::OpenBrowser))
+        );
+        assert_eq!(
+            auto_forward.forwarding(3003),
+            Some((Some("Metrics"), ForwardNotice::Notify))
+        );
+        assert_eq!(
+            auto_forward.forwarding(8080),
+            Some((None, ForwardNotice::Silent))
+        );
     }
 
     #[test]

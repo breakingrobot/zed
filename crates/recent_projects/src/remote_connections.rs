@@ -11,12 +11,15 @@ use gpui::{AppContext, AsyncApp, Entity, PromptLevel, WindowHandle};
 
 use project::trusted_worktrees;
 use remote::{
-    AutoForwardPorts, AutoForwardRule, DockerConnectionOptions, EngineHost, Interactive,
-    RemoteConnection, RemoteConnectionOptions, SshConnectionOptions, SshEngineHost,
+    AutoForwardPorts, AutoForwardRule, DockerConnectionOptions, EngineHost, ForwardNotice,
+    Interactive, RemoteConnection, RemoteConnectionOptions, SshConnectionOptions, SshEngineHost,
     WslConnectionOptions,
 };
 pub use settings::SshConnection;
-use settings::{DevContainerConnection, ExtendingVec, RegisterSetting, Settings, WslConnection};
+use settings::{
+    DevContainerConnection, DevContainerForwardNotice, ExtendingVec, RegisterSetting, Settings,
+    WslConnection,
+};
 use util::paths::PathWithPosition;
 use workspace::{
     AppState, MultiWorkspace, OpenOptions, SerializedWorkspaceLocation, Workspace,
@@ -84,6 +87,15 @@ pub enum Connection {
     DevContainer(DevContainerConnection),
 }
 
+fn forward_notice(notice: Option<DevContainerForwardNotice>) -> ForwardNotice {
+    match notice.unwrap_or_default() {
+        DevContainerForwardNotice::Notify => ForwardNotice::Notify,
+        DevContainerForwardNotice::OpenBrowser => ForwardNotice::OpenBrowser,
+        DevContainerForwardNotice::OpenBrowserOnce => ForwardNotice::OpenBrowserOnce,
+        DevContainerForwardNotice::Silent => ForwardNotice::Silent,
+    }
+}
+
 impl From<Connection> for RemoteConnectionOptions {
     fn from(val: Connection) -> Self {
         match val {
@@ -125,9 +137,12 @@ impl From<Connection> for RemoteConnectionOptions {
                                 start: rule.start,
                                 end: rule.end,
                                 forward: rule.forward,
+                                label: rule.label,
+                                notice: forward_notice(rule.notice),
                             })
                             .collect(),
                         ignore_other_ports: conn.auto_forward_other_ports == Some(false),
+                        other_ports_notice: forward_notice(conn.auto_forward_other_ports_notice),
                     },
                 })
             }

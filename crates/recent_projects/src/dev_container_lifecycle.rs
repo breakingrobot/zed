@@ -7,11 +7,15 @@ use dev_container::{
     BuildMode, DeferredHook, DevContainerConfig, DevContainerContext, StartedDevContainer,
     find_devcontainer_configs,
 };
+use futures::StreamExt as _;
 use gpui::{
-    AppContext as _, AsyncApp, AsyncWindowContext, Context, WeakEntity, Window, WindowHandle,
+    App, AppContext as _, AsyncApp, AsyncWindowContext, Context, WeakEntity, Window, WindowHandle,
 };
 use project::TaskSourceKind;
-use remote::{DockerConnectionOptions, RemoteConnectionOptions};
+use remote::{
+    DockerConnectionOptions, ForwardNotice, ForwardedPort, ForwardedPortListener,
+    RemoteConnectionOptions,
+};
 use task::{TaskContext, TaskTemplate};
 use workspace::notifications::{NotificationId, simple_message_notification::MessageNotification};
 use workspace::{AppState, MultiWorkspace, OpenOptions, Workspace, tasks::ScheduledTaskResult};
@@ -656,6 +660,72 @@ pub(crate) fn suggest_rebuild(window: WindowHandle<MultiWorkspace>, cx: &mut Asy
             })
         })
         .ok();
+}
+
+/// Tells the user about the ports that dev container connections start
+/// forwarding, as their `onAutoForward` asks.
+pub(crate) fn announce_forwarded_ports(cx: &mut App) {
+    let (sender, mut receiver) = futures::channel::mpsc::unbounded();
+    cx.set_global(ForwardedPortListener(sender));
+    cx.spawn(async move |cx| {
+        let mut opened_in_browser = std::collections::HashSet::new();
+        while let Some(forwarded) = receiver.next().await {
+            let url = format!("http://localhost:{}", forwarded.port);
+            match forwarded.notice {
+                ForwardNotice::Silent => {}
+                ForwardNotice::OpenBrowser => cx.update(|cx| cx.open_url(&url)),
+                ForwardNotice::OpenBrowserOnce => {
+                    if opened_in_browser.insert((forwarded.container_id.clone(), forwarded.port)) {
+                        cx.update(|cx| cx.open_url(&url));
+                    }
+                }
+                ForwardNotice::Notify => cx.update(|cx| show_forwarded_port(forwarded, url, cx)),
+            }
+        }
+    })
+    .detach();
+}
+
+/// Shows the notification in the window connected to the port's container.
+fn show_forwarded_port(forwarded: ForwardedPort, url: String, cx: &mut App) {
+    struct ForwardedPortNotification;
+
+    let workspace = cx.windows().into_iter().find_map(|window| {
+        let window = window.downcast::<MultiWorkspace>()?;
+        let multi_workspace = window.read(cx).ok()?;
+        let workspace = multi_workspace.workspaces().find(|workspace| {
+            matches!(
+                workspace.read(cx).project().read(cx).remote_connection_options(cx),
+                Some(RemoteConnectionOptions::Docker(options))
+                    if options.container_id == forwarded.container_id
+            )
+        })?;
+        Some(workspace.clone())
+    });
+    let Some(workspace) = workspace else {
+        return;
+    };
+    let port = forwarded.port;
+    let message = match &forwarded.label {
+        Some(label) => format!("Port {port} ({label}) is forwarded to localhost:{port}."),
+        None => format!("Port {port} is forwarded to localhost:{port}."),
+    };
+    workspace.update(cx, |workspace, cx| {
+        workspace.show_notification(
+            NotificationId::composite::<ForwardedPortNotification>(format!(
+                "{}:{port}",
+                forwarded.container_id
+            )),
+            cx,
+            |cx| {
+                cx.new(|cx| {
+                    MessageNotification::new(message, cx)
+                        .primary_message("Open in Browser")
+                        .primary_on_click(move |_window, cx| cx.open_url(&url))
+                })
+            },
+        );
+    });
 }
 
 /// Shows the problems found while starting the dev container that didn't stop it.

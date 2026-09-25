@@ -98,6 +98,9 @@ pub struct AutoForwardPorts {
     /// Whether the ports that no rule covers are left alone.
     #[serde(default)]
     pub ignore_other_ports: bool,
+    /// How the user learns that a port no rule covers is forwarded.
+    #[serde(default)]
+    pub other_ports_notice: ForwardNotice,
 }
 
 #[derive(
@@ -107,14 +110,72 @@ pub struct AutoForwardRule {
     pub start: u16,
     pub end: u16,
     pub forward: bool,
+    /// The name shown for ports in the range.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// How the user learns that a port in the range is forwarded.
+    #[serde(default)]
+    pub notice: ForwardNotice,
 }
+
+/// What happens when a port starts being forwarded, from `onAutoForward`.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum ForwardNotice {
+    /// Tell the user which port is forwarded.
+    #[default]
+    Notify,
+    /// Open the forwarded port in the browser.
+    OpenBrowser,
+    /// Open the forwarded port in the browser the first time it's forwarded.
+    OpenBrowserOnce,
+    /// Forward without telling the user.
+    Silent,
+}
+
+/// A port that started being forwarded from a dev container to the same port on
+/// this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardedPort {
+    pub container_id: String,
+    pub port: u16,
+    pub label: Option<String>,
+    pub notice: ForwardNotice,
+}
+
+/// Where dev container connections report the ports they start forwarding, so the
+/// UI can tell the user about them.
+pub struct ForwardedPortListener(pub UnboundedSender<ForwardedPort>);
+
+impl gpui::Global for ForwardedPortListener {}
 
 impl AutoForwardPorts {
     pub fn forwards(&self, port: u16) -> bool {
-        self.rules
+        self.forwarding(port).is_some()
+    }
+
+    /// How `port` is announced once forwarded, with its label, or `None` if it
+    /// isn't forwarded.
+    pub fn forwarding(&self, port: u16) -> Option<(Option<&str>, ForwardNotice)> {
+        match self
+            .rules
             .iter()
             .find(|rule| (rule.start..=rule.end).contains(&port))
-            .map_or(!self.ignore_other_ports, |rule| rule.forward)
+        {
+            Some(rule) => rule.forward.then(|| (rule.label.as_deref(), rule.notice)),
+            None => (!self.ignore_other_ports).then_some((None, self.other_ports_notice)),
+        }
     }
 }
 
@@ -852,6 +913,7 @@ struct PortRelay {
     remote_dir_for_server: String,
     server_binary: String,
     executor: gpui::BackgroundExecutor,
+    listener: Option<UnboundedSender<ForwardedPort>>,
 }
 
 impl PortRelay {
@@ -864,11 +926,14 @@ impl PortRelay {
             match self.listening_ports().await {
                 Ok(ports) => {
                     for port in ports {
-                        if !handled.insert(port)
-                            || !self.connection_options.auto_forward.forwards(port)
-                        {
+                        if !handled.insert(port) {
                             continue;
                         }
+                        let Some((label, notice)) =
+                            self.connection_options.auto_forward.forwarding(port)
+                        else {
+                            continue;
+                        };
                         // A port already bound here (e.g. published by `docker run`, or
                         // used by another program) is left alone.
                         let Ok(listener) = smol::net::TcpListener::bind(("127.0.0.1", port)).await
@@ -877,6 +942,16 @@ impl PortRelay {
                         };
                         log::info!("Forwarding dev container port {port} to localhost:{port}");
                         forwards.push(self.executor.spawn(self.clone().accept(listener, port)));
+                        if let Some(forwarded_ports) = &self.listener {
+                            forwarded_ports
+                                .unbounded_send(ForwardedPort {
+                                    container_id: self.connection_options.container_id.clone(),
+                                    port,
+                                    label: label.map(str::to_string),
+                                    notice,
+                                })
+                                .ok();
+                        }
                     }
                 }
                 Err(error) => log::debug!("Failed to list the dev container's ports: {error:#}"),
@@ -1111,6 +1186,10 @@ impl RemoteConnection for DockerExecConnection {
                 .display(self.path_style())
                 .into_owned(),
             executor: cx.background_executor().clone(),
+            listener: cx.update(|cx| {
+                cx.try_global::<ForwardedPortListener>()
+                    .map(|listener| listener.0.clone())
+            }),
         };
         *self.port_forwarding.lock() = Some(cx.background_spawn(relay.forward_listening_ports()));
 
@@ -1361,18 +1440,32 @@ mod tests {
                     start: 3000,
                     end: 3000,
                     forward: true,
+                    label: Some("Web".to_string()),
+                    notice: super::ForwardNotice::OpenBrowser,
                 },
                 super::AutoForwardRule {
                     start: 3000,
                     end: 3010,
                     forward: false,
+                    label: None,
+                    notice: super::ForwardNotice::Notify,
                 },
             ],
             ignore_other_ports: false,
+            other_ports_notice: super::ForwardNotice::Silent,
         };
         assert!(auto_forward.forwards(3000));
         assert!(!auto_forward.forwards(3005));
         assert!(auto_forward.forwards(8080));
+        assert_eq!(
+            auto_forward.forwarding(3000),
+            Some((Some("Web"), super::ForwardNotice::OpenBrowser))
+        );
+        assert_eq!(auto_forward.forwarding(3005), None);
+        assert_eq!(
+            auto_forward.forwarding(8080),
+            Some((None, super::ForwardNotice::Silent))
+        );
 
         let only_listed = super::AutoForwardPorts {
             ignore_other_ports: true,

@@ -9,10 +9,11 @@ use futures::TryFutureExt;
 use gpui::{AsyncWindowContext, Entity};
 use project::Worktree;
 use remote::EngineHost;
+use remote::ForwardNotice;
 use serde::Deserialize;
 use settings::{
-    DevContainerConnection, DevContainerPortRule, infer_json_indent_size,
-    replace_value_in_json_text,
+    DevContainerConnection, DevContainerForwardNotice, DevContainerPortRule,
+    infer_json_indent_size, replace_value_in_json_text,
 };
 use util::rel_path::RelPath;
 use walkdir::WalkDir;
@@ -465,10 +466,15 @@ pub async fn start_dev_container_with_config(
                             start: rule.start,
                             end: rule.end,
                             forward: rule.forward,
+                            label: rule.label,
+                            notice: Some(forward_notice_setting(rule.notice)),
                         })
                         .collect(),
                 ),
                 auto_forward_other_ports: Some(!auto_forward.ignore_other_ports),
+                auto_forward_other_ports_notice: Some(forward_notice_setting(
+                    auto_forward.other_ports_notice,
+                )),
             };
 
             Ok(StartedDevContainer {
@@ -484,6 +490,15 @@ pub async fn start_dev_container_with_config(
             let message = format!("Failed with nested error: {:?}", err);
             Err(DevContainerError::DevContainerUpFailed(message))
         }
+    }
+}
+
+fn forward_notice_setting(notice: ForwardNotice) -> DevContainerForwardNotice {
+    match notice {
+        ForwardNotice::Notify => DevContainerForwardNotice::Notify,
+        ForwardNotice::OpenBrowser => DevContainerForwardNotice::OpenBrowser,
+        ForwardNotice::OpenBrowserOnce => DevContainerForwardNotice::OpenBrowserOnce,
+        ForwardNotice::Silent => DevContainerForwardNotice::Silent,
     }
 }
 
