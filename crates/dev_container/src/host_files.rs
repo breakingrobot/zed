@@ -55,6 +55,24 @@ impl HostFiles {
         }
     }
 
+    pub(crate) async fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
+        if self.host.has_local_files() {
+            return self.fs.write(path, contents).await;
+        }
+        let output = self
+            .script(r#"cat > "$1""#, path)
+            .output_with_stdin(contents)
+            .await?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "failed to write {}: {}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn is_dir(&self, path: &Path) -> bool {
         if self.host.has_local_files() {
             return self.fs.is_dir(path).await;
