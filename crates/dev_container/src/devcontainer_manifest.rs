@@ -3450,14 +3450,40 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
     }
 
     async fn check_for_existing_container(&self) -> Result<Option<DockerPs>, DevContainerError> {
-        self.docker_client
-            .find_process_by_filters(
-                self.identifying_labels()
+        for labels in self.identifying_label_variants() {
+            let filters = labels
+                .iter()
+                .map(|(key, value)| format!("label={key}={value}"))
+                .collect();
+            if let Some(container) = self.docker_client.find_process_by_filters(filters).await? {
+                return Ok(Some(container));
+            }
+        }
+        Ok(None)
+    }
+
+    /// [`Self::identifying_labels`], then the same folders as other tools write them,
+    /// so that Zed reuses the dev containers VS Code created instead of failing to
+    /// create another one with the same name.
+    fn identifying_label_variants(&self) -> Vec<Vec<(&str, String)>> {
+        let labels = self.identifying_labels();
+        let host = self.docker_client.engine_host();
+        let alternatives: Vec<Vec<String>> = labels
+            .iter()
+            .map(|(_, value)| equivalent_label_paths(value, &host))
+            .collect();
+        let variant_count = alternatives.iter().map(Vec::len).min().unwrap_or(0);
+        let mut variants = vec![labels.clone()];
+        for index in 0..variant_count {
+            variants.push(
+                labels
                     .iter()
-                    .map(|(k, v)| format!("label={k}={v}"))
+                    .zip(&alternatives)
+                    .map(|((key, _), alternatives)| (*key, alternatives[index].clone()))
                     .collect(),
-            )
-            .await
+            );
+        }
+        variants
     }
 
     /// Removes any existing container matching this project/config's
@@ -4726,6 +4752,33 @@ fn devcontainer_id_for_labels(labels: &[(&str, String)]) -> String {
             DIGITS[digit] as char
         })
         .collect()
+}
+
+/// Other forms of a label path, as other tools write them: VS Code opening a WSL
+/// folder from Windows labels it with its `\\wsl.localhost` path, and tools other
+/// than VS Code keep the drive letter's case.
+fn equivalent_label_paths(path: &str, host: &EngineHost) -> Vec<String> {
+    match host {
+        EngineHost::Wsl(options) if path.starts_with('/') => ["wsl.localhost", "wsl$"]
+            .iter()
+            .map(|prefix| {
+                format!(
+                    r"\\{prefix}\{}{}",
+                    options.distro_name,
+                    path.replace('/', r"\")
+                )
+            })
+            .collect(),
+        EngineHost::Local if host.is_windows() && path.as_bytes().get(1) == Some(&b':') => {
+            let uppercase = format!("{}{}", path[..1].to_uppercase(), &path[1..]);
+            if uppercase == path {
+                Vec::new()
+            } else {
+                vec![uppercase]
+            }
+        }
+        _ => Vec::new(),
+    }
 }
 
 pub(crate) fn normalize_label_path(path: &str, host_is_windows: bool) -> String {
@@ -6817,6 +6870,25 @@ mod test {
             None
         );
         assert_eq!(super::linked_worktree("not a git file"), None);
+    }
+
+    #[test]
+    fn vs_code_labels_of_wsl_folders_are_recognized() {
+        let host = EngineHost::Wsl(WslConnectionOptions {
+            distro_name: "Ubuntu".to_string(),
+            user: None,
+        });
+        assert_eq!(
+            super::equivalent_label_paths("/home/me/app", &host),
+            [
+                r"\\wsl.localhost\Ubuntu\home\me\app".to_string(),
+                r"\\wsl$\Ubuntu\home\me\app".to_string(),
+            ]
+        );
+        assert!(
+            super::equivalent_label_paths("/home/me/app", &EngineHost::Ssh(Default::default()))
+                .is_empty()
+        );
     }
 
     #[test]
