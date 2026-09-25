@@ -375,7 +375,8 @@ pub async fn start_dev_container_with_config(
     build_mode: BuildMode,
     defer_hooks: bool,
 ) -> Result<StartedDevContainer, DevContainerError> {
-    check_for_docker(&context).await?;
+    let mut context = context;
+    context.remote_engine = check_for_docker(&context).await?;
     if let Some(volume) = &context.workspace_volume {
         crate::workspace_volume::refresh_volume_copy(volume, context.use_podman).await?;
     }
@@ -521,16 +522,15 @@ fn forward_notice_setting(notice: ForwardNotice) -> DevContainerForwardNotice {
     }
 }
 
-async fn check_for_docker(context: &DevContainerContext) -> Result<(), DevContainerError> {
-    if context.engine_host.is_local()
-        && let Ok(docker_host) = std::env::var("DOCKER_HOST")
-        && is_remote_engine_endpoint(&docker_host)
-    {
-        return Err(DevContainerError::UnsupportedSetup(format!(
-            "DOCKER_HOST points to a container engine on another machine ({docker_host}), \
-             which can't mount this project's folders. Open the project over SSH on that \
-             machine instead."
-        )));
+/// Checks that the engine can run the dev container, and whether it runs on
+/// another machine, through `DOCKER_HOST` or the current Docker context.
+async fn check_for_docker(context: &DevContainerContext) -> Result<bool, DevContainerError> {
+    let remote_endpoint = remote_engine_endpoint(context).await;
+    if let Some(error) = remote_engine_error(
+        remote_endpoint.as_deref(),
+        context.workspace_volume.is_some(),
+    ) {
+        return Err(error);
     }
     let cli = if context.use_podman {
         "podman"
@@ -541,12 +541,55 @@ async fn check_for_docker(context: &DevContainerContext) -> Result<(), DevContai
     command.arg("--version");
 
     match command.output().await {
-        Ok(_) => Ok(()),
+        Ok(_) => Ok(remote_endpoint.is_some()),
         Err(e) => {
             log::error!("Unable to find docker in $PATH: {:?}", e);
             Err(DevContainerError::DockerNotAvailable)
         }
     }
+}
+
+/// Why a dev container can't use the engine at `remote_endpoint`, on another
+/// machine: it can't mount the project's folders, unless the sources are in a
+/// volume.
+fn remote_engine_error(
+    remote_endpoint: Option<&str>,
+    has_workspace_volume: bool,
+) -> Option<DevContainerError> {
+    let endpoint = remote_endpoint?;
+    (!has_workspace_volume).then(|| {
+        DevContainerError::UnsupportedSetup(format!(
+            "Docker uses a container engine on another machine ({endpoint}), which can't \
+             mount this project's folders. Clone the repository in a container volume, or \
+             open the project over SSH on that machine instead."
+        ))
+    })
+}
+
+/// The endpoint of the engine that Docker on this machine uses, when it's on
+/// another machine: from `DOCKER_HOST`, or else from the current context.
+async fn remote_engine_endpoint(context: &DevContainerContext) -> Option<String> {
+    if !context.engine_host.is_local() || context.use_podman {
+        return None;
+    }
+    let endpoint = match std::env::var("DOCKER_HOST") {
+        Ok(docker_host) if !docker_host.is_empty() => docker_host,
+        _ => {
+            let mut command = context.engine_host.command("docker");
+            command.args([
+                "context",
+                "inspect",
+                "--format",
+                "{{.Endpoints.docker.Host}}",
+            ]);
+            let output = command.output().await.ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+    };
+    is_remote_engine_endpoint(&endpoint).then_some(endpoint)
 }
 
 /// Whether a `DOCKER_HOST` value designates an engine on another machine.
@@ -1078,6 +1121,13 @@ fn get_backup_project_name(remote_workspace_folder: &str, container_id: &str) ->
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    #[test]
+    fn remote_engines_need_the_sources_in_a_volume() {
+        assert!(super::remote_engine_error(Some("ssh://build.example.com"), false).is_some());
+        assert!(super::remote_engine_error(Some("ssh://build.example.com"), true).is_none());
+        assert!(super::remote_engine_error(None, false).is_none());
+    }
 
     #[test]
     fn running_containers_come_from_docker_and_podman_ps() {

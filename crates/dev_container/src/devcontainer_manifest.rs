@@ -91,6 +91,8 @@ struct DevContainerManifest {
     session_cache: SessionCache,
     /// The volume holding the sources, when the project directory is a copy.
     workspace_volume: Option<String>,
+    /// Whether the engine runs on another machine than the engine host.
+    remote_engine: bool,
     /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
     /// has been parsed.
     config_hash: Option<String>,
@@ -151,6 +153,7 @@ impl DevContainerManifest {
             feature_cache_directory: paths::devcontainer_dir().join("features"),
             session_cache: context.session_cache.clone(),
             workspace_volume: context.workspace_volume.clone(),
+            remote_engine: context.remote_engine,
             config_hash: None,
         })
     }
@@ -260,7 +263,7 @@ impl DevContainerManifest {
     /// container is created can't follow, so it isn't shared.
     fn ssh_agent_socket(&self) -> Option<String> {
         let host = self.docker_client.engine_host();
-        if matches!(host, EngineHost::Ssh(_)) || host.is_windows() {
+        if matches!(host, EngineHost::Ssh(_)) || host.is_windows() || self.remote_engine {
             return None;
         }
         let socket = self
@@ -4791,6 +4794,7 @@ mod test {
             dotfiles: None,
             secrets_file: None,
             workspace_volume: None,
+            remote_engine: false,
             session_cache: Default::default(),
             fs: fs.clone(),
             http_client: http_client.clone(),
@@ -5785,6 +5789,28 @@ mod test {
                 .map(String::as_str),
             Some("/tmp/zed-ssh-agent.sock")
         );
+    }
+
+    #[gpui::test]
+    async fn doesnt_share_the_ssh_agent_with_an_engine_on_another_machine(cx: &mut TestAppContext) {
+        let (_, mut devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            FakeFs::new(cx.executor()),
+            fake_http_client(),
+            Arc::new(FakeDocker::new()),
+            Arc::new(TestCommandRunner::new()),
+            HashMap::from([(
+                "SSH_AUTH_SOCK".to_string(),
+                "/tmp/ssh-agent/agent.42".to_string(),
+            )]),
+            r#"{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        assert!(devcontainer_manifest.ssh_agent_socket().is_some());
+        devcontainer_manifest.remote_engine = true;
+        assert_eq!(devcontainer_manifest.ssh_agent_socket(), None);
     }
 
     #[gpui::test]
