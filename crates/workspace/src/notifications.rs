@@ -1663,10 +1663,17 @@ pub trait DetachAndPromptErr<R> {
 }
 
 /// Whether the given error represents a lost dev container connection for the
-/// project in `window`'s active workspace. When true, error prompts offer the
-/// dev container recovery actions (Reconnect / Restart / Rebuild) instead of a
-/// dead-end acknowledgement.
-fn dev_container_reconnect_available(err: &anyhow::Error, window: &Window, cx: &App) -> bool {
+/// project of `task_workspace`, the workspace that was active when the failed task
+/// started. When true, error prompts offer the dev container recovery actions
+/// (Reconnect / Restart / Rebuild) instead of a dead-end acknowledgement. They
+/// act on `window`'s active workspace, so they're only offered while it's still
+/// that one.
+fn dev_container_reconnect_available(
+    err: &anyhow::Error,
+    task_workspace: Option<&WeakEntity<Workspace>>,
+    window: &Window,
+    cx: &App,
+) -> bool {
     use client::ErrorExt as _;
 
     if !matches!(err.error_code(), client::ErrorCode::Disconnected) {
@@ -1676,7 +1683,8 @@ fn dev_container_reconnect_available(err: &anyhow::Error, window: &Window, cx: &
         return false;
     };
     let workspace = multi_workspace.read(cx).workspace().clone();
-    workspace.read(cx).project().read(cx).is_dev_container(cx)
+    task_workspace.is_some_and(|task_workspace| task_workspace.entity_id() == workspace.entity_id())
+        && workspace.read(cx).project().read(cx).is_dev_container(cx)
 }
 
 impl<R> DetachAndPromptErr<R> for Task<anyhow::Result<R>>
@@ -1691,6 +1699,10 @@ where
         f: impl FnOnce(&anyhow::Error, &mut Window, &mut App) -> Option<String> + 'static,
     ) -> Task<Option<R>> {
         let msg = msg.to_owned();
+        let task_workspace = window
+            .root::<MultiWorkspace>()
+            .flatten()
+            .map(|multi_workspace| multi_workspace.read(cx).workspace().downgrade());
         window.spawn(cx, async move |cx| {
             let result = self.await;
             if let Err(err) = result.as_ref() {
@@ -1698,7 +1710,9 @@ where
                 // If the failure is a lost dev container connection, offer to
                 // restart & reconnect instead of a dead-end acknowledgement.
                 let offer_reconnect = cx
-                    .update(|window, cx| dev_container_reconnect_available(err, window, cx))
+                    .update(|window, cx| {
+                        dev_container_reconnect_available(err, task_workspace.as_ref(), window, cx)
+                    })
                     .unwrap_or(false);
                 let buttons: &[&str] = if offer_reconnect {
                     &[
