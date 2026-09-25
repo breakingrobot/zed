@@ -14,6 +14,10 @@ use util::schemars::{AllowTrailingCommas, DefaultDenyUnknownFields};
 
 const SCHEMA_URI_PREFIX: &str = "zed://schemas/";
 
+const DEV_CONTAINER_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json";
+const DEV_CONTAINER_FEATURE_SCHEMA_URL: &str = "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainerFeature.schema.json";
+
 const TSCONFIG_SCHEMA: &str = include_str!("schemas/tsconfig.json");
 const PACKAGE_JSON_SCHEMA: &str = include_str!("schemas/package.json");
 
@@ -474,6 +478,16 @@ pub fn all_schema_file_associations(
         {
             "fileMatch": ["package.json"],
             "url": format!("{SCHEMA_URI_PREFIX}package_json")
+        },
+        // The Dev Container specification's schemas, as VS Code uses them. The
+        // language server downloads them.
+        {
+            "fileMatch": ["devcontainer.json", ".devcontainer.json"],
+            "url": DEV_CONTAINER_SCHEMA_URL
+        },
+        {
+            "fileMatch": ["devcontainer-feature.json"],
+            "url": DEV_CONTAINER_FEATURE_SCHEMA_URL
         },
         {
             "fileMatch": &jsonc_globs,

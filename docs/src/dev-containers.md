@@ -74,6 +74,8 @@ To open one, open your project over SSH, then run "Reopen in Dev Container" from
 
 ## Editing the dev container configuration
 
+Zed validates `devcontainer.json` and `devcontainer-feature.json` against the Dev Container specification's schemas, like VS Code, and completes their properties. The JSON language server downloads the schemas, so this needs a network connection.
+
 If you modify `.devcontainer/devcontainer.json`, or the Dockerfile or Compose files it uses, Zed does not rebuild the container automatically. When you next open or reconnect to the container, Zed notices that the configuration changed since the container was created and offers to rebuild it. You can also run {#action projects::RebuildDevContainer} from the dev container window at any time: Zed removes the container, builds it again and reconnects.
 
 ## Managing a Dev Container {#managing}
