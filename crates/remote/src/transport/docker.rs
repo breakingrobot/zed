@@ -71,6 +71,51 @@ pub struct DockerConnectionOptions {
     /// connected when `host` is reached over SSH.
     #[serde(default)]
     pub forward_ports: Vec<u16>,
+    /// Which ports that start listening in the container are forwarded automatically.
+    #[serde(default)]
+    pub auto_forward: AutoForwardPorts,
+}
+
+/// Which of the ports that start listening in a dev container are forwarded
+/// automatically, from its `portsAttributes` and `otherPortsAttributes`.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct AutoForwardPorts {
+    /// Port ranges given an explicit `onAutoForward`. The first one that contains a
+    /// port decides for it.
+    #[serde(default)]
+    pub rules: Vec<AutoForwardRule>,
+    /// Whether the ports that no rule covers are left alone.
+    #[serde(default)]
+    pub ignore_other_ports: bool,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub struct AutoForwardRule {
+    pub start: u16,
+    pub end: u16,
+    pub forward: bool,
+}
+
+impl AutoForwardPorts {
+    pub fn forwards(&self, port: u16) -> bool {
+        self.rules
+            .iter()
+            .find(|rule| (rule.start..=rule.end).contains(&port))
+            .map_or(!self.ignore_other_ports, |rule| rule.forward)
+    }
 }
 
 impl DockerConnectionOptions {
@@ -819,7 +864,9 @@ impl PortRelay {
             match self.listening_ports().await {
                 Ok(ports) => {
                     for port in ports {
-                        if !handled.insert(port) {
+                        if !handled.insert(port)
+                            || !self.connection_options.auto_forward.forwards(port)
+                        {
                             continue;
                         }
                         // A port already bound here (e.g. published by `docker run`, or
@@ -834,7 +881,7 @@ impl PortRelay {
                 }
                 Err(error) => log::debug!("Failed to list the dev container's ports: {error:#}"),
             }
-            smol::Timer::after(Self::POLL_INTERVAL).await;
+            self.executor.timer(Self::POLL_INTERVAL).await;
         }
     }
 
@@ -1307,6 +1354,36 @@ mod tests {
     }
 
     #[test]
+    fn auto_forwarding_follows_the_first_matching_rule() {
+        let auto_forward = super::AutoForwardPorts {
+            rules: vec![
+                super::AutoForwardRule {
+                    start: 3000,
+                    end: 3000,
+                    forward: true,
+                },
+                super::AutoForwardRule {
+                    start: 3000,
+                    end: 3010,
+                    forward: false,
+                },
+            ],
+            ignore_other_ports: false,
+        };
+        assert!(auto_forward.forwards(3000));
+        assert!(!auto_forward.forwards(3005));
+        assert!(auto_forward.forwards(8080));
+
+        let only_listed = super::AutoForwardPorts {
+            ignore_other_ports: true,
+            ..auto_forward
+        };
+        assert!(only_listed.forwards(3000));
+        assert!(!only_listed.forwards(8080));
+        assert!(super::AutoForwardPorts::default().forwards(8080));
+    }
+
+    #[test]
     fn finds_listening_ports_in_proc_net_tcp() {
         let proc_net_tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0
@@ -1454,6 +1531,7 @@ mod tests {
                     .collect(),
                 host: EngineHost::Local,
                 forward_ports: Vec::new(),
+                auto_forward: Default::default(),
             },
             remote_platform: None,
             os_version: None,

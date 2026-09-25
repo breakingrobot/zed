@@ -10,7 +10,10 @@ use gpui::{AsyncWindowContext, Entity};
 use project::Worktree;
 use remote::EngineHost;
 use serde::Deserialize;
-use settings::{DevContainerConnection, infer_json_indent_size, replace_value_in_json_text};
+use settings::{
+    DevContainerConnection, DevContainerPortRule, infer_json_indent_size,
+    replace_value_in_json_text,
+};
 use util::rel_path::RelPath;
 use walkdir::WalkDir;
 use workspace::Workspace;
@@ -378,8 +381,13 @@ pub async fn start_dev_container_with_config(
                 }) => name.clone(),
                 _ => get_backup_project_name(&remote_workspace_folder, &container_id),
             };
-            let forward_ports = configuration
-                .map(|configuration| configuration.published_host_ports())
+            let (forward_ports, auto_forward) = configuration
+                .map(|configuration| {
+                    (
+                        configuration.published_host_ports(),
+                        configuration.auto_forward_ports(),
+                    )
+                })
                 .unwrap_or_default();
 
             // Derive the same `devcontainer.local_folder`/`devcontainer.config_file`
@@ -424,6 +432,18 @@ pub async fn start_dev_container_with_config(
                 ssh_port: ssh.as_ref().and_then(|ssh| ssh.port),
                 ssh_args: ssh.map(|ssh| ssh.args),
                 forward_ports: Some(forward_ports),
+                auto_forward_ports: Some(
+                    auto_forward
+                        .rules
+                        .into_iter()
+                        .map(|rule| DevContainerPortRule {
+                            start: rule.start,
+                            end: rule.end,
+                            forward: rule.forward,
+                        })
+                        .collect(),
+                ),
+                auto_forward_other_ports: Some(!auto_forward.ignore_other_ports),
             };
 
             Ok(StartedDevContainer {

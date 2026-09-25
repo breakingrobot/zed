@@ -2153,6 +2153,7 @@ impl WorkspaceDb {
                         .unwrap_or_default(),
                     // Known once the container is up; not stored.
                     forward_ports: Vec::new(),
+                    auto_forward: Default::default(),
                 }))
             }
         }
@@ -4463,6 +4464,7 @@ mod tests {
                 remote_env: BTreeMap::default(),
                 host: Default::default(),
                 forward_ports: Vec::new(),
+                auto_forward: Default::default(),
             })
         };
 
@@ -4506,6 +4508,7 @@ mod tests {
             remote_env: BTreeMap::default(),
             host: Default::default(),
             forward_ports: Vec::new(),
+            auto_forward: Default::default(),
         });
         let different = db
             .get_or_create_remote_connection(other_config)
@@ -4535,6 +4538,7 @@ mod tests {
                 remote_env: BTreeMap::default(),
                 host,
                 forward_ports: Vec::new(),
+                auto_forward: Default::default(),
             })
         };
 

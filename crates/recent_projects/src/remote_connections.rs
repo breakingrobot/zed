@@ -11,8 +11,9 @@ use gpui::{AppContext, AsyncApp, Entity, PromptLevel, WindowHandle};
 
 use project::trusted_worktrees;
 use remote::{
-    DockerConnectionOptions, EngineHost, Interactive, RemoteConnection, RemoteConnectionOptions,
-    SshConnectionOptions, SshEngineHost, WslConnectionOptions,
+    AutoForwardPorts, AutoForwardRule, DockerConnectionOptions, EngineHost, Interactive,
+    RemoteConnection, RemoteConnectionOptions, SshConnectionOptions, SshEngineHost,
+    WslConnectionOptions,
 };
 pub use settings::SshConnection;
 use settings::{DevContainerConnection, ExtendingVec, RegisterSetting, Settings, WslConnection};
@@ -115,6 +116,19 @@ impl From<Connection> for RemoteConnectionOptions {
                         (None, None) => EngineHost::Local,
                     },
                     forward_ports: conn.forward_ports.unwrap_or_default(),
+                    auto_forward: AutoForwardPorts {
+                        rules: conn
+                            .auto_forward_ports
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|rule| AutoForwardRule {
+                                start: rule.start,
+                                end: rule.end,
+                                forward: rule.forward,
+                            })
+                            .collect(),
+                        ignore_other_ports: conn.auto_forward_other_ports == Some(false),
+                    },
                 })
             }
         }

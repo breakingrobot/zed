@@ -18,7 +18,7 @@ pub use remote_identity::{
     DockerIdentityKey, RemoteConnectionIdentity, remote_connection_identity,
     same_remote_connection_identity,
 };
-pub use transport::docker::DockerConnectionOptions;
+pub use transport::docker::{AutoForwardPorts, AutoForwardRule, DockerConnectionOptions};
 pub use transport::ssh::{SshConnectionOptions, SshPortForwardOption};
 pub use transport::wsl::WslConnectionOptions;
 #[cfg(target_os = "windows")]

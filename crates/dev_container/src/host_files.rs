@@ -55,13 +55,6 @@ impl HostFiles {
         }
     }
 
-    pub(crate) async fn is_file(&self, path: &Path) -> bool {
-        if self.host.has_local_files() {
-            return self.fs.is_file(path).await;
-        }
-        self.test("-f", path).await
-    }
-
     pub(crate) async fn is_dir(&self, path: &Path) -> bool {
         if self.host.has_local_files() {
             return self.fs.is_dir(path).await;
