@@ -580,11 +580,11 @@ pub async fn dev_container_origin(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<DevContainerOrigin, DevContainerError> {
-    let docker = if use_podman {
-        Docker::new("podman", None, engine_host.clone()).await
-    } else {
-        Docker::new("docker", None, engine_host.clone()).await
-    };
+    let docker = Docker::without_builds(
+        if use_podman { "podman" } else { "docker" },
+        engine_host.clone(),
+    )
+    .await;
 
     let inspect = docker.inspect(&container_id.to_string()).await?;
     let labels = &inspect.config.labels;
@@ -619,11 +619,11 @@ pub async fn stop_dev_container(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<(), DevContainerError> {
-    let docker = if use_podman {
-        Docker::new("podman", None, engine_host.clone()).await
-    } else {
-        Docker::new("docker", None, engine_host.clone()).await
-    };
+    let docker = Docker::without_builds(
+        if use_podman { "podman" } else { "docker" },
+        engine_host.clone(),
+    )
+    .await;
 
     docker.stop_container(container_id).await
 }
@@ -700,11 +700,11 @@ pub async fn start_dev_container(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<(), DevContainerError> {
-    let docker = if use_podman {
-        Docker::new("podman", None, engine_host.clone()).await
-    } else {
-        Docker::new("docker", None, engine_host.clone()).await
-    };
+    let docker = Docker::without_builds(
+        if use_podman { "podman" } else { "docker" },
+        engine_host.clone(),
+    )
+    .await;
 
     docker.start_container(container_id).await
 }
@@ -720,11 +720,11 @@ pub async fn restart_dev_container(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<(), DevContainerError> {
-    let docker = if use_podman {
-        Docker::new("podman", None, engine_host.clone()).await
-    } else {
-        Docker::new("docker", None, engine_host.clone()).await
-    };
+    let docker = Docker::without_builds(
+        if use_podman { "podman" } else { "docker" },
+        engine_host.clone(),
+    )
+    .await;
 
     docker.stop_container(container_id).await?;
     docker.start_container(container_id).await
@@ -740,11 +740,11 @@ pub async fn remove_dev_container(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<(), DevContainerError> {
-    let docker = if use_podman {
-        Docker::new("podman", None, engine_host.clone()).await
-    } else {
-        Docker::new("docker", None, engine_host.clone()).await
-    };
+    let docker = Docker::without_builds(
+        if use_podman { "podman" } else { "docker" },
+        engine_host.clone(),
+    )
+    .await;
 
     docker.remove_container(container_id).await
 }

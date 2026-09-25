@@ -16,7 +16,7 @@ use crate::host_files::{HostFiles, copy_dir};
 use util::{ResultExt, command::Command, normalize_path, redact::is_valid_environment_name};
 
 use crate::{
-    DevContainerConfig, DevContainerContext, Dotfiles,
+    DevContainerConfig, DevContainerContext, Dotfiles, SessionCache, UserEnvironmentKey,
     command_json::{CommandRunner, DefaultCommandRunner},
     devcontainer_api::{
         BuildMode, DeferredCommand, DeferredHook, DevContainerError, DevContainerUp,
@@ -88,6 +88,7 @@ struct DevContainerManifest {
     lockfile: Option<FeatureLockfile>,
     /// Where downloaded features are kept for later builds.
     feature_cache_directory: PathBuf,
+    session_cache: SessionCache,
     /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
     /// has been parsed.
     config_hash: Option<String>,
@@ -146,6 +147,7 @@ impl DevContainerManifest {
             uses_gpu: false,
             lockfile: None,
             feature_cache_directory: paths::devcontainer_dir().join("features"),
+            session_cache: context.session_cache.clone(),
             config_hash: None,
         })
     }
@@ -430,7 +432,23 @@ impl DevContainerManifest {
         remote_user: &str,
     ) -> Result<HashMap<String, String>, DevContainerError> {
         let container_env = container.config.env_as_map()?;
-        let probed_env = self.probe_user_env(&container.id, remote_user).await;
+        let key = UserEnvironmentKey {
+            container_id: container.id.clone(),
+            started_at: container
+                .state
+                .as_ref()
+                .and_then(|state| state.started_at.clone()),
+            remote_user: remote_user.to_string(),
+        };
+        let probed_env = match self.session_cache.user_environment(&key) {
+            Some(probed_env) => probed_env,
+            None => {
+                let probed_env = self.probe_user_env(&container.id, remote_user).await;
+                self.session_cache
+                    .set_user_environment(key, probed_env.clone());
+                probed_env
+            }
+        };
         self.runtime_remote_env(&container_env, probed_env)
     }
 
@@ -3485,16 +3503,36 @@ pub(crate) struct FeaturesBuildInfo {
     pub image_tag: String,
 }
 
+/// The engine's client, which probes for BuildKit once per engine and session
+/// unless the settings decide.
+async fn engine_client(context: &DevContainerContext) -> Docker {
+    let docker_cli = if context.use_podman {
+        "podman"
+    } else {
+        "docker"
+    };
+    let use_buildkit = context.use_buildkit.or_else(|| {
+        context
+            .session_cache
+            .buildkit(docker_cli, &context.engine_host)
+    });
+    let docker = Docker::new(docker_cli, use_buildkit, context.engine_host.clone()).await;
+    if use_buildkit.is_none() {
+        context.session_cache.set_buildkit(
+            docker_cli,
+            &context.engine_host,
+            docker.supports_compose_buildkit(),
+        );
+    }
+    docker
+}
+
 pub(crate) async fn read_devcontainer_configuration(
     config: DevContainerConfig,
     context: &DevContainerContext,
     environment: HashMap<String, String>,
 ) -> Result<DevContainer, DevContainerError> {
-    let docker = if context.use_podman {
-        Docker::new("podman", context.use_buildkit, context.engine_host.clone()).await
-    } else {
-        Docker::new("docker", context.use_buildkit, context.engine_host.clone()).await
-    };
+    let docker = engine_client(context).await;
     let mut dev_container = DevContainerManifest::new(
         context,
         environment,
@@ -3516,11 +3554,7 @@ pub(crate) async fn spawn_dev_container(
     build_mode: BuildMode,
     defer_hooks: bool,
 ) -> Result<DevContainerUp, DevContainerError> {
-    let docker = if context.use_podman {
-        Docker::new("podman", context.use_buildkit, context.engine_host.clone()).await
-    } else {
-        Docker::new("docker", context.use_buildkit, context.engine_host.clone()).await
-    };
+    let docker = engine_client(context).await;
     let mut devcontainer_manifest = DevContainerManifest::new(
         context,
         environment,
@@ -4631,6 +4665,7 @@ mod test {
             use_podman: false,
             use_buildkit: None,
             dotfiles: None,
+            session_cache: Default::default(),
             fs: fs.clone(),
             http_client: http_client.clone(),
             environment: project_environment.downgrade(),
@@ -4944,6 +4979,42 @@ mod test {
                 ),
             ])
         );
+    }
+
+    #[gpui::test]
+    async fn probes_the_user_environment_once_per_container_start(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, r#"{ "image": "test_image:latest" }"#)
+                .await
+                .unwrap();
+        test_dependencies.docker.set_exec_output(
+            format!(
+                "{marker}FROM_PROBE=probed\0{marker}",
+                marker = super::USER_ENV_PROBE_MARKER
+            )
+            .as_bytes(),
+        );
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+
+        for _ in 0..2 {
+            let devcontainer_up = devcontainer_manifest
+                .check_for_existing_devcontainer()
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                devcontainer_up.remote_env.get("FROM_PROBE"),
+                Some(&"probed".to_string())
+            );
+        }
+        assert_eq!(test_dependencies.docker.exec_output_commands().len(), 1);
+
+        devcontainer_manifest.session_cache = Default::default();
+        devcontainer_manifest
+            .check_for_existing_devcontainer()
+            .await
+            .unwrap();
+        assert_eq!(test_dependencies.docker.exec_output_commands().len(), 2);
     }
 
     #[gpui::test]

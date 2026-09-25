@@ -121,12 +121,27 @@ impl EngineHost {
     /// container CLI talks to, and where it is. Commands started on a host other
     /// than the machine running Zed don't go through a login shell, so they are
     /// passed explicitly. The machine running Zed already loaded its own.
+    ///
+    /// It's loaded once per host and session, since a login shell is slow to start.
     pub async fn engine_environment(&self) -> Vec<(String, String)> {
+        static ENGINE_ENVIRONMENTS: std::sync::LazyLock<
+            parking_lot::Mutex<std::collections::HashMap<EngineHost, Vec<(String, String)>>>,
+        > = std::sync::LazyLock::new(Default::default);
+
         if self.is_local() {
             return Vec::new();
         }
+        if let Some(environment) = ENGINE_ENVIRONMENTS.lock().get(self) {
+            return environment.clone();
+        }
         match self.login_environment().await {
-            Ok(environment) => engine_variables(environment),
+            Ok(environment) => {
+                let variables = engine_variables(environment);
+                ENGINE_ENVIRONMENTS
+                    .lock()
+                    .insert(self.clone(), variables.clone());
+                variables
+            }
             Err(error) => {
                 log::warn!("Using the default engine environment: {error:#}");
                 Vec::new()
