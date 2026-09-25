@@ -65,6 +65,7 @@ You can open a dev container from a project on a Linux or macOS machine you reac
 
 - `docker` (or `podman`) must be installed on the SSH host.
 - SSH must log in without a prompt, for example with a key from your SSH agent or an `IdentityFile` in `~/.ssh/config`. Zed runs `ssh` with `BatchMode=yes` and does not store passwords.
+- On Linux and macOS, Zed's commands for the container engine share one SSH connection to the host, kept open for 5 minutes after the last one. Windows' OpenSSH doesn't support this, so there each command opens its own connection.
 - `initializeCommand` runs on the SSH host, from your project folder.
 - `${localEnv:VAR}` reads the environment of a login shell on the SSH host.
 - While connected, Zed forwards numeric `forwardPorts` and `appPort` from the SSH host to the same ports on your machine.
