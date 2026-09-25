@@ -481,6 +481,30 @@ impl DockerExecConnection {
             return Ok(dst_path.into());
         }
 
+        let cached_binary = format!(
+            "{SERVER_CACHE_PATH}/{binary_name}-{}-{}",
+            remote_platform.os.as_str(),
+            remote_platform.arch.as_str()
+        );
+        let installed_binary = format!(
+            "{remote_dir_for_server}/{}",
+            dst_path.display(self.path_style())
+        );
+        // Development builds all share one name, so a cached one may be stale.
+        let use_cache = release_channel != ReleaseChannel::Dev;
+        if use_cache
+            && self
+                .run_as_root(
+                    RESTORE_CACHED_SERVER_SCRIPT,
+                    &[&cached_binary, &installed_binary],
+                )
+                .await
+                .is_ok()
+        {
+            log::info!("Reused the remote server from the {SERVER_CACHE_VOLUME} volume");
+            return Ok(dst_path.into());
+        }
+
         let wanted_version = cx.update(|cx| match release_channel {
             ReleaseChannel::Nightly => Ok(None),
             ReleaseChannel::Dev => {
@@ -519,6 +543,10 @@ impl DockerExecConnection {
                     )
                     .await
                     .context("extracting server binary")?;
+                    if use_cache {
+                        self.cache_server_binary(&installed_binary, &cached_binary)
+                            .await;
+                    }
                     return Ok(dst_path.into());
                 }
                 Err(e) => {
@@ -551,7 +579,38 @@ impl DockerExecConnection {
         )
         .await
         .context("extracting server binary")?;
+        if use_cache {
+            self.cache_server_binary(&installed_binary, &cached_binary)
+                .await;
+        }
         Ok(dst_path.into())
+    }
+
+    /// Runs a POSIX `script` in the container as root, which owns the server cache
+    /// volume, with `args` as its `$1`, `$2`, …
+    async fn run_as_root(&self, script: &str, args: &[&str]) -> Result<String> {
+        let mut exec_args = vec![
+            "-u".to_string(),
+            "root".to_string(),
+            self.connection_options.container_id.clone(),
+            "sh".to_string(),
+            "-c".to_string(),
+            script.to_string(),
+            "sh".to_string(),
+        ];
+        exec_args.extend(args.iter().map(|arg| arg.to_string()));
+        self.run_docker_command("exec", &exec_args).await
+    }
+
+    /// Keeps a copy of the server in the cache volume, when the container has it,
+    /// for the other containers of the engine.
+    async fn cache_server_binary(&self, installed_binary: &str, cached_binary: &str) {
+        if let Err(error) = self
+            .run_as_root(CACHE_SERVER_SCRIPT, &[installed_binary, cached_binary])
+            .await
+        {
+            log::debug!("Didn't cache the remote server: {error:#}");
+        }
     }
 
     async fn docker_user_home_dir(&self) -> Result<String> {
@@ -950,6 +1009,25 @@ impl DockerExecConnection {
         }
     }
 }
+
+/// The volume that keeps the remote server binaries, mounted in the dev containers
+/// Zed creates so that they share one download, like VS Code's `vscode` volume.
+pub const SERVER_CACHE_VOLUME: &str = "zed-remote-server";
+/// Where [`SERVER_CACHE_VOLUME`] is mounted in dev containers.
+pub const SERVER_CACHE_PATH: &str = "/zed-remote-server";
+
+/// Copies `$2`, a server installed in the container, into the cache volume as `$1`
+/// without leaving a partial copy behind.
+const CACHE_SERVER_SCRIPT: &str =
+    r#"[ -d "$(dirname "$2")" ] || exit 0; cp "$1" "$2.partial" && mv -f "$2.partial" "$2""#;
+
+/// Installs `$1` from the cache volume as `$2`, owned by the container's user, or
+/// fails when the cache doesn't have it.
+const RESTORE_CACHED_SERVER_SCRIPT: &str = r#"[ -x "$1" ] || exit 1
+owner="$(stat -c %u:%g "$(dirname "$(dirname "$2")")")"
+mkdir -p "$(dirname "$2")"
+cp "$1" "$2.partial" && mv -f "$2.partial" "$2"
+chown "$owner" "$(dirname "$2")" "$2""#;
 
 /// Forwards ports that listen in the container to the same ports on this machine,
 /// like VS Code's automatic port forwarding. Each accepted connection runs the
@@ -1510,6 +1588,61 @@ mod tests {
             assert_eq!(command.get_program(), "kill");
             assert_eq!(arguments, ["4242"]);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn server_binaries_round_trip_through_the_cache_volume() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let run = |script: &str, first: &std::path::Path, second: &std::path::Path| {
+            let mut command = util::command::new_command("sh");
+            command
+                .arg("-c")
+                .arg(script)
+                .arg("sh")
+                .arg(first)
+                .arg(second);
+            smol::block_on(command.output()).unwrap()
+        };
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let cache = root.path().join("cache");
+        let installed = home.join(".zed_server/zed-remote-server-stable-1.0.0");
+        let cached = cache.join("zed-remote-server-stable-1.0.0-linux-x86_64");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Without the volume, there's nothing to cache into or restore from.
+        assert!(
+            run(super::CACHE_SERVER_SCRIPT, &installed, &cached)
+                .status
+                .success()
+        );
+        assert!(!cached.exists());
+        assert!(
+            !run(super::RESTORE_CACHED_SERVER_SCRIPT, &cached, &installed)
+                .status
+                .success()
+        );
+
+        std::fs::create_dir(&cache).unwrap();
+        assert!(
+            run(super::CACHE_SERVER_SCRIPT, &installed, &cached)
+                .status
+                .success()
+        );
+        assert!(cached.is_file());
+
+        std::fs::remove_dir_all(home.join(".zed_server")).unwrap();
+        let output = run(super::RESTORE_CACHED_SERVER_SCRIPT, &cached, &installed);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(std::fs::read_to_string(&installed).unwrap(), "#!/bin/sh\n");
+        assert_ne!(
+            std::fs::metadata(&installed).unwrap().permissions().mode() & 0o111,
+            0
+        );
     }
 
     #[test]

@@ -1381,6 +1381,15 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
         for mount in dev_container.mounts.clone().unwrap_or_default() {
             append_mount_with_target_override(&mut mounts, mount);
         }
+        // Lets the containers of the engine share the remote server Zed runs in them.
+        append_mount_with_target_override(
+            &mut mounts,
+            MountDefinition {
+                source: Some(remote::SERVER_CACHE_VOLUME.to_string()),
+                target: remote::SERVER_CACHE_PATH.to_string(),
+                mount_type: Some("volume".to_string()),
+            },
+        );
         let ssh_agent_socket = self.ssh_agent_socket();
         if let Some(socket) = &ssh_agent_socket {
             append_mount_with_target_override(
@@ -5721,14 +5730,21 @@ mod test {
 
         assert_eq!(
             resources.additional_mounts,
-            vec![MountDefinition {
-                source: Some(format!(
-                    "dind-var-lib-docker-{}",
-                    devcontainer_manifest.devcontainer_id()
-                )),
-                target: "/var/lib/docker".to_string(),
-                mount_type: Some("volume".to_string()),
-            }]
+            vec![
+                MountDefinition {
+                    source: Some(format!(
+                        "dind-var-lib-docker-{}",
+                        devcontainer_manifest.devcontainer_id()
+                    )),
+                    target: "/var/lib/docker".to_string(),
+                    mount_type: Some("volume".to_string()),
+                },
+                MountDefinition {
+                    source: Some(remote::SERVER_CACHE_VOLUME.to_string()),
+                    target: remote::SERVER_CACHE_PATH.to_string(),
+                    mount_type: Some("volume".to_string()),
+                }
+            ]
         );
         assert_eq!(
             resources.container_env.get("PATH").map(String::as_str),
@@ -7461,8 +7477,10 @@ ENV DOCKER_BUILDKIT=1
             "metadata should include devcontainer.json config entry with forwardPorts"
         );
 
-        assert_eq!(app_service.volumes.len(), 1);
+        assert_eq!(app_service.volumes.len(), 2);
         assert_eq!(app_service.volumes[0].target, "/var/lib/docker");
+        assert_eq!(app_service.volumes[1].target, remote::SERVER_CACHE_PATH);
+        assert!(runtime_config.volumes.contains_key(remote::SERVER_CACHE_VOLUME));
 
         let db_service = runtime_config.services.get("db").expect("db service");
         assert_eq!(db_service.ports.len(), 3);
