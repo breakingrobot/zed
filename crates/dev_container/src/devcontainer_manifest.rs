@@ -25,7 +25,7 @@ use crate::{
         ContainerBuild, DevContainer, DevContainerBuildType, FeatureOptions, ForwardPort,
         HostRequirements, LifecycleCommand, LifecycleScript, MountDefinition,
         deserialize_devcontainer_json, deserialize_devcontainer_json_from_value,
-        deserialize_devcontainer_json_to_value,
+        deserialize_devcontainer_json_to_value, zed_settings_from_metadata,
     },
     docker::{
         Docker, DockerClient, DockerComposeConfig, DockerComposeDeploy, DockerComposeService,
@@ -2961,6 +2961,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
         let mut devcontainer_up = devcontainer_up;
         devcontainer_up.warnings = warnings;
+        self.apply_zed_settings(&devcontainer_up).await;
         devcontainer_up.deferred_hooks = self
             .run_remote_scripts(&devcontainer_up, true, true)
             .await?;
@@ -3001,6 +3002,67 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         );
         log::warn!("{warning}");
         vec![warning]
+    }
+
+    /// The Zed settings that the `customizations` of the container's metadata (its
+    /// image and features) and of the configuration ask for, the configuration's
+    /// winning.
+    fn zed_settings(
+        &self,
+        metadata: &[HashMap<String, serde_json_lenient::Value>],
+    ) -> serde_json_lenient::Map<String, serde_json_lenient::Value> {
+        let mut settings = serde_json_lenient::Map::new();
+        for entry in metadata {
+            if let Some(entry_settings) = zed_settings_from_metadata(entry) {
+                settings.extend(entry_settings.clone());
+            }
+        }
+        if let Some(customizations) = &self.dev_container().customizations {
+            settings.extend(customizations.zed.settings.clone());
+        }
+        settings
+    }
+
+    /// Writes the configuration's Zed settings into the settings of the remote
+    /// server in a new container, over what's there, like VS Code does with its
+    /// machine settings. A failure is logged without failing the container.
+    async fn apply_zed_settings(&self, devcontainer_up: &DevContainerUp) {
+        let settings = self.zed_settings(&devcontainer_up.metadata);
+        if settings.is_empty() {
+            return;
+        }
+        let result = async {
+            let existing = self
+                .docker_client
+                .run_docker_exec_output(
+                    &devcontainer_up.container_id,
+                    &devcontainer_up.remote_user,
+                    zed_settings_file_command(r#"cat "$settings_file" 2>/dev/null || true"#, None),
+                )
+                .await?;
+            let merged = merge_zed_settings(&String::from_utf8_lossy(&existing), settings)
+                .ok_or_else(|| {
+                    DevContainerError::DevContainerValidationFailed(
+                        "the container's Zed settings aren't valid JSON".to_string(),
+                    )
+                })?;
+            self.docker_client
+                .run_docker_exec(
+                    &devcontainer_up.container_id,
+                    &devcontainer_up.remote_workspace_folder,
+                    &devcontainer_up.remote_user,
+                    &HashMap::new(),
+                    zed_settings_file_command(
+                        r#"mkdir -p "$(dirname "$settings_file")" && printf '%s\n' "$1" > "$settings_file""#,
+                        Some(&merged),
+                    ),
+                )
+                .await
+        }
+        .await;
+        if let Err(error) = result {
+            log::error!("Failed to apply the dev container's Zed settings: {error}");
+        }
     }
 
     /// Clones the user's dotfiles repository into a new container and installs it,
@@ -3864,6 +3926,38 @@ fn get_ent_passwd_shell_command(user: &str) -> String {
         shell = escaped_for_shell,
         re = escaped_for_regex,
     )
+}
+
+/// Runs `script` in the container with `$settings_file` set to the remote server's
+/// settings file, and `argument` as its `$1`.
+fn zed_settings_file_command(script: &str, argument: Option<&str>) -> Command {
+    let script = format!(
+        r#"settings_file="${{XDG_CONFIG_HOME:-$HOME/.config}}/zed/settings.json"; {script}"#
+    );
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", &script, "sh"]);
+    if let Some(argument) = argument {
+        command.arg(argument);
+    }
+    command
+}
+
+/// Sets `settings` in the settings file's `existing` contents, or returns `None`
+/// when those aren't a JSON object.
+fn merge_zed_settings(
+    existing: &str,
+    settings: serde_json_lenient::Map<String, serde_json_lenient::Value>,
+) -> Option<String> {
+    let mut merged = if existing.trim().is_empty() {
+        serde_json_lenient::Map::new()
+    } else {
+        match serde_json_lenient::from_str(existing).ok()? {
+            serde_json_lenient::Value::Object(existing) => existing,
+            _ => return None,
+        }
+    };
+    merged.extend(settings);
+    serde_json_lenient::to_string_pretty(&serde_json_lenient::Value::Object(merged)).ok()
 }
 
 /// Clones the dotfiles repository unless its target folder exists, then runs its
@@ -6144,6 +6238,79 @@ mod test {
                 .iter()
                 .any(|script| script.contains("dotfiles")),
             "an existing container doesn't install dotfiles again"
+        );
+    }
+
+    #[test]
+    fn zed_settings_are_set_over_the_existing_ones() {
+        let settings = serde_json_lenient::Map::from_iter([(
+            "tab_size".to_string(),
+            serde_json_lenient::json!(2),
+        )]);
+        let merged = super::merge_zed_settings(
+            "// Server settings\n{ \"tab_size\": 8, \"vim_mode\": true, }",
+            settings.clone(),
+        )
+        .unwrap();
+        let merged: serde_json_lenient::Value = serde_json_lenient::from_str(&merged).unwrap();
+        assert_eq!(
+            merged,
+            serde_json_lenient::json!({ "tab_size": 2, "vim_mode": true })
+        );
+        assert_eq!(
+            super::merge_zed_settings("  ", settings.clone()).as_deref(),
+            Some("{\n  \"tab_size\": 2\n}")
+        );
+        assert_eq!(super::merge_zed_settings("[1, 2]", settings.clone()), None);
+        assert_eq!(super::merge_zed_settings("{ oops", settings), None);
+    }
+
+    #[gpui::test]
+    async fn applies_zed_settings_from_the_metadata_and_the_configuration(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{
+                "image": "test_image:latest",
+                "customizations": { "zed": { "settings": { "tab_size": 2 } } }
+            }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        test_dependencies
+            .docker
+            .set_exec_output(br#"{ "vim_mode": true }"#);
+        let devcontainer_up = DevContainerUp {
+            started_at: None,
+            created_at: None,
+            deferred_hooks: Vec::new(),
+            config_changed: false,
+            warnings: Vec::new(),
+            compose_project: None,
+            container_id: "container".to_string(),
+            remote_user: "root".to_string(),
+            remote_workspace_folder: "/workspaces/project".to_string(),
+            extension_ids: Vec::new(),
+            remote_env: HashMap::new(),
+            metadata: vec![HashMap::from([(
+                "customizations".to_string(),
+                serde_json_lenient::json!({
+                    "zed": { "settings": { "tab_size": 4, "theme": "One Dark" } }
+                }),
+            )])],
+        };
+
+        devcontainer_manifest
+            .apply_zed_settings(&devcontainer_up)
+            .await;
+
+        let scripts = recorded_scripts(&test_dependencies);
+        assert_eq!(scripts.len(), 1, "{scripts:?}");
+        let written = scripts[0].split_once(" sh ").map(|(_, json)| json).unwrap();
+        let written: serde_json_lenient::Value = serde_json_lenient::from_str(written).unwrap();
+        assert_eq!(
+            written,
+            serde_json_lenient::json!({ "tab_size": 2, "theme": "One Dark", "vim_mode": true })
         );
     }
 
