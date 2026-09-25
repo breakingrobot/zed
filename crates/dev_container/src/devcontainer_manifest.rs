@@ -3464,24 +3464,27 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
     /// [`Self::identifying_labels`], then the same folders as other tools write them,
     /// so that Zed reuses the dev containers VS Code created instead of failing to
-    /// create another one with the same name.
+    /// create another one with the same name. Each label can take another form: VS
+    /// Code opening a WSL folder from Windows writes its `local_folder` as a Windows
+    /// path, but its `config_file` as a Linux path.
     fn identifying_label_variants(&self) -> Vec<Vec<(&str, String)>> {
         let labels = self.identifying_labels();
         let host = self.docker_client.engine_host();
-        let alternatives: Vec<Vec<String>> = labels
-            .iter()
-            .map(|(_, value)| equivalent_label_paths(value, &host))
-            .collect();
-        let variant_count = alternatives.iter().map(Vec::len).min().unwrap_or(0);
-        let mut variants = vec![labels.clone()];
-        for index in 0..variant_count {
-            variants.push(
-                labels
-                    .iter()
-                    .zip(&alternatives)
-                    .map(|((key, _), alternatives)| (*key, alternatives[index].clone()))
-                    .collect(),
-            );
+        let mut variants: Vec<Vec<(&str, String)>> = vec![Vec::new()];
+        for (key, value) in &labels {
+            let forms: Vec<String> = std::iter::once(value.clone())
+                .chain(equivalent_label_paths(value, &host))
+                .collect();
+            variants = variants
+                .into_iter()
+                .flat_map(|variant| {
+                    forms.iter().map(move |form| {
+                        let mut variant = variant.clone();
+                        variant.push((*key, form.clone()));
+                        variant
+                    })
+                })
+                .collect();
         }
         variants
     }
@@ -6889,6 +6892,38 @@ mod test {
             super::equivalent_label_paths("/home/me/app", &EngineHost::Ssh(Default::default()))
                 .is_empty()
         );
+    }
+
+    #[gpui::test]
+    async fn looks_up_vs_code_containers_with_mixed_label_forms(cx: &mut TestAppContext) {
+        let mut docker = FakeDocker::new();
+        docker.engine_host = EngineHost::Wsl(WslConnectionOptions {
+            distro_name: "Ubuntu".to_string(),
+            user: None,
+        });
+        let (_, devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            FakeFs::new(cx.executor()),
+            fake_http_client(),
+            Arc::new(docker),
+            Arc::new(TestCommandRunner::new()),
+            HashMap::new(),
+            r#"{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }"#,
+        )
+        .await
+        .unwrap();
+        let variants = devcontainer_manifest.identifying_label_variants();
+        let exact = devcontainer_manifest.identifying_labels();
+        assert_eq!(variants.len(), 9);
+        assert_eq!(variants[0], exact);
+        // What VS Code writes for a WSL folder it opened from Windows.
+        let (_, local_folder) = &exact[0];
+        let (_, config_file) = &exact[1];
+        let windows_folder = format!(r"\\wsl.localhost\Ubuntu{}", local_folder.replace('/', r"\"));
+        assert!(variants.contains(&vec![
+            ("devcontainer.local_folder", windows_folder),
+            ("devcontainer.config_file", config_file.clone()),
+        ]));
     }
 
     #[test]
