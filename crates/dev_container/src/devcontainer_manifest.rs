@@ -16,7 +16,7 @@ use crate::host_files::HostFiles;
 use util::{ResultExt, command::Command, normalize_path, redact::is_valid_environment_name};
 
 use crate::{
-    DevContainerConfig, DevContainerContext,
+    DevContainerConfig, DevContainerContext, Dotfiles,
     command_json::{CommandRunner, DefaultCommandRunner},
     devcontainer_api::{
         BuildMode, DeferredCommand, DeferredHook, DevContainerError, DevContainerUp,
@@ -78,6 +78,8 @@ struct DevContainerManifest {
     defer_hooks: bool,
     /// Whether images are built without the engine's build cache.
     no_cache: bool,
+    /// The user's dotfiles, installed in new containers.
+    dotfiles: Option<Dotfiles>,
     /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
     /// has been parsed.
     config_hash: Option<String>,
@@ -132,6 +134,7 @@ impl DevContainerManifest {
             remote_build_dir: OnceLock::new(),
             defer_hooks: false,
             no_cache: false,
+            dotfiles: context.dotfiles.clone(),
             config_hash: None,
         })
     }
@@ -2804,6 +2807,51 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         vec![warning]
     }
 
+    /// Clones the user's dotfiles repository into a new container and installs it,
+    /// after the create-time lifecycle hooks like VS Code. A failure is logged
+    /// without failing the container.
+    async fn install_dotfiles(&self, devcontainer_up: &DevContainerUp, remote_folder: &str) {
+        let Some(dotfiles) = &self.dotfiles else {
+            return;
+        };
+        if let Some(created_at) = &devcontainer_up.created_at {
+            match self
+                .docker_client
+                .run_docker_exec_status(
+                    &devcontainer_up.container_id,
+                    remote_folder,
+                    &devcontainer_up.remote_user,
+                    &devcontainer_up.remote_env,
+                    lifecycle_marker_command("dotfiles", created_at, &devcontainer_up.remote_user),
+                )
+                .await
+            {
+                Ok((true, _)) => {}
+                Ok((false, _)) => return,
+                Err(error) => {
+                    log::error!("Failed to check whether dotfiles are installed: {error}");
+                    return;
+                }
+            }
+        }
+        if let Err(error) = self
+            .docker_client
+            .run_docker_exec(
+                &devcontainer_up.container_id,
+                remote_folder,
+                &devcontainer_up.remote_user,
+                &devcontainer_up.remote_env,
+                dotfiles_command(dotfiles),
+            )
+            .await
+        {
+            log::error!(
+                "Failed to install dotfiles from {}: {error}",
+                dotfiles.repository
+            );
+        }
+    }
+
     async fn run_remote_scripts(
         &self,
         devcontainer_up: &DevContainerUp,
@@ -2855,6 +2903,10 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                 self.run_lifecycle_scripts(devcontainer_up, &remote_folder, hook, scripts)
                     .await?;
             }
+        }
+
+        if new_container {
+            self.install_dotfiles(devcontainer_up, &remote_folder).await;
         }
 
         let post_start_scripts = lifecycle_scripts(
@@ -3600,6 +3652,72 @@ fn get_ent_passwd_shell_command(user: &str) -> String {
     )
 }
 
+/// Clones the dotfiles repository unless its target folder exists, then runs its
+/// install command. Without one, it runs the first install script it finds, like
+/// VS Code, or else links the repository's dotfiles into the home folder.
+fn dotfiles_command(dotfiles: &Dotfiles) -> Command {
+    const SCRIPT: &str = r#"set -e
+repository="$1"
+target="$2"
+install_command="$3"
+case "$target" in
+  "~") target="$HOME" ;;
+  "~/"*) target="$HOME/${target#"~/"}" ;;
+esac
+if [ ! -e "$target" ]; then
+  git clone --depth 1 "$repository" "$target"
+fi
+cd "$target"
+if [ -z "$install_command" ]; then
+  for candidate in install.sh install bootstrap.sh bootstrap script/bootstrap setup.sh setup script/setup; do
+    if [ -f "$candidate" ]; then
+      install_command="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "$install_command" ]; then
+  for file in .[!.]* ..?*; do
+    if [ -e "$file" ] && [ "$file" != .git ]; then
+      ln -sfn "$target/$file" "$HOME/$file"
+    fi
+  done
+elif [ -f "$install_command" ]; then
+  if [ -x "$install_command" ]; then
+    "./$install_command"
+  else
+    /bin/sh "./$install_command"
+  fi
+else
+  /bin/sh -c "$install_command"
+fi"#;
+
+    let mut command = Command::new("/bin/sh");
+    command.args([
+        "-c",
+        SCRIPT,
+        "sh",
+        &dotfiles_repository_url(&dotfiles.repository),
+        dotfiles.target_path.as_deref().unwrap_or("~/dotfiles"),
+        dotfiles.install_command.as_deref().unwrap_or_default(),
+    ]);
+    command
+}
+
+/// Expands the `owner/repository` shorthand VS Code accepts into a GitHub URL.
+fn dotfiles_repository_url(repository: &str) -> String {
+    let repository = repository.trim();
+    let is_shorthand = !repository.contains(':')
+        && !repository.starts_with('/')
+        && !repository.starts_with('.')
+        && repository.split('/').count() == 2;
+    if is_shorthand {
+        format!("https://github.com/{repository}.git")
+    } else {
+        repository.to_string()
+    }
+}
+
 const USER_ENV_PROBE_MARKER: &str = "ZED_USER_ENV_PROBE_3c9e1f";
 
 /// Prints the environment of `remote_user`'s shell started with `shell_flags`
@@ -4216,7 +4334,7 @@ mod test {
     use util::{command::Command, paths::SanitizedPath};
 
     use crate::{
-        DevContainerConfig, DevContainerContext,
+        DevContainerConfig, DevContainerContext, Dotfiles,
         command_json::CommandRunner,
         devcontainer_api::{BuildMode, DevContainerError, DevContainerUp},
         devcontainer_json::MountDefinition,
@@ -4340,6 +4458,7 @@ mod test {
             engine_host: EngineHost::Local,
             use_podman: false,
             use_buildkit: None,
+            dotfiles: None,
             fs: fs.clone(),
             http_client: http_client.clone(),
             environment: project_environment.downgrade(),
@@ -5465,6 +5584,102 @@ mod test {
             recorded_scripts(&test_dependencies),
             vec!["-c echo on-create", "-c echo post-create"]
         );
+    }
+
+    #[gpui::test]
+    async fn installs_dotfiles_in_new_containers_after_the_create_hooks(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{
+                "image": "test_image:latest",
+                "postCreateCommand": "echo post-create",
+                "postStartCommand": "echo post-start"
+            }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest.dotfiles = Some(Dotfiles {
+            repository: "octocat/dotfiles".to_string(),
+            install_command: None,
+            target_path: None,
+        });
+
+        let devcontainer_up = DevContainerUp {
+            started_at: None,
+            created_at: None,
+            deferred_hooks: Vec::new(),
+            config_changed: false,
+            warnings: Vec::new(),
+            compose_project: None,
+            container_id: "container".to_string(),
+            remote_user: "root".to_string(),
+            remote_workspace_folder: "/workspaces/project".to_string(),
+            extension_ids: Vec::new(),
+            remote_env: HashMap::new(),
+            metadata: Vec::new(),
+        };
+
+        devcontainer_manifest
+            .run_remote_scripts(&devcontainer_up, true, true)
+            .await
+            .unwrap();
+        let scripts = recorded_scripts(&test_dependencies);
+        assert_eq!(scripts.len(), 3, "{scripts:?}");
+        assert_eq!(scripts[0], "-c echo post-create");
+        assert!(
+            scripts[1].ends_with("https://github.com/octocat/dotfiles.git ~/dotfiles "),
+            "{scripts:?}"
+        );
+        assert_eq!(scripts[2], "-c echo post-start");
+
+        devcontainer_manifest
+            .run_remote_scripts(&devcontainer_up, false, true)
+            .await
+            .unwrap();
+        assert!(
+            !recorded_scripts(&test_dependencies)[3..]
+                .iter()
+                .any(|script| script.contains("dotfiles")),
+            "an existing container doesn't install dotfiles again"
+        );
+    }
+
+    #[test]
+    fn dotfiles_command_passes_the_settings_as_arguments() {
+        let command = super::dotfiles_command(&Dotfiles {
+            repository: "git@github.com:octocat/dotfiles.git".to_string(),
+            install_command: Some("scripts/install.sh".to_string()),
+            target_path: Some("~/.dotfiles".to_string()),
+        });
+        assert_eq!(command.get_program(), "/bin/sh");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "-c");
+        assert!(args[1].contains("git clone --depth 1 \"$repository\" \"$target\""));
+        assert_eq!(
+            args[2..],
+            [
+                "sh",
+                "git@github.com:octocat/dotfiles.git",
+                "~/.dotfiles",
+                "scripts/install.sh"
+            ]
+        );
+
+        assert_eq!(
+            super::dotfiles_repository_url("octocat/dotfiles"),
+            "https://github.com/octocat/dotfiles.git"
+        );
+        for url in [
+            "https://gitlab.com/octocat/dotfiles.git",
+            "git@github.com:octocat/dotfiles.git",
+            "/srv/git/dotfiles",
+        ] {
+            assert_eq!(super::dotfiles_repository_url(url), url);
+        }
     }
 
     #[gpui::test]
