@@ -104,6 +104,20 @@ To keep a port from being forwarded, set its `onAutoForward` to `ignore` in `por
 }
 ```
 
+## Dotfiles
+
+To bring your shell and tool configuration into every new dev container, set a dotfiles repository in your settings, like VS Code's `dotfiles.*` settings:
+
+```json [settings]
+{
+  "dev_container_dotfiles_repository": "your-github-id/dotfiles",
+  "dev_container_dotfiles_install_command": "install.sh",
+  "dev_container_dotfiles_target_path": "~/dotfiles"
+}
+```
+
+After creating a container and running its `onCreateCommand`, `updateContentCommand` and `postCreateCommand`, Zed clones the repository (a Git URL, or `owner/repository` on GitHub) into `dev_container_dotfiles_target_path` (`~/dotfiles` by default) in the container and runs `dev_container_dotfiles_install_command` there. Without an install command, Zed runs the first of `install.sh`, `install`, `bootstrap.sh`, `bootstrap`, `script/bootstrap`, `setup.sh`, `setup` and `script/setup` in the repository, or links the repository's dotfiles into your home folder if it has none. The container needs `git`, and access to the repository. If installing the dotfiles fails, the container is still used, and the error is in Zed's log.
+
 ## Extensions
 
 You can specify extensions in `.devcontainer/devcontainer.json` under the "customizations" field like so:

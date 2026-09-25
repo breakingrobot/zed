@@ -107,6 +107,8 @@ pub struct DevContainerContext {
     pub engine_host: EngineHost,
     pub use_podman: bool,
     pub use_buildkit: Option<bool>,
+    /// The user's dotfiles, installed in new containers.
+    pub dotfiles: Option<Dotfiles>,
     pub fs: Arc<dyn Fs>,
     pub http_client: Arc<dyn HttpClient>,
     pub environment: WeakEntity<ProjectEnvironment>,
@@ -149,6 +151,7 @@ impl DevContainerContext {
             engine_host,
             use_podman: settings.use_podman,
             use_buildkit: settings.use_buildkit,
+            dotfiles: settings.dotfiles.clone(),
             fs: workspace.app_state().fs.clone(),
             http_client: cx.http_client().clone(),
             environment: workspace.project().read(cx).environment().downgrade(),
@@ -181,10 +184,23 @@ async fn host_environment(host: &EngineHost) -> HashMap<String, String> {
         })
 }
 
+/// A dotfiles repository to install in new dev containers, like VS Code's
+/// `dotfiles.*` settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dotfiles {
+    /// A Git URL, or `owner/repository` on GitHub.
+    pub repository: String,
+    /// The command that installs the dotfiles, run in the clone.
+    pub install_command: Option<String>,
+    /// Where the repository is cloned in the container.
+    pub target_path: Option<String>,
+}
+
 #[derive(RegisterSetting)]
 struct DevContainerSettings {
     use_podman: bool,
     use_buildkit: Option<bool>,
+    dotfiles: Option<Dotfiles>,
 }
 
 /// Where the container engine of `project`'s dev containers runs: where its
@@ -239,6 +255,24 @@ impl Settings for DevContainerSettings {
         Self {
             use_podman: content.remote.use_podman.unwrap_or(false),
             use_buildkit: content.remote.dev_container_use_buildkit,
+            dotfiles: content
+                .remote
+                .dev_container_dotfiles_repository
+                .clone()
+                .filter(|repository| !repository.trim().is_empty())
+                .map(|repository| Dotfiles {
+                    repository,
+                    install_command: content
+                        .remote
+                        .dev_container_dotfiles_install_command
+                        .clone()
+                        .filter(|command| !command.trim().is_empty()),
+                    target_path: content
+                        .remote
+                        .dev_container_dotfiles_target_path
+                        .clone()
+                        .filter(|path| !path.trim().is_empty()),
+                }),
         }
     }
 }

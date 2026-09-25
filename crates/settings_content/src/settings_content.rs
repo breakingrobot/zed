@@ -1370,6 +1370,22 @@ pub struct RemoteSettingsContent {
     ///
     /// Default: null (auto-detect)
     pub dev_container_use_buildkit: Option<bool>,
+    /// A Git repository of dotfiles that Zed clones into new dev containers and
+    /// installs, as a URL or `owner/repository` on GitHub.
+    ///
+    /// Default: null
+    pub dev_container_dotfiles_repository: Option<String>,
+    /// The command that installs the dotfiles, run in their clone. When unset,
+    /// Zed runs the first of `install.sh`, `install`, `bootstrap.sh`, `bootstrap`,
+    /// `script/bootstrap`, `setup.sh`, `setup` and `script/setup` it finds, or
+    /// else links the repository's dotfiles into the home folder.
+    ///
+    /// Default: null
+    pub dev_container_dotfiles_install_command: Option<String>,
+    /// Where the dotfiles are cloned in the container.
+    ///
+    /// Default: "~/dotfiles"
+    pub dev_container_dotfiles_target_path: Option<String>,
 }
 
 #[with_fallible_options]
