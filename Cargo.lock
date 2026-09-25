@@ -15195,6 +15195,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "askpass",
+ "async-compression",
  "async-tar",
  "async-trait",
  "base64 0.22.1",
@@ -15212,6 +15213,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "sha2",
  "smol",
  "telemetry",
  "tempfile",
