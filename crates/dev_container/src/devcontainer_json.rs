@@ -153,6 +153,21 @@ pub(crate) struct ZedCustomizationsWrapper {
 pub(crate) struct ZedCustomization {
     #[serde(default)]
     pub(crate) extensions: Vec<String>,
+    /// Zed settings for the remote server in the container, like VS Code's
+    /// `customizations.vscode.settings`.
+    #[serde(default)]
+    pub(crate) settings: serde_json_lenient::Map<String, Value>,
+}
+
+/// The `customizations.zed.settings` of a `devcontainer.metadata` entry.
+pub(crate) fn zed_settings_from_metadata(
+    entry: &HashMap<String, Value>,
+) -> Option<&serde_json_lenient::Map<String, Value>> {
+    entry
+        .get("customizations")?
+        .get("zed")?
+        .get("settings")?
+        .as_object()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
@@ -1288,7 +1303,8 @@ mod test {
             devcontainer.customizations,
             Some(ZedCustomizationsWrapper {
                 zed: ZedCustomization {
-                    extensions: vec!["vue".to_string(), "ruby".to_string()]
+                    extensions: vec!["vue".to_string(), "ruby".to_string()],
+                    settings: Default::default(),
                 }
             })
         );
@@ -1318,7 +1334,10 @@ mod test {
         assert_eq!(
             devcontainer.customizations,
             Some(ZedCustomizationsWrapper {
-                zed: ZedCustomization { extensions: vec![] }
+                zed: ZedCustomization {
+                    extensions: vec![],
+                    settings: Default::default(),
+                }
             })
         );
     }
@@ -1571,7 +1590,8 @@ mod test {
                 }),
                 customizations: Some(ZedCustomizationsWrapper {
                     zed: ZedCustomization {
-                        extensions: vec!["html".to_string()]
+                        extensions: vec!["html".to_string()],
+                        settings: Default::default(),
                     }
                 }),
                 ..Default::default()

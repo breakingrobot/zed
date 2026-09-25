@@ -169,6 +169,22 @@ You can specify extensions in `.devcontainer/devcontainer.json` under the "custo
 
 Note that extensions load for the Zed session, so these extensions will exist on your local Zed instances as well.
 
+## Settings
+
+Zed settings under `customizations.zed.settings` apply to the remote server in the container, like VS Code's `customizations.vscode.settings`. When Zed creates the container, it writes them into the server's settings file (`~/.config/zed/settings.json` in the container, which {#action zed::OpenServerSettings} opens), over the settings already there. Settings from the metadata of the image and of features apply too, and the configuration's win:
+
+```json
+{
+  "customizations": {
+    "zed": {
+      "settings": {
+        "tab_size": 2
+      }
+    }
+  }
+}
+```
+
 ## Troubleshooting {#troubleshooting}
 
 - **Podman on Windows fails with "controller `pids` is not available":** WSL 2.9 doesn't enable the `pids` cgroup controller, which Podman's default process limit needs. Add this to `%APPDATA%\containers\containers.conf`, then retry:
