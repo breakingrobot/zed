@@ -38,6 +38,7 @@ pub(crate) struct OciFeatureRef {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DevContainerFeatureJson {
     pub(crate) id: Option<String>,
+    pub(crate) version: Option<String>,
     #[serde(default)]
     pub(crate) options: HashMap<String, FeatureOptionDefinition>,
     pub(crate) mounts: Option<Vec<MountDefinition>>,
@@ -58,6 +59,50 @@ pub(crate) struct DevContainerFeatureJson {
     /// dependency declaring it, instead of making the whole manifest unreadable.
     pub(crate) depends_on: Option<HashMap<String, Value>>,
     pub(crate) legacy_ids: Option<Vec<String>>,
+}
+
+/// `devcontainer-lock.json`, which pins the features a configuration uses to the
+/// exact versions resolved earlier, like the reference CLI.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub(crate) struct FeatureLockfile {
+    #[serde(default)]
+    pub(crate) features: BTreeMap<String, LockedFeature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LockedFeature {
+    pub(crate) version: String,
+    /// The feature's reference by manifest digest, e.g.
+    /// `ghcr.io/devcontainers/features/node@sha256:…`.
+    pub(crate) resolved: String,
+    /// The digest of the feature's layer.
+    pub(crate) integrity: String,
+}
+
+impl FeatureLockfile {
+    /// The lockfile next to the configuration file `config_file_name`. Like the
+    /// reference CLI, `.devcontainer.json` gets a hidden one.
+    pub(crate) fn file_name(config_file_name: &str) -> &'static str {
+        if config_file_name.starts_with('.') {
+            ".devcontainer-lock.json"
+        } else {
+            "devcontainer-lock.json"
+        }
+    }
+
+    pub(crate) fn to_json(&self) -> Result<String, serde_json::Error> {
+        Ok(format!("{}\n", serde_json::to_string_pretty(self)?))
+    }
+
+    /// The manifest reference to fetch `feature_ref` by: its locked digest, or else
+    /// the tag it names.
+    pub(crate) fn reference<'a>(&'a self, feature_ref: &str, tag: &'a str) -> &'a str {
+        self.features
+            .get(feature_ref)
+            .and_then(|locked| locked.resolved.rsplit_once('@'))
+            .map_or(tag, |(_, digest)| digest)
+    }
 }
 
 /// A single option definition inside `devcontainer-feature.json`.
@@ -709,6 +754,40 @@ pub(crate) fn compute_feature_install_order(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lockfile_pins_features_to_their_resolved_digest() {
+        let lockfile = super::FeatureLockfile {
+            features: std::collections::BTreeMap::from([(
+                "ghcr.io/devcontainers/features/node:1".to_string(),
+                super::LockedFeature {
+                    version: "1.6.3".to_string(),
+                    resolved: "ghcr.io/devcontainers/features/node@sha256:abc".to_string(),
+                    integrity: "sha256:def".to_string(),
+                },
+            )]),
+        };
+        assert_eq!(
+            lockfile.reference("ghcr.io/devcontainers/features/node:1", "1"),
+            "sha256:abc"
+        );
+        assert_eq!(
+            lockfile.reference("ghcr.io/devcontainers/features/go:1", "1"),
+            "1"
+        );
+        assert_eq!(
+            lockfile.to_json().unwrap(),
+            "{\n  \"features\": {\n    \"ghcr.io/devcontainers/features/node:1\": {\n      \"version\": \"1.6.3\",\n      \"resolved\": \"ghcr.io/devcontainers/features/node@sha256:abc\",\n      \"integrity\": \"sha256:def\"\n    }\n  }\n}\n"
+        );
+        assert_eq!(
+            super::FeatureLockfile::file_name(".devcontainer.json"),
+            ".devcontainer-lock.json"
+        );
+        assert_eq!(
+            super::FeatureLockfile::file_name("devcontainer.json"),
+            "devcontainer-lock.json"
+        );
+    }
+
     use super::*;
 
     const CONFIG_DIRECTORY: &str = "/project/.devcontainer";

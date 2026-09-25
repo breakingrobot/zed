@@ -75,6 +75,24 @@ pub(crate) async fn get_oci_manifest(
     get_deserialized_response(token, &url, client).await
 }
 
+/// Fetches a manifest, with the digest that references it, e.g. `sha256:…`.
+pub(crate) async fn get_oci_manifest_with_digest(
+    registry: &str,
+    repository_path: &str,
+    token: &str,
+    client: &Arc<dyn HttpClient>,
+    reference: &str,
+) -> Result<(DockerManifestsResponse, String), String> {
+    use sha2::{Digest, Sha256};
+
+    let url = format!("https://{registry}/v2/{repository_path}/manifests/{reference}");
+    let body = get_response_text(token, &url, client).await?;
+    let manifest = serde_json_lenient::from_str(&body)
+        .map_err(|e| format!("Failed to parse the manifest from {url}: {e}"))?;
+    let digest = format!("sha256:{:x}", Sha256::digest(body.as_bytes()));
+    Ok((manifest, digest))
+}
+
 pub(crate) async fn get_deserializable_oci_blob<T>(
     token: &str,
     registry: &str,
@@ -151,6 +169,22 @@ pub(crate) async fn get_deserialized_response<T>(
 where
     T: for<'de> Deserialize<'de>,
 {
+    let output = get_response_text(token, url, client).await?;
+    serde_json_lenient::from_str(&output).map_err(|e| {
+        format!(
+            "Failed to deserialize response from {}: {} (body: {})",
+            url,
+            e,
+            &output[..output.len().min(500)],
+        )
+    })
+}
+
+async fn get_response_text(
+    token: &str,
+    url: &str,
+    client: &Arc<dyn HttpClient>,
+) -> Result<String, String> {
     let request = match Request::get(url)
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/vnd.oci.image.manifest.v1+json")
@@ -182,15 +216,7 @@ where
         ));
     }
 
-    match serde_json_lenient::from_str(&output) {
-        Ok(response) => Ok(response),
-        Err(e) => Err(format!(
-            "Failed to deserialize response from {}: {} (body: {})",
-            url,
-            e,
-            &output[..output.len().min(500)],
-        )),
-    }
+    Ok(output)
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     fmt::Debug,
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
@@ -33,11 +33,11 @@ use crate::{
         DockerPs,
     },
     features::{
-        DevContainerFeatureJson, FeatureManifest, FeatureOrderNode, FeatureSource,
-        compute_feature_install_order, parse_oci_feature_ref,
+        DevContainerFeatureJson, FeatureLockfile, FeatureManifest, FeatureOrderNode, FeatureSource,
+        LockedFeature, compute_feature_install_order, parse_oci_feature_ref,
     },
     get_oci_token,
-    oci::{TokenResponse, download_oci_tarball, get_oci_manifest},
+    oci::{TokenResponse, download_oci_tarball, get_oci_manifest_with_digest},
     safe_id_lower,
 };
 
@@ -84,6 +84,8 @@ struct DevContainerManifest {
     dotfiles: Option<Dotfiles>,
     /// Whether the container gets the engine's GPUs.
     uses_gpu: bool,
+    /// The configuration's `devcontainer-lock.json`, once features are resolved.
+    lockfile: Option<FeatureLockfile>,
     /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
     /// has been parsed.
     config_hash: Option<String>,
@@ -140,6 +142,7 @@ impl DevContainerManifest {
             no_cache: false,
             dotfiles: context.dotfiles.clone(),
             uses_gpu: false,
+            lockfile: None,
             config_hash: None,
         })
     }
@@ -658,11 +661,14 @@ impl DevContainerManifest {
 
     /// Downloads (or copies) a feature into `destination` and parses its
     /// devcontainer-feature.json.
+    /// Fetches a feature into `destination`, pinned to its `devcontainer-lock.json`
+    /// entry if there is one, and returns what that entry now is. Local features
+    /// aren't locked.
     async fn fetch_feature_content(
         &self,
         feature_ref: &str,
         destination: &Path,
-    ) -> Result<DevContainerFeatureJson, DevContainerError> {
+    ) -> Result<(DevContainerFeatureJson, Option<LockedFeature>), DevContainerError> {
         self.fs.create_dir(destination).await.map_err(|e| {
             log::error!(
                 "Failed to create feature directory for {}: {e}",
@@ -671,6 +677,7 @@ impl DevContainerManifest {
             DevContainerError::FilesystemError
         })?;
 
+        let mut resolved = None;
         if is_local_feature_ref(feature_ref) {
             self.copy_local_feature(feature_ref, destination).await?;
         } else {
@@ -688,13 +695,18 @@ impl DevContainerManifest {
                         log::error!("Failed to get OCI token for feature '{}': {e}", feature_ref);
                         DevContainerError::ResourceFetchFailed
                     })?;
-            let manifest = get_oci_manifest(
+            let reference = self
+                .lockfile
+                .as_ref()
+                .map_or(oci_ref.version.as_str(), |lockfile| {
+                    lockfile.reference(feature_ref, &oci_ref.version)
+                });
+            let (manifest, manifest_digest) = get_oci_manifest_with_digest(
                 &oci_ref.registry,
                 &oci_ref.path,
                 &token,
                 &self.http_client,
-                &oci_ref.version,
-                None,
+                reference,
             )
             .await
             .map_err(|e| {
@@ -715,6 +727,20 @@ impl DevContainerManifest {
                     DevContainerError::ResourceFetchFailed
                 })?
                 .digest;
+            if let Some(locked) = self
+                .lockfile
+                .as_ref()
+                .and_then(|lockfile| lockfile.features.get(feature_ref))
+                && locked.integrity != *digest
+            {
+                return Err(DevContainerError::DevContainerValidationFailed(format!(
+                    "Feature '{feature_ref}' doesn't match its integrity in devcontainer-lock.json"
+                )));
+            }
+            resolved = Some((
+                format!("{}/{}@{manifest_digest}", oci_ref.registry, oci_ref.path),
+                digest.clone(),
+            ));
             download_oci_tarball(
                 &token,
                 &oci_ref.registry,
@@ -746,10 +772,55 @@ impl DevContainerManifest {
 
         let contents_parsed = self.parse_nonremote_vars_for_content(&contents)?;
 
-        serde_json_lenient::from_value(contents_parsed).map_err(|e| {
-            log::error!("Failed to parse devcontainer-feature.json: {e}");
-            DevContainerError::ResourceFetchFailed
-        })
+        let feature_json: DevContainerFeatureJson = serde_json_lenient::from_value(contents_parsed)
+            .map_err(|e| {
+                log::error!("Failed to parse devcontainer-feature.json: {e}");
+                DevContainerError::ResourceFetchFailed
+            })?;
+        let locked = resolved.map(|(resolved, integrity)| LockedFeature {
+            version: feature_json.version.clone().unwrap_or_default(),
+            resolved,
+            integrity,
+        });
+        Ok((feature_json, locked))
+    }
+
+    fn lockfile_path(&self) -> PathBuf {
+        self.config_directory
+            .join(FeatureLockfile::file_name(&self.file_name))
+    }
+
+    /// The configuration's `devcontainer-lock.json`, when it has one.
+    async fn read_lockfile(&self) -> Option<FeatureLockfile> {
+        let path = self.lockfile_path();
+        let contents = self.host_files().load(&path).await.ok()?;
+        if contents.trim().is_empty() {
+            return Some(FeatureLockfile::default());
+        }
+        serde_json_lenient::from_str(&contents)
+            .map_err(|e| log::warn!("Ignoring {}: {e}", path.display()))
+            .ok()
+    }
+
+    /// Records the features just resolved in the configuration's
+    /// `devcontainer-lock.json`. Like VS Code, Zed only updates a lockfile that
+    /// exists: creating an empty one opts in.
+    async fn update_lockfile(&self, features: BTreeMap<String, LockedFeature>) {
+        let Some(lockfile) = &self.lockfile else {
+            return;
+        };
+        let updated = FeatureLockfile { features };
+        if *lockfile == updated {
+            return;
+        }
+        let path = self.lockfile_path();
+        let result = match updated.to_json() {
+            Ok(json) => self.host_files().write(&path, json.as_bytes()).await,
+            Err(error) => Err(error.into()),
+        };
+        if let Err(error) = result {
+            log::error!("Failed to update {}: {error:#}", path.display());
+        }
     }
 
     /// Builds the feature dependency graph, fetching every enabled feature
@@ -794,7 +865,7 @@ impl DevContainerManifest {
             }
 
             let staging_directory = staging_root.join(format!("staged-feature-{}", nodes.len()));
-            let feature_json = self
+            let (feature_json, locked) = self
                 .fetch_feature_content(&feature_ref, &staging_directory)
                 .await?;
 
@@ -835,6 +906,7 @@ impl DevContainerManifest {
             nodes.push(node);
             staged_contents.push(Some(StagedFeatureContent {
                 staging_directory,
+                locked,
                 feature_json,
             }));
         }
@@ -843,6 +915,7 @@ impl DevContainerManifest {
     }
 
     async fn download_feature_and_dockerfile_resources(&mut self) -> Result<(), DevContainerError> {
+        self.lockfile = self.read_lockfile().await;
         let dev_container = match &self.config {
             ConfigStatus::Deserialized(_) => {
                 log::error!(
@@ -916,6 +989,15 @@ impl DevContainerManifest {
         let (order_nodes, mut staged_contents) = self
             .resolve_feature_graph(features, &build_info.features_content_dir)
             .await?;
+        let locked_features = order_nodes
+            .iter()
+            .zip(&staged_contents)
+            .filter_map(|(node, staged_content)| {
+                let locked = staged_content.as_ref()?.locked.clone()?;
+                Some((node.user_feature_id.clone(), locked))
+            })
+            .collect();
+        self.update_lockfile(locked_features).await;
         let override_install_order: Vec<FeatureSource> = dev_container
             .override_feature_install_order
             .iter()
@@ -936,6 +1018,7 @@ impl DevContainerManifest {
             let Some(StagedFeatureContent {
                 staging_directory,
                 feature_json,
+                ..
             }) = staged_content.take()
             else {
                 log::debug!(
@@ -3785,6 +3868,8 @@ fn parse_probed_env(output: &[u8]) -> Option<HashMap<String, String>> {
 struct StagedFeatureContent {
     staging_directory: PathBuf,
     feature_json: DevContainerFeatureJson,
+    /// The feature's `devcontainer-lock.json` entry.
+    locked: Option<LockedFeature>,
 }
 
 /// Generates the `devcontainer-features-install.sh` wrapper script for one feature.
@@ -4374,6 +4459,7 @@ mod test {
             DockerComposeServiceBuild, DockerComposeVolume, DockerConfigLabels,
             DockerInspectConfig, DockerInspectMount, DockerPs, EngineResources,
         },
+        features::FeatureLockfile,
         oci::TokenResponse,
     };
     #[cfg(not(target_os = "windows"))]
@@ -4919,6 +5005,106 @@ mod test {
             serde_json::json!({
                 "resources": { "reservations": { "devices": [{ "capabilities": ["gpu"] }] } }
             })
+        );
+    }
+
+    const DOCKER_IN_DOCKER_CONFIG: &str = r#"{
+        "image": "mcr.microsoft.com/devcontainers/typescript-node:1-18-bookworm",
+        "features": { "ghcr.io/devcontainers/features/docker-in-docker:2": {} }
+    }"#;
+
+    #[gpui::test]
+    async fn updates_an_existing_feature_lockfile(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, DOCKER_IN_DOCKER_CONFIG)
+                .await
+                .unwrap();
+        let lockfile_path =
+            PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer/devcontainer-lock.json");
+        test_dependencies
+            .fs
+            .atomic_write(lockfile_path.clone(), String::new())
+            .await
+            .unwrap();
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest
+            .download_feature_and_dockerfile_resources()
+            .await
+            .unwrap();
+
+        let lockfile: FeatureLockfile =
+            serde_json::from_str(&test_dependencies.fs.load(&lockfile_path).await.unwrap())
+                .unwrap();
+        let locked = &lockfile.features["ghcr.io/devcontainers/features/docker-in-docker:2"];
+        assert!(
+            locked
+                .resolved
+                .starts_with("ghcr.io/devcontainers/features/docker-in-docker@sha256:"),
+            "{locked:?}"
+        );
+        assert_eq!(
+            locked.integrity,
+            "sha256:bc7ab0d8d8339416e1491419ab9ffe931458d0130110f4b18351b0fa184e67d5"
+        );
+    }
+
+    #[gpui::test]
+    async fn doesnt_create_a_feature_lockfile(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, DOCKER_IN_DOCKER_CONFIG)
+                .await
+                .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest
+            .download_feature_and_dockerfile_resources()
+            .await
+            .unwrap();
+        assert!(
+            !test_dependencies
+                .fs
+                .is_file(
+                    &PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer/devcontainer-lock.json")
+                )
+                .await
+        );
+    }
+
+    #[gpui::test]
+    async fn refuses_a_feature_that_doesnt_match_the_lockfile(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, DOCKER_IN_DOCKER_CONFIG)
+                .await
+                .unwrap();
+        // The fake registry serves the feature's manifest by its tag, `2`.
+        test_dependencies
+            .fs
+            .atomic_write(
+                PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer/devcontainer-lock.json"),
+                r#"{
+                    "features": {
+                        "ghcr.io/devcontainers/features/docker-in-docker:2": {
+                            "version": "2.16.1",
+                            "resolved": "ghcr.io/devcontainers/features/docker-in-docker@2",
+                            "integrity": "sha256:0000"
+                        }
+                    }
+                }"#
+                .to_string(),
+            )
+            .await
+            .unwrap();
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        let result = devcontainer_manifest
+            .download_feature_and_dockerfile_resources()
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(DevContainerError::DevContainerValidationFailed(_))
+            ),
+            "{result:?}"
         );
     }
 
