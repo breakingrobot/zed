@@ -334,6 +334,9 @@ pub struct RemoteClient {
     platform: RemotePlatform,
     os_version: Option<String>,
     state: Option<State>,
+    /// Forwards the ports that start listening in a dev container while this
+    /// client lives.
+    _port_forwarding: Option<Task<()>>,
 }
 
 #[derive(Debug)]
@@ -444,6 +447,7 @@ impl RemoteClient {
                     platform,
                     os_version: os_version.clone(),
                     state: Some(State::Connecting),
+                    _port_forwarding: None,
                 });
 
                 let io_task = remote_connection.start_proxy(
@@ -502,13 +506,26 @@ impl RemoteClient {
 
                 let heartbeat_task = Self::heartbeat(this.downgrade(), connection_activity_rx, cx);
 
-                this.update(cx, |this, _| {
+                this.update(cx, |this, cx| {
                     this.state = Some(State::Connected {
                         remote_connection,
                         delegate,
                         multiplex_task,
                         heartbeat_task,
                     });
+                    if let RemoteConnectionOptions::Docker(connection_options) =
+                        &this.connection_options
+                    {
+                        let forwarder = crate::port_forwarding::PortForwarder {
+                            client: this.client.clone().into(),
+                            connection_options: connection_options.clone(),
+                            listener: cx
+                                .try_global::<crate::ForwardedPortListener>()
+                                .map(|listener| listener.0.clone()),
+                            executor: cx.background_executor().clone(),
+                        };
+                        this._port_forwarding = Some(cx.background_spawn(forwarder.run()));
+                    }
                 });
 
                 // Use the same `remote_*` property schema as the forwarded

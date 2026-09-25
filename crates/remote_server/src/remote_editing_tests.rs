@@ -231,6 +231,72 @@ async fn test_basic_remote_editing(cx: &mut TestAppContext, server_cx: &mut Test
     });
 }
 
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn test_port_tunnels_reach_ports_of_the_remote_machine(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    use std::io::{Read as _, Write as _};
+
+    cx.executor().allow_parking();
+    server_cx.executor().allow_parking();
+    let echo = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = echo.local_addr().unwrap().port();
+    let echo_thread = std::thread::spawn(move || {
+        let (mut socket, _) = echo.accept().unwrap();
+        let mut received = Vec::new();
+        socket.read_to_end(&mut received).unwrap();
+        socket.write_all(&received.to_ascii_uppercase()).unwrap();
+    });
+
+    let fs = FakeFs::new(server_cx.executor());
+    let (project, _headless) = init_test(&fs, cx, server_cx).await;
+    let proto_client = project
+        .read_with(cx, |project, _| project.remote_client())
+        .expect("project should have a remote client")
+        .read_with(cx, |remote_client, _| remote_client.proto_client());
+
+    let listening = proto_client
+        .request(proto::ListListeningPorts {
+            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+        })
+        .await
+        .unwrap();
+    assert!(listening.ports.contains(&u32::from(port)), "{listening:?}");
+
+    let mut responses = proto_client
+        .request_stream(proto::OpenPortTunnel {
+            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+            tunnel_id: 7,
+            port: u32::from(port),
+        })
+        .await
+        .unwrap();
+    for data in ["hello ", "tunnel"] {
+        proto_client
+            .send(proto::PortTunnelData {
+                project_id: proto::REMOTE_SERVER_PROJECT_ID,
+                tunnel_id: 7,
+                data: data.as_bytes().to_vec(),
+            })
+            .unwrap();
+    }
+    proto_client
+        .send(proto::ClosePortTunnel {
+            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+            tunnel_id: 7,
+        })
+        .unwrap();
+
+    let mut echoed = Vec::new();
+    while let Some(response) = futures::StreamExt::next(&mut responses).await {
+        echoed.extend(response.unwrap().data);
+    }
+    assert_eq!(String::from_utf8(echoed).unwrap(), "HELLO TUNNEL");
+    echo_thread.join().unwrap();
+}
+
 #[gpui::test]
 async fn test_remote_buffer_path_swap(cx: &mut TestAppContext, server_cx: &mut TestAppContext) {
     let fs = FakeFs::new(server_cx.executor());

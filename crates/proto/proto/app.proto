@@ -73,6 +73,40 @@ message AskPassResponse {
   string response = 1;
 }
 
+// The TCP ports listening on the remote server's machine.
+message ListListeningPorts {
+  uint64 project_id = 1;
+}
+
+message ListListeningPortsResponse {
+  repeated uint32 ports = 1;
+}
+
+// Connects the remote server to one of its machine's TCP ports. The response
+// stream carries what the port sends, and ends when it closes.
+message OpenPortTunnel {
+  uint64 project_id = 1;
+  uint64 tunnel_id = 2;
+  uint32 port = 3;
+}
+
+message OpenPortTunnelResponse {
+  bytes data = 1;
+}
+
+// Data for the port of an open tunnel.
+message PortTunnelData {
+  uint64 project_id = 1;
+  uint64 tunnel_id = 2;
+  bytes data = 3;
+}
+
+// Closes the tunnel's connection to its port.
+message ClosePortTunnel {
+  uint64 project_id = 1;
+  uint64 tunnel_id = 2;
+}
+
 message GetRemoteProfilingData {
   uint64 project_id = 1;
   bool foreground_only = 2;

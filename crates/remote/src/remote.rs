@@ -1,5 +1,6 @@
 pub mod engine_host;
 pub mod json_log;
+mod port_forwarding;
 pub mod protocol;
 pub mod proxy;
 pub mod remote_client;
