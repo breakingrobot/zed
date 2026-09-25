@@ -12,8 +12,8 @@ use dev_container::{
 };
 use futures::StreamExt as _;
 use gpui::{
-    App, AppContext as _, AsyncApp, AsyncWindowContext, Context, WeakEntity, Window, WindowHandle,
-    WindowId,
+    App, AppContext as _, AsyncApp, AsyncWindowContext, Context, TaskExt as _, WeakEntity, Window,
+    WindowHandle, WindowId,
 };
 use project::TaskSourceKind;
 use remote::{
@@ -38,6 +38,87 @@ async fn prompt_error(cx: &mut AsyncWindowContext, title: &str, detail: impl std
     )
     .await
     .ok();
+}
+
+/// Surfaces a failure to create or start a dev container, offering the log of
+/// what ran.
+pub(crate) async fn prompt_start_error(
+    cx: &mut AsyncWindowContext,
+    title: &str,
+    detail: impl std::fmt::Display,
+) {
+    let answer = cx
+        .prompt(
+            gpui::PromptLevel::Critical,
+            title,
+            Some(&detail.to_string()),
+            &["OK", "Show Log"],
+        )
+        .await;
+    if matches!(answer, Ok(1)) {
+        cx.update(|window, cx| {
+            window.dispatch_action(Box::new(zed_actions::ShowDevContainerLog), cx)
+        })
+        .ok();
+    }
+}
+
+/// Opens what the last dev container start ran and printed, followed by what the
+/// processes of the dev container that `workspace` is connected to printed.
+pub(crate) fn show_dev_container_log(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let connection = match workspace.project().read(cx).remote_connection_options(cx) {
+        Some(RemoteConnectionOptions::Docker(options)) => Some(options),
+        _ => None,
+    };
+    let project = workspace.project().clone();
+    let languages = workspace.app_state().languages.clone();
+    let fs = workspace.app_state().fs.clone();
+    cx.spawn_in(window, async move |workspace, cx| {
+        let log_path = dev_container::dev_container_log_path();
+        let mut text = match fs.load(&log_path).await {
+            Ok(log) if !log.is_empty() => log,
+            Ok(_) | Err(_) => format!(
+                "No dev container was started yet ({}).\n",
+                log_path.display()
+            ),
+        };
+        if let Some(options) = connection {
+            let container_log = dev_container::container_logs(
+                &options.container_id,
+                options.use_podman,
+                &options.host,
+            )
+            .await
+            .unwrap_or_else(|error| format!("Couldn't read the container's log: {error}\n"));
+            text.push_str(&format!("\n# Container {}\n{container_log}", options.name));
+        }
+        let language = languages.language_for_name("log").await.ok();
+        let buffer = project
+            .update(cx, |project, cx| project.create_buffer(language, false, cx))
+            .await?;
+        buffer.update(cx, |buffer, cx| {
+            buffer.set_text(text, cx);
+            buffer.set_capability(language::Capability::ReadOnly, cx);
+        });
+        let buffer = cx.new(|cx| {
+            editor::MultiBuffer::singleton(buffer, cx).with_title("Dev Container Log".into())
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            let editor = cx.new(|cx| {
+                let mut editor =
+                    editor::Editor::for_multibuffer(buffer, Some(project.clone()), window, cx);
+                editor.set_read_only(true);
+                editor
+            });
+            workspace.add_item_to_active_pane(Box::new(editor), None, true, window, cx);
+        })?;
+        anyhow::Ok(())
+    })
+    .detach_and_log_err(cx);
 }
 
 /// Cleanly tears down the remote connection currently backing `workspace`,
@@ -599,7 +680,7 @@ fn reconnect_connected_dev_container(
             Err(e) => {
                 log::error!("Failed to start dev container: {e}");
                 dismiss_lifecycle_status(&workspace_handle, cx);
-                prompt_error(cx, error_title, &e).await;
+                prompt_start_error(cx, error_title, &e).await;
                 return;
             }
         };

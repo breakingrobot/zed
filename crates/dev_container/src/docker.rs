@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use util::command::Command;
 
 use crate::{
-    command_json::{evaluate_json_command, evaluate_yaml_command},
+    command_json::{DevContainerLog, evaluate_json_command, evaluate_yaml_command},
     devcontainer_api::DevContainerError,
     devcontainer_json::MountDefinition,
 };
@@ -286,6 +286,8 @@ pub(crate) struct Docker {
     /// Variables that commands in containers get without their values being
     /// stored or shown in arguments.
     secrets: std::collections::BTreeMap<String, String>,
+    /// Where builds and commands in the container are recorded for the user.
+    log: Option<DevContainerLog>,
 }
 
 impl DockerInspect {
@@ -331,6 +333,7 @@ impl Docker {
             host,
             engine_environment,
             secrets: Default::default(),
+            log: None,
         }
     }
 
@@ -343,7 +346,22 @@ impl Docker {
             engine_environment: host.engine_environment().await,
             host,
             secrets: Default::default(),
+            log: None,
         }
+    }
+
+    pub(crate) fn with_log(mut self, log: Option<DevContainerLog>) -> Self {
+        self.log = log;
+        self
+    }
+
+    /// Runs `command`, recording it in the dev container's log.
+    async fn run_logged(&self, command: &HostCommand) -> std::io::Result<std::process::Output> {
+        let output = command.output().await;
+        if let Some(log) = &self.log {
+            log.record(&command.to_command(), &output).await;
+        }
+        output
     }
 
     pub(crate) fn with_secrets(
@@ -487,7 +505,7 @@ impl DockerClient for Docker {
             no_cache,
         );
 
-        let output = command.output().await.map_err(|e| {
+        let output = self.run_logged(&command).await.map_err(|e| {
             log::error!("Error running docker compose up: {e}");
             DevContainerError::CommandFailed(command.get_program().to_string())
         })?;
@@ -530,7 +548,7 @@ impl DockerClient for Docker {
         command.arg(inner_command.get_program());
         command.args(inner_command.get_args());
 
-        let output = command.output().await.map_err(|e| {
+        let output = self.run_logged(&command).await.map_err(|e| {
             log::error!("Error running command {e} in container exec");
             DevContainerError::ContainerNotValid(container_id.to_string())
         })?;
@@ -1255,6 +1273,7 @@ mod test {
             host: EngineHost::Local,
             engine_environment: Vec::new(),
             secrets: Default::default(),
+            log: None,
         };
         let given_id = "given_docker_id";
 
@@ -1279,6 +1298,7 @@ mod test {
             host: EngineHost::Local,
             engine_environment: Vec::new(),
             secrets: Default::default(),
+            log: None,
         };
 
         let result = gpui::block_on(docker.run_docker_exec(
@@ -1319,6 +1339,7 @@ mod test {
             host: EngineHost::Local,
             engine_environment: Vec::new(),
             secrets: Default::default(),
+            log: None,
         }
         .with_secrets(std::collections::BTreeMap::from([(
             "API_TOKEN".to_string(),
@@ -1388,6 +1409,7 @@ mod test {
             host: EngineHost::Local,
             engine_environment: Vec::new(),
             secrets: Default::default(),
+            log: None,
         };
 
         // Another test forking while the script above is still open for writing

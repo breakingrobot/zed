@@ -17,7 +17,7 @@ use util::{ResultExt, command::Command, normalize_path, redact::is_valid_environ
 
 use crate::{
     DevContainerConfig, DevContainerContext, Dotfiles, SessionCache, UserEnvironmentKey,
-    command_json::{CommandRunner, DefaultCommandRunner},
+    command_json::{CommandRunner, DefaultCommandRunner, DevContainerLog, LoggingCommandRunner},
     devcontainer_api::{
         BuildMode, DeferredCommand, DeferredHook, DevContainerError, DevContainerUp,
     },
@@ -3627,12 +3627,20 @@ pub(crate) async fn spawn_dev_container(
     build_mode: BuildMode,
     defer_hooks: bool,
 ) -> Result<DevContainerUp, DevContainerError> {
-    let docker = engine_client(context).await;
+    let log = DevContainerLog::start(crate::dev_container_log_path()).await;
+    let docker = engine_client(context).await.with_log(log.clone());
+    let command_runner: Arc<dyn CommandRunner> = match log {
+        Some(log) => Arc::new(LoggingCommandRunner {
+            inner: Arc::new(DefaultCommandRunner::new()),
+            log,
+        }),
+        None => Arc::new(DefaultCommandRunner::new()),
+    };
     let mut devcontainer_manifest = DevContainerManifest::new(
         context,
         environment,
         Arc::new(docker),
-        Arc::new(DefaultCommandRunner::new()),
+        command_runner,
         config,
         local_project_path,
     )

@@ -542,6 +542,10 @@ pub fn init(cx: &mut App) {
         with_active_or_new_workspace(cx, dev_container_lifecycle::rebuild_dev_container);
     });
 
+    cx.on_action(|_: &zed_actions::ShowDevContainerLog, cx| {
+        with_active_or_new_workspace(cx, dev_container_lifecycle::show_dev_container_log);
+    });
+
     cx.on_action(|_: &RebuildDevContainerWithoutCache, cx| {
         with_active_or_new_workspace(
             cx,

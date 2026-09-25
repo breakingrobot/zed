@@ -724,6 +724,16 @@ impl TitleBar {
                                 },
                             )
                             .entry(
+                                "Show Dev Container Log",
+                                Some(Box::new(zed_actions::ShowDevContainerLog)),
+                                |window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(zed_actions::ShowDevContainerLog),
+                                        cx,
+                                    );
+                                },
+                            )
+                            .entry(
                                 "Show Forwarded Ports",
                                 Some(Box::new(zed_actions::ShowForwardedPorts)),
                                 |window, cx| {
