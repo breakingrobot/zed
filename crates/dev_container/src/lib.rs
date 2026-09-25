@@ -118,6 +118,9 @@ pub struct DevContainerContext {
     /// The volume that holds the project's sources, when `project_directory` is
     /// only a copy of them (see [`clone_repository_in_volume`]).
     pub workspace_volume: Option<String>,
+    /// Whether the engine runs on another machine than the engine host, which
+    /// then can't share its files and sockets with containers.
+    pub remote_engine: bool,
     /// What Zed learned about engines and containers earlier in this session.
     pub session_cache: SessionCache,
     pub fs: Arc<dyn Fs>,
@@ -169,6 +172,7 @@ impl DevContainerContext {
             dotfiles: settings.dotfiles.clone(),
             secrets_file: settings.secrets_file.clone(),
             workspace_volume,
+            remote_engine: false,
             session_cache: cx.try_global::<SessionCache>().cloned().unwrap_or_default(),
             fs: workspace.app_state().fs.clone(),
             http_client: cx.http_client().clone(),

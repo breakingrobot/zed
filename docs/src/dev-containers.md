@@ -38,6 +38,8 @@ Run {#action projects::CloneRepositoryInContainerVolume} and type a repository's
 
 Zed clones with the `alpine/git` image, so the repository must be reachable without credentials, and keeps a copy of it under `devcontainer/volumes` in its data folder to read the configuration and build from. It refreshes that copy from the volume each time it starts or rebuilds the container. Docker Compose configurations mount what their Compose files say, so they use the copy rather than the volume.
 
+This also works when Docker uses a container engine on another machine, through `DOCKER_HOST` or the current Docker context (`docker context use`): Zed builds with contexts sent from your machine and keeps the sources in a volume of that engine. For a project folder on your machine, such an engine can't mount it: open the project over SSH on the engine's machine instead. Your SSH agent isn't shared with containers of a remote engine.
+
 ### Attaching to a running container
 
 To work in a container that Zed didn't create, such as one started with `docker run` or Docker Compose, run {#action projects::AttachToRunningContainer} and pick the container. Zed lists the running containers of the engine the current project uses (locally, in WSL, or on an SSH host), connects as the container's user and opens its working directory. Without a dev container configuration, Zed doesn't rebuild, stop or remove attached containers.

@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use remote::EngineHost;
+use util::ResultExt as _;
 
 use crate::{
     devcontainer_api::DevContainerError,
@@ -94,35 +95,38 @@ pub async fn clone_repository_in_volume(
 }
 
 /// Replaces the copy of `volume` on this machine with what the volume holds now.
+/// `docker cp` streams it, so this also works with an engine on another machine.
 pub(crate) async fn refresh_volume_copy(
     volume: &str,
     use_podman: bool,
 ) -> Result<(), DevContainerError> {
     let copy = volume_copies_directory().join(volume);
-    smol::fs::create_dir_all(&copy).await.map_err(|error| {
-        log::error!("Failed to create {}: {error}", copy.display());
+    let recreate = async {
+        if smol::fs::metadata(&copy).await.is_ok() {
+            smol::fs::remove_dir_all(&copy).await?;
+        }
+        smol::fs::create_dir_all(&copy).await
+    };
+    recreate.await.map_err(|error| {
+        log::error!("Failed to prepare {}: {error}", copy.display());
         DevContainerError::FilesystemError
     })?;
+
     let docker = docker(use_podman).await;
     let source = format!("type=volume,source={volume},target=/source,readonly");
-    let target = format!("type=bind,source={},target=/target", copy.display());
-    run(
+    let container_id = run(&docker, &["create", "--mount", &source, GIT_IMAGE]).await?;
+    let container_id = container_id.trim();
+    let copied = run(
         &docker,
         &[
-            "run",
-            "--rm",
-            "--mount",
-            &source,
-            "--mount",
-            &target,
-            "--entrypoint",
-            "sh",
-            GIT_IMAGE,
-            "-c",
-            "find /target -mindepth 1 -maxdepth 1 -exec rm -rf {} + && cp -a /source/. /target/",
+            "cp",
+            &format!("{container_id}:/source/."),
+            &copy.display().to_string(),
         ],
     )
-    .await
+    .await;
+    run(&docker, &["rm", "-f", container_id]).await.log_err();
+    copied.map(|_| ())
 }
 
 async fn docker(use_podman: bool) -> Docker {
@@ -133,7 +137,8 @@ async fn docker(use_podman: bool) -> Docker {
     .await
 }
 
-async fn run(docker: &Docker, args: &[&str]) -> Result<(), DevContainerError> {
+/// Runs a docker command and returns its standard output.
+async fn run(docker: &Docker, args: &[&str]) -> Result<String, DevContainerError> {
     let mut command = docker.docker_command();
     command.args(args);
     let output = command.output().await.map_err(|error| {
@@ -145,7 +150,7 @@ async fn run(docker: &Docker, args: &[&str]) -> Result<(), DevContainerError> {
         log::error!("{command} failed: {stderr}");
         return Err(DevContainerError::DevContainerUpFailed(stderr.into_owned()));
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(test)]
