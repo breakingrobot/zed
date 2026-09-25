@@ -473,6 +473,8 @@ pub async fn start_dev_container_with_config(
                             forward: rule.forward,
                             label: rule.label,
                             notice: Some(forward_notice_setting(rule.notice)),
+                            require_local_port: Some(rule.require_local_port),
+                            https: Some(rule.https),
                         })
                         .collect(),
                 ),

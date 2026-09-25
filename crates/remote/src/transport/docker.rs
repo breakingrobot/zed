@@ -143,6 +143,13 @@ pub struct AutoForwardRule {
     /// How the user learns that a port in the range is forwarded.
     #[serde(default)]
     pub notice: ForwardNotice,
+    /// Whether ports in the range are only forwarded to the same port here, from
+    /// `requireLocalPort`.
+    #[serde(default)]
+    pub require_local_port: bool,
+    /// Whether ports in the range serve HTTPS, from `protocol`.
+    #[serde(default)]
+    pub https: bool,
 }
 
 /// What happens when a port starts being forwarded, from `onAutoForward`.
@@ -171,14 +178,18 @@ pub enum ForwardNotice {
     Silent,
 }
 
-/// A port that started being forwarded from a dev container to the same port on
-/// this machine.
+/// A port of a dev container that started being forwarded to this machine, or
+/// couldn't be.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardedPort {
     pub container_id: String,
     pub port: u16,
+    /// The port on this machine that reaches it, or `None` when `port` is taken
+    /// here and its `requireLocalPort` forbids using another one.
+    pub local_port: Option<u16>,
     pub label: Option<String>,
     pub notice: ForwardNotice,
+    pub https: bool,
 }
 
 /// Where dev container connections report the ports they start forwarding, so the
@@ -192,14 +203,26 @@ impl AutoForwardPorts {
         self.forwarding(port).is_some()
     }
 
+    fn rule(&self, port: u16) -> Option<&AutoForwardRule> {
+        self.rules
+            .iter()
+            .find(|rule| (rule.start..=rule.end).contains(&port))
+    }
+
+    /// Whether `port` may only be forwarded to the same port on this machine.
+    pub fn requires_local_port(&self, port: u16) -> bool {
+        self.rule(port).is_some_and(|rule| rule.require_local_port)
+    }
+
+    /// Whether `port` serves HTTPS.
+    pub fn uses_https(&self, port: u16) -> bool {
+        self.rule(port).is_some_and(|rule| rule.https)
+    }
+
     /// How `port` is announced once forwarded, with its label, or `None` if it
     /// isn't forwarded.
     pub fn forwarding(&self, port: u16) -> Option<(Option<&str>, ForwardNotice)> {
-        match self
-            .rules
-            .iter()
-            .find(|rule| (rule.start..=rule.end).contains(&port))
-        {
+        match self.rule(port) {
             Some(rule) => rule.forward.then(|| (rule.label.as_deref(), rule.notice)),
             None => (!self.ignore_other_ports).then_some((None, self.other_ports_notice)),
         }
@@ -953,29 +976,41 @@ impl PortRelay {
             match self.listening_ports().await {
                 Ok(ports) => {
                     for port in ports {
-                        if !handled.insert(port) {
+                        // Ports the engine publishes already reach this machine.
+                        if !handled.insert(port)
+                            || self.connection_options.forward_ports.contains(&port)
+                        {
                             continue;
                         }
-                        let Some((label, notice)) =
-                            self.connection_options.auto_forward.forwarding(port)
-                        else {
+                        let auto_forward = &self.connection_options.auto_forward;
+                        let Some((label, notice)) = auto_forward.forwarding(port) else {
                             continue;
                         };
-                        // A port already bound here (e.g. published by `docker run`, or
-                        // used by another program) is left alone.
-                        let Ok(listener) = smol::net::TcpListener::bind(("127.0.0.1", port)).await
-                        else {
-                            continue;
-                        };
-                        log::info!("Forwarding dev container port {port} to localhost:{port}");
-                        forwards.push(self.executor.spawn(self.clone().accept(listener, port)));
+                        let listener =
+                            bind_local_port(port, auto_forward.requires_local_port(port)).await;
+                        let local_port = listener
+                            .as_ref()
+                            .and_then(|listener| listener.local_addr().ok())
+                            .map(|address| address.port());
+                        if let (Some(listener), Some(local_port)) = (listener, local_port) {
+                            log::info!(
+                                "Forwarding dev container port {port} to localhost:{local_port}"
+                            );
+                            forwards.push(self.executor.spawn(self.clone().accept(listener, port)));
+                        } else {
+                            log::warn!(
+                                "Not forwarding dev container port {port}: it's in use here"
+                            );
+                        }
                         if let Some(forwarded_ports) = &self.listener {
                             forwarded_ports
                                 .unbounded_send(ForwardedPort {
                                     container_id: self.connection_options.container_id.clone(),
                                     port,
+                                    local_port,
                                     label: label.map(str::to_string),
                                     notice,
+                                    https: auto_forward.uses_https(port),
                                 })
                                 .ok();
                         }
@@ -1065,6 +1100,24 @@ impl PortRelay {
         futures::future::join(upload, download).await;
         Ok(())
     }
+}
+
+/// Listens on this machine for connections to forward to `port` of the container:
+/// on the same port when it's free, else, unless `require_local_port`, on the next
+/// free port after it, like VS Code.
+async fn bind_local_port(port: u16, require_local_port: bool) -> Option<smol::net::TcpListener> {
+    if let Ok(listener) = smol::net::TcpListener::bind(("127.0.0.1", port)).await {
+        return Some(listener);
+    }
+    if require_local_port {
+        return None;
+    }
+    for candidate in port.saturating_add(1)..=port.saturating_add(100) {
+        if let Ok(listener) = smol::net::TcpListener::bind(("127.0.0.1", candidate)).await {
+            return Some(listener);
+        }
+    }
+    smol::net::TcpListener::bind(("127.0.0.1", 0)).await.ok()
 }
 
 /// The TCP ports listed as listening (state `0A`) in `/proc/net/tcp` and `tcp6`.
@@ -1460,6 +1513,26 @@ mod tests {
     }
 
     #[test]
+    fn busy_ports_are_forwarded_to_the_next_free_port_unless_required() {
+        smol::block_on(async {
+            let taken = smol::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let port = taken.local_addr().unwrap().port();
+
+            let fallback = super::bind_local_port(port, false).await.unwrap();
+            let fallback_port = fallback.local_addr().unwrap().port();
+            assert_ne!(fallback_port, port);
+
+            assert!(super::bind_local_port(port, true).await.is_none());
+
+            drop(taken);
+            let same = super::bind_local_port(port, true).await.unwrap();
+            assert_eq!(same.local_addr().unwrap().port(), port);
+        });
+    }
+
+    #[test]
     fn auto_forwarding_follows_the_first_matching_rule() {
         let auto_forward = super::AutoForwardPorts {
             rules: vec![
@@ -1469,6 +1542,8 @@ mod tests {
                     forward: true,
                     label: Some("Web".to_string()),
                     notice: super::ForwardNotice::OpenBrowser,
+                    require_local_port: true,
+                    https: true,
                 },
                 super::AutoForwardRule {
                     start: 3000,
@@ -1476,6 +1551,8 @@ mod tests {
                     forward: false,
                     label: None,
                     notice: super::ForwardNotice::Notify,
+                    require_local_port: false,
+                    https: false,
                 },
             ],
             ignore_other_ports: false,
@@ -1489,6 +1566,10 @@ mod tests {
             Some((Some("Web"), super::ForwardNotice::OpenBrowser))
         );
         assert_eq!(auto_forward.forwarding(3005), None);
+        assert!(auto_forward.requires_local_port(3000));
+        assert!(auto_forward.uses_https(3000));
+        assert!(!auto_forward.requires_local_port(8080));
+        assert!(!auto_forward.uses_https(8080));
         assert_eq!(
             auto_forward.forwarding(8080),
             Some((None, super::ForwardNotice::Silent))

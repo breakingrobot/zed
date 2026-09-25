@@ -1475,6 +1475,15 @@ pub struct DevContainerPortRule {
     ///
     /// Default: notify
     pub notice: Option<DevContainerForwardNotice>,
+    /// Whether ports in the range are only forwarded to the same port on this
+    /// machine.
+    ///
+    /// Default: false
+    pub require_local_port: Option<bool>,
+    /// Whether ports in the range serve HTTPS.
+    ///
+    /// Default: false
+    pub https: Option<bool>,
 }
 
 /// What Zed does when it starts forwarding a dev container port, from the

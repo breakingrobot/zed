@@ -90,7 +90,7 @@ If the configuration, or the metadata of the image it starts from, sets `hostReq
 
 Zed connects once the container is created and the lifecycle command set by `waitFor` has run (`updateContentCommand` by default). The later lifecycle commands, such as `postCreateCommand`, `postStartCommand` and `postAttachCommand`, then run as tasks in the Terminal Panel, where you can follow their output. If one fails, the ones after it don't run.
 
-When a program in the container starts listening on a TCP port, Zed forwards it to the same port on your machine, so `http://localhost:<port>` reaches it. Zed skips ports that are already in use on your machine, such as those published with `forwardPorts` or `appPort`.
+When a program in the container starts listening on a TCP port, Zed forwards it to the same port on your machine, so `http://localhost:<port>` reaches it. Ports published with `forwardPorts` or `appPort` already reach your machine, so Zed leaves them alone. When another program on your machine already uses the port, Zed forwards it to the next free port and says which one, unless the port's `requireLocalPort` in `portsAttributes` is `true`: then Zed tells you the port isn't forwarded. Ports whose `protocol` is `https` open with `https://`.
 
 When Zed starts forwarding a port, it follows the port's `onAutoForward` in `portsAttributes` (or `otherPortsAttributes`): `notify` (the default) shows a notification naming the port and its `label`, `openBrowser` and `openPreview` open `http://localhost:<port>` in your browser, `openBrowserOnce` does so only the first time the port is forwarded while Zed runs, and `silent` forwards it without telling you.
 

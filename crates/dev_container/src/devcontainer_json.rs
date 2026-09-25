@@ -537,6 +537,8 @@ impl DevContainer {
                     forward: attributes.on_auto_forward != OnAutoForward::Ignore,
                     label: attributes.label.clone(),
                     notice: attributes.on_auto_forward.notice(),
+                    require_local_port: attributes.require_local_port,
+                    https: attributes.protocol == Some(PortAttributeProtocol::Https),
                 })
             })
             .collect();
@@ -1145,7 +1147,8 @@ mod test {
                     "3000": { "label": "Web", "onAutoForward": "openBrowser" },
                     "3001": { "onAutoForward": "openBrowserOnce" },
                     "3002": { "onAutoForward": "openPreview" },
-                    "3003": { "label": "Metrics" }
+                    "3003": { "label": "Metrics" },
+                    "8443": { "protocol": "https", "requireLocalPort": true }
                 },
                 "otherPortsAttributes": { "onAutoForward": "silent" }
             }"#,
@@ -1172,6 +1175,10 @@ mod test {
             auto_forward.forwarding(8080),
             Some((None, ForwardNotice::Silent))
         );
+        assert!(auto_forward.uses_https(8443));
+        assert!(auto_forward.requires_local_port(8443));
+        assert!(!auto_forward.uses_https(3000));
+        assert!(!auto_forward.requires_local_port(3000));
     }
 
     #[test]
