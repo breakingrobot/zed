@@ -738,6 +738,13 @@ pub struct DeleteDevContainer;
 #[serde(deny_unknown_fields)]
 pub struct RebuildDevContainer;
 
+/// Rebuilds the current dev container from scratch without the container
+/// engine's build cache, and reconnects to it.
+#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
+#[action(namespace = projects)]
+#[serde(deny_unknown_fields)]
+pub struct RebuildDevContainerWithoutCache;
+
 /// Reconnects to the current dev container, starting it first if it has stopped.
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
 #[action(namespace = projects)]

@@ -86,6 +86,25 @@ impl DevContainerConfig {
     }
 }
 
+/// Whether opening a dev container reuses the existing container.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BuildMode {
+    /// Reuse the existing container, if there is one.
+    #[default]
+    Reuse,
+    /// Remove the existing container and build it again.
+    Rebuild,
+    /// Remove the existing container and build it again without the engine's
+    /// build cache.
+    RebuildWithoutCache,
+}
+
+impl BuildMode {
+    pub fn rebuilds(self) -> bool {
+        self != BuildMode::Reuse
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DevContainerUp {
@@ -349,7 +368,7 @@ pub async fn start_dev_container_with_config(
     context: DevContainerContext,
     config: Option<DevContainerConfig>,
     environment: HashMap<String, String>,
-    force_rebuild: bool,
+    build_mode: BuildMode,
     defer_hooks: bool,
 ) -> Result<StartedDevContainer, DevContainerError> {
     check_for_docker(&context).await?;
@@ -363,7 +382,7 @@ pub async fn start_dev_container_with_config(
         environment.clone(),
         actual_config.clone(),
         context.project_directory.clone().as_ref(),
-        force_rebuild,
+        build_mode,
         defer_hooks,
     )
     .await
@@ -649,7 +668,8 @@ pub async fn rebuild_dev_container(
     config: DevContainerConfig,
     environment: HashMap<String, String>,
 ) -> Result<StartedDevContainer, DevContainerError> {
-    start_dev_container_with_config(context, Some(config), environment, true, true).await
+    start_dev_container_with_config(context, Some(config), environment, BuildMode::Rebuild, true)
+        .await
 }
 
 pub(crate) async fn apply_devcontainer_template(

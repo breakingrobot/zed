@@ -71,6 +71,7 @@ From a dev container window, the command palette and the dev container menu in t
 - {#action projects::ReconnectDevContainer}: reconnects, starting the container first if it stopped.
 - {#action projects::RestartDevContainer}: stops and starts the container, which ends every process in it, then reconnects.
 - {#action projects::RebuildDevContainer}: removes the container, builds it again and reconnects.
+- {#action projects::RebuildDevContainerWithoutCache}: like rebuilding, but builds every image layer again instead of reusing the container engine's build cache, and pulls newer base images when building with BuildKit.
 - {#action projects::StopDevContainer}: stops the container and reopens the project on its host.
 - {#action projects::DeleteDevContainer}: stops and removes the container, then reopens the project on its host. Anything not stored in the project folder or a volume is lost.
 

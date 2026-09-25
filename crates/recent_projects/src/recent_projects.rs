@@ -52,7 +52,7 @@ use workspace::{
 };
 use zed_actions::{
     DeleteDevContainer, OpenDevContainer, OpenRecent, OpenRemote, RebuildDevContainer,
-    ReconnectDevContainer, RestartDevContainer, StopDevContainer,
+    RebuildDevContainerWithoutCache, ReconnectDevContainer, RestartDevContainer, StopDevContainer,
 };
 
 actions!(
@@ -293,7 +293,12 @@ pub(crate) fn open_dev_container(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    dev_container_lifecycle::open_dev_container_modal(workspace, false, window, cx);
+    dev_container_lifecycle::open_dev_container_modal(
+        workspace,
+        dev_container::BuildMode::Reuse,
+        window,
+        cx,
+    );
 }
 
 pub fn init(cx: &mut App) {
@@ -530,6 +535,13 @@ pub fn init(cx: &mut App) {
 
     cx.on_action(|_: &RebuildDevContainer, cx| {
         with_active_or_new_workspace(cx, dev_container_lifecycle::rebuild_dev_container);
+    });
+
+    cx.on_action(|_: &RebuildDevContainerWithoutCache, cx| {
+        with_active_or_new_workspace(
+            cx,
+            dev_container_lifecycle::rebuild_dev_container_without_cache,
+        );
     });
 
     cx.on_action(|_: &ReconnectDevContainer, cx| {

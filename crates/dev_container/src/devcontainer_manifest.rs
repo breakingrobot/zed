@@ -18,7 +18,9 @@ use util::{ResultExt, command::Command, normalize_path};
 use crate::{
     DevContainerConfig, DevContainerContext,
     command_json::{CommandRunner, DefaultCommandRunner},
-    devcontainer_api::{DeferredCommand, DeferredHook, DevContainerError, DevContainerUp},
+    devcontainer_api::{
+        BuildMode, DeferredCommand, DeferredHook, DevContainerError, DevContainerUp,
+    },
     devcontainer_json::{
         ContainerBuild, DevContainer, DevContainerBuildType, FeatureOptions, ForwardPort,
         LifecycleCommand, LifecycleScript, MountDefinition, deserialize_devcontainer_json,
@@ -74,6 +76,8 @@ struct DevContainerManifest {
     remote_build_dir: OnceLock<String>,
     /// Whether hooks after `waitFor` are left for the editor to run once connected.
     defer_hooks: bool,
+    /// Whether images are built without the engine's build cache.
+    no_cache: bool,
     /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
     /// has been parsed.
     config_hash: Option<String>,
@@ -127,6 +131,7 @@ impl DevContainerManifest {
             build_dir: OnceLock::new(),
             remote_build_dir: OnceLock::new(),
             defer_hooks: false,
+            no_cache: false,
             config_hash: None,
         })
     }
@@ -1505,6 +1510,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                     &docker_compose_resources.files,
                     &project_name,
                     compose_services.as_ref(),
+                    self.no_cache,
                 )
                 .await?;
             (
@@ -1601,6 +1607,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                         &docker_compose_resources.files,
                         &project_name,
                         compose_services.as_ref(),
+                        self.no_cache,
                     )
                     .await?;
 
@@ -2065,6 +2072,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
             command.env("DOCKER_BUILDKIT", "0");
         }
         command.args(["build"]);
+        self.push_cache_options(&mut command, false);
         command.args(["-f", &self.host_path(&dockerfile_path)]);
         command.args(["-t", &updated_image_tag]);
         command.args(["--build-arg", &format!("BASE_IMAGE={}", base_image)]);
@@ -2173,10 +2181,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         if self.docker_client.docker_cli() != "podman" {
             command.env("DOCKER_BUILDKIT", "0");
         }
+        command.args(["build", "-t", "dev_container_feature_content_temp"]);
+        self.push_cache_options(&mut command, false);
         command.args([
-            "build",
-            "-t",
-            "dev_container_feature_content_temp",
             "-f",
             &self.host_path(&dockerfile_path),
             &self.host_path(features_content_dir),
@@ -2201,6 +2208,18 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         }
 
         Ok(())
+    }
+
+    /// Makes a rebuild without cache build every layer again, as VS Code does. With
+    /// `pull`, it also fetches the base images again; builds that start from images
+    /// built earlier by Zed only exist locally, so they don't pull.
+    fn push_cache_options(&self, command: &mut HostCommand, pull: bool) {
+        if self.no_cache {
+            command.arg("--no-cache");
+            if pull {
+                command.arg("--pull");
+            }
+        }
     }
 
     fn create_docker_build(&self) -> Result<HostCommand, DevContainerError> {
@@ -2301,6 +2320,8 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                 command.args(["--cache-from", cache_from_image]);
             }
         }
+
+        self.push_cache_options(&mut command, self.docker_client.supports_compose_buildkit());
 
         command.args(["--target", "dev_containers_target_stage"]);
 
@@ -2631,8 +2652,10 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             .unwrap_or_default()
     }
 
-    /// Opens the dev container, reusing an existing one unless `force_rebuild`.
-    async fn open(&mut self, force_rebuild: bool) -> Result<DevContainerUp, DevContainerError> {
+    /// Opens the dev container, reusing an existing one unless `build_mode` rebuilds it.
+    async fn open(&mut self, build_mode: BuildMode) -> Result<DevContainerUp, DevContainerError> {
+        let force_rebuild = build_mode.rebuilds();
+        self.no_cache = build_mode == BuildMode::RebuildWithoutCache;
         self.parse_nonremote_vars()?;
         self.dev_container().validate_environment_names()?;
         self.config_hash = Some(self.compute_config_hash().await);
@@ -3218,7 +3241,7 @@ pub(crate) async fn spawn_dev_container(
     environment: HashMap<String, String>,
     config: DevContainerConfig,
     local_project_path: &Path,
-    force_rebuild: bool,
+    build_mode: BuildMode,
     defer_hooks: bool,
 ) -> Result<DevContainerUp, DevContainerError> {
     let docker = if context.use_podman {
@@ -3237,7 +3260,7 @@ pub(crate) async fn spawn_dev_container(
     .await?;
 
     devcontainer_manifest.defer_hooks = defer_hooks;
-    devcontainer_manifest.open(force_rebuild).await
+    devcontainer_manifest.open(build_mode).await
 }
 
 #[derive(Debug)]
@@ -4106,7 +4129,7 @@ mod test {
     use crate::{
         DevContainerConfig, DevContainerContext,
         command_json::CommandRunner,
-        devcontainer_api::{DevContainerError, DevContainerUp},
+        devcontainer_api::{BuildMode, DevContainerError, DevContainerUp},
         devcontainer_json::MountDefinition,
         devcontainer_manifest::{
             ConfigStatus, DevContainerManifest, DockerBuildResources, DockerComposeResources,
@@ -4303,7 +4326,7 @@ mod test {
         .await
         .unwrap();
 
-        let devcontainer_up = devcontainer_manifest.open(false).await.unwrap();
+        let devcontainer_up = devcontainer_manifest.open(BuildMode::Reuse).await.unwrap();
 
         assert_eq!(devcontainer_up.container_id, "found_docker_ps");
         let initialize_commands = test_dependencies.command_runner.commands_by_program("echo");
@@ -4334,7 +4357,7 @@ mod test {
         .await
         .unwrap();
 
-        let result = devcontainer_manifest.open(false).await;
+        let result = devcontainer_manifest.open(BuildMode::Reuse).await;
 
         let Err(DevContainerError::CommandFailed(label)) = result else {
             panic!("expected initializeCommand to fail, got {result:?}");
@@ -8715,6 +8738,7 @@ RUN echo $RUBY_VERSION2
     async fn build_dockerfile_devcontainer(
         cx: &mut TestAppContext,
         has_buildx: bool,
+        no_cache: bool,
     ) -> (TestDependencies, String) {
         let given_devcontainer_contents = r#"
             {
@@ -8748,6 +8772,7 @@ RUN echo $RUBY_VERSION2
             .await
             .unwrap();
 
+        devcontainer_manifest.no_cache = no_cache;
         devcontainer_manifest.parse_nonremote_vars().unwrap();
         devcontainer_manifest.build_and_run().await.unwrap();
 
@@ -8773,7 +8798,7 @@ RUN echo $RUBY_VERSION2
         cx.executor().allow_parking();
         env_logger::try_init().ok();
         let (test_dependencies, extended_dockerfile) =
-            build_dockerfile_devcontainer(cx, true).await;
+            build_dockerfile_devcontainer(cx, true, false).await;
 
         let build_commands: Vec<TestCommand> = test_dependencies
             .command_runner
@@ -8799,7 +8824,7 @@ RUN echo $RUBY_VERSION2
         cx.executor().allow_parking();
         env_logger::try_init().ok();
         let (test_dependencies, extended_dockerfile) =
-            build_dockerfile_devcontainer(cx, false).await;
+            build_dockerfile_devcontainer(cx, false, false).await;
 
         let build_commands: Vec<TestCommand> = test_dependencies
             .command_runner
@@ -8841,6 +8866,47 @@ RUN echo $RUBY_VERSION2
         assert!(extended_dockerfile.contains(
             "COPY --from=dev_containers_feature_content_source /tmp/build-features/devcontainer-features.builtin.env /tmp/build-features/"
         ));
+    }
+
+    fn image_build_commands(test_dependencies: &TestDependencies) -> Vec<Vec<String>> {
+        test_dependencies
+            .command_runner
+            .commands_by_program("docker")
+            .into_iter()
+            .filter(|command| {
+                command
+                    .args
+                    .first()
+                    .is_some_and(|arg| arg == "build" || arg == "buildx")
+            })
+            .map(|command| command.args)
+            .collect()
+    }
+
+    #[gpui::test]
+    async fn rebuilding_without_cache_skips_the_build_cache(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (test_dependencies, _) = build_dockerfile_devcontainer(cx, true, true).await;
+        let builds = image_build_commands(&test_dependencies);
+        assert_eq!(builds.len(), 1, "{builds:?}");
+        assert!(builds[0].contains(&"--no-cache".to_string()), "{builds:?}");
+        assert!(builds[0].contains(&"--pull".to_string()), "{builds:?}");
+
+        let (test_dependencies, _) = build_dockerfile_devcontainer(cx, false, true).await;
+        let builds = image_build_commands(&test_dependencies);
+        assert_eq!(builds.len(), 2, "{builds:?}");
+        for build in &builds {
+            assert!(build.contains(&"--no-cache".to_string()), "{build:?}");
+            // The classic builder starts from the feature content image built just
+            // before, which a pull wouldn't find.
+            assert!(!build.contains(&"--pull".to_string()), "{build:?}");
+        }
+
+        let (test_dependencies, _) = build_dockerfile_devcontainer(cx, true, false).await;
+        for build in image_build_commands(&test_dependencies) {
+            assert!(!build.contains(&"--no-cache".to_string()), "{build:?}");
+            assert!(!build.contains(&"--pull".to_string()), "{build:?}");
+        }
     }
 
     #[test]
@@ -9302,6 +9368,7 @@ RUN echo $RUBY_VERSION2
             _config_files: &Vec<PathBuf>,
             _project_name: &str,
             _services: Option<&Vec<String>>,
+            _no_cache: bool,
         ) -> Result<(), DevContainerError> {
             self.compose_build_services
                 .lock()

@@ -66,11 +66,11 @@ pub struct RemoteServerProjects {
     dev_container_picker: Option<Entity<Picker<DevContainerPickerDelegate>>>,
     _subscriptions: Vec<Subscription>,
     allow_dismissal: bool,
-    /// When set, dev container creation removes any existing container that
-    /// matches the chosen project/config before building, guaranteeing a
+    /// When it rebuilds, dev container creation removes any existing container
+    /// that matches the chosen project/config before building, guaranteeing a
     /// fresh build instead of resuming one. Used by "Rebuild Dev Container"
     /// when triggered while in local mode.
-    force_rebuild: bool,
+    build_mode: dev_container::BuildMode,
 }
 
 struct CreateRemoteServer {
@@ -1434,7 +1434,7 @@ impl RemoteServerProjects {
         configs: Vec<DevContainerConfig>,
         app_state: Arc<AppState>,
         dev_container_context: Option<DevContainerContext>,
-        force_rebuild: bool,
+        build_mode: dev_container::BuildMode,
         window: &mut Window,
         workspace: WeakEntity<Workspace>,
         cx: &mut Context<Self>,
@@ -1453,7 +1453,7 @@ impl RemoteServerProjects {
             workspace,
             cx,
         );
-        this.force_rebuild = force_rebuild;
+        this.build_mode = build_mode;
 
         if configs.len() > 1 {
             let delegate = DevContainerPickerDelegate::new(configs, cx.weak_entity());
@@ -1551,7 +1551,7 @@ impl RemoteServerProjects {
             dev_container_picker: None,
             _subscriptions: vec![settings_subscription, dismiss_subscription],
             allow_dismissal: true,
-            force_rebuild: false,
+            build_mode: dev_container::BuildMode::Reuse,
         }
     }
 
@@ -2250,7 +2250,7 @@ impl RemoteServerProjects {
     ) {
         let replace_window = window.window_handle().downcast::<MultiWorkspace>();
         let app_state = Arc::downgrade(&app_state);
-        let force_rebuild = self.force_rebuild;
+        let build_mode = self.build_mode;
 
         cx.spawn_in(window, async move |entity, cx| {
             let environment = context.environment(cx).await;
@@ -2265,7 +2265,7 @@ impl RemoteServerProjects {
                 context,
                 config,
                 environment,
-                force_rebuild,
+                build_mode,
                 true,
             )
             .await

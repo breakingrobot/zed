@@ -4,7 +4,7 @@ use std::sync::{Arc, Weak};
 
 use anyhow::Context as _;
 use dev_container::{
-    DeferredHook, DevContainerConfig, DevContainerContext, StartedDevContainer,
+    BuildMode, DeferredHook, DevContainerConfig, DevContainerContext, StartedDevContainer,
     find_devcontainer_configs,
 };
 use gpui::{
@@ -296,17 +296,40 @@ pub(crate) fn rebuild_dev_container(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    rebuild_dev_container_in_mode(workspace, BuildMode::Rebuild, window, cx);
+}
+
+/// Like [`rebuild_dev_container`], without the container engine's build cache.
+pub(crate) fn rebuild_dev_container_without_cache(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    rebuild_dev_container_in_mode(workspace, BuildMode::RebuildWithoutCache, window, cx);
+}
+
+fn rebuild_dev_container_in_mode(
+    workspace: &mut Workspace,
+    build_mode: BuildMode,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let Some(RemoteConnectionOptions::Docker(options)) =
         workspace.project().read(cx).remote_connection_options(cx)
     else {
         // Not connected to a dev container: fall back to the creation flow in
         // "rebuild" mode, so the chosen project/config is rebuilt from scratch
         // rather than resumed.
-        open_dev_container_modal(workspace, true, window, cx);
+        open_dev_container_modal(workspace, build_mode, window, cx);
         return;
     };
 
-    rebuild_connected_dev_container(workspace, options, window, cx);
+    let mode = if build_mode == BuildMode::RebuildWithoutCache {
+        ReconnectMode::RebuildWithoutCache
+    } else {
+        ReconnectMode::Rebuild
+    };
+    reconnect_connected_dev_container(workspace, options, mode, window, cx);
 }
 
 /// Reconnects to the dev container backing the current project, starting the
@@ -359,17 +382,21 @@ pub(crate) fn restart_dev_container_and_reconnect(
 
 /// Opens the dev container config-discovery/selection modal for the current
 /// (local) project, shared by the `OpenDevContainer` and `RebuildDevContainer`
-/// entry points. With `force_rebuild`, any existing container matching the
-/// chosen project/config is removed and rebuilt rather than resumed (see
-/// `RemoteServerProjects::force_rebuild`).
+/// entry points. Unless `build_mode` reuses containers, any existing container
+/// matching the chosen project/config is removed and rebuilt rather than resumed
+/// (see `RemoteServerProjects::build_mode`).
 pub(crate) fn open_dev_container_modal(
     workspace: &mut Workspace,
-    force_rebuild: bool,
+    build_mode: BuildMode,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
     if let Some(reason) = dev_container::unsupported_reason(workspace.project().read(cx), cx) {
-        let verb = if force_rebuild { "rebuild" } else { "open" };
+        let verb = if build_mode.rebuilds() {
+            "rebuild"
+        } else {
+            "open"
+        };
         let message = format!("Cannot {verb} Dev Container");
         cx.spawn_in(window, async move |_, cx| {
             cx.prompt(gpui::PromptLevel::Critical, &message, Some(reason), &["OK"])
@@ -401,21 +428,12 @@ pub(crate) fn open_dev_container_modal(
             configs,
             app_state,
             dev_container_context,
-            force_rebuild,
+            build_mode,
             window,
             handle,
             cx,
         )
     });
-}
-
-fn rebuild_connected_dev_container(
-    workspace: &mut Workspace,
-    options: DockerConnectionOptions,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    reconnect_connected_dev_container(workspace, options, ReconnectMode::Rebuild, window, cx);
 }
 
 /// How the dev container currently connected to a workspace is (re)established
@@ -431,6 +449,8 @@ enum ReconnectMode {
     Restart,
     /// Remove and rebuild the container from scratch before reconnecting.
     Rebuild,
+    /// Like `Rebuild`, without the container engine's build cache.
+    RebuildWithoutCache,
 }
 
 impl ReconnectMode {
@@ -439,7 +459,9 @@ impl ReconnectMode {
         match self {
             ReconnectMode::Resume => "Failed to reconnect to Dev Container",
             ReconnectMode::Restart => "Failed to restart Dev Container",
-            ReconnectMode::Rebuild => "Failed to rebuild Dev Container",
+            ReconnectMode::Rebuild | ReconnectMode::RebuildWithoutCache => {
+                "Failed to rebuild Dev Container"
+            }
         }
     }
 
@@ -450,7 +472,17 @@ impl ReconnectMode {
         match self {
             ReconnectMode::Resume => "Starting dev container\u{2026}",
             ReconnectMode::Restart => "Restarting dev container\u{2026}",
-            ReconnectMode::Rebuild => "Rebuilding dev container\u{2026}",
+            ReconnectMode::Rebuild | ReconnectMode::RebuildWithoutCache => {
+                "Rebuilding dev container\u{2026}"
+            }
+        }
+    }
+
+    fn build_mode(self) -> BuildMode {
+        match self {
+            ReconnectMode::Resume | ReconnectMode::Restart => BuildMode::Reuse,
+            ReconnectMode::Rebuild => BuildMode::Rebuild,
+            ReconnectMode::RebuildWithoutCache => BuildMode::RebuildWithoutCache,
         }
     }
 }
@@ -473,7 +505,7 @@ fn reconnect_connected_dev_container(
     let workspace_handle = cx.entity().downgrade();
 
     let error_title = mode.error_title();
-    let force_rebuild = matches!(mode, ReconnectMode::Rebuild);
+    let build_mode = mode.build_mode();
 
     cx.spawn_in(window, async move |_, cx| {
         let origin = match dev_container::dev_container_origin(
@@ -543,7 +575,7 @@ fn reconnect_connected_dev_container(
             context,
             Some(origin.config),
             environment,
-            force_rebuild,
+            build_mode,
             true,
         )
         .await;
@@ -799,7 +831,7 @@ pub(crate) async fn rebuild_dev_container_connection(
         context,
         Some(config),
         environment,
-        true,
+        BuildMode::Rebuild,
         false,
     )
     .await
