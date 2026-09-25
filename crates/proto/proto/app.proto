@@ -123,6 +123,23 @@ message ForwardGitCredentialResponse {
   string output = 1;
 }
 
+// Makes the remote server relay the SSH agent socket at `socket_path` on its
+// machine to the SSH agent of Zed's machine, unless an agent already listens there.
+message EnableSshAgentForwarding {
+  uint64 project_id = 1;
+  string socket_path = 2;
+}
+
+// A request to the SSH agent of Zed's machine, without its length prefix.
+message ForwardSshAgentMessage {
+  bytes data = 1;
+}
+
+// The agent's response, without its length prefix.
+message ForwardSshAgentMessageResponse {
+  bytes data = 1;
+}
+
 message GetRemoteProfilingData {
   uint64 project_id = 1;
   bool foreground_only = 2;

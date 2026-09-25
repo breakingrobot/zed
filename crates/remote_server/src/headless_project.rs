@@ -77,6 +77,8 @@ pub struct HeadlessProject {
     pub(crate) port_tunnels: HashMap<u64, futures::channel::mpsc::UnboundedSender<Vec<u8>>>,
     /// Answers the git credential helper once the client forwards git credentials.
     git_credential_forwarding: Option<gpui::Task<()>>,
+    /// Relays the SSH agent socket once the client forwards its SSH agent.
+    ssh_agent_forwarding: Option<gpui::Task<()>>,
 }
 
 pub struct HeadlessAppState {
@@ -322,6 +324,7 @@ impl HeadlessProject {
         session.add_entity_message_handler(Self::handle_port_tunnel_data);
         session.add_entity_message_handler(Self::handle_close_port_tunnel);
         session.add_entity_request_handler(Self::handle_enable_git_credential_forwarding);
+        session.add_entity_request_handler(Self::handle_enable_ssh_agent_forwarding);
         session.add_entity_request_handler(BufferStore::handle_update_buffer);
         session.add_entity_message_handler(BufferStore::handle_close_buffer);
 
@@ -372,6 +375,7 @@ impl HeadlessProject {
             kernels: Default::default(),
             port_tunnels: Default::default(),
             git_credential_forwarding: None,
+            ssh_agent_forwarding: None,
         }
     }
 
@@ -1409,13 +1413,13 @@ impl HeadlessProject {
                     }
                     Err(error) => {
                         failures += 1;
-                        if failures >= MAX_GIT_CREDENTIAL_ACCEPT_FAILURES {
+                        if failures >= MAX_FORWARDED_SOCKET_ACCEPT_FAILURES {
                             log::warn!("Stopped forwarding git credentials: {error}");
                             break;
                         }
                         log::debug!("Failed to accept a git credential request: {error}");
                         cx.background_executor()
-                            .timer(GIT_CREDENTIAL_ACCEPT_RETRY_DELAY)
+                            .timer(FORWARDED_SOCKET_ACCEPT_RETRY_DELAY)
                             .await;
                     }
                 }
@@ -1428,6 +1432,78 @@ impl HeadlessProject {
         this.update(&mut cx, |this, _| {
             this.git_credential_forwarding = Some(task)
         });
+        Ok(proto::Ack {})
+    }
+
+    /// Relays the SSH agent socket at the requested path to the client's SSH agent,
+    /// like VS Code, unless an agent already listens there (one Zed mounted into the
+    /// container when it could).
+    async fn handle_enable_ssh_agent_forwarding(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::EnableSshAgentForwarding>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let already_enabled =
+            this.read_with(&mut cx, |this, _| this.ssh_agent_forwarding.is_some());
+        // Agent sockets are Unix sockets, on the Linux machines of dev containers.
+        if already_enabled || cfg!(not(unix)) {
+            return Ok(proto::Ack {});
+        }
+        let session = this.read_with(&mut cx, |this, _| this.session.clone());
+        let socket_path = PathBuf::from(envelope.payload.socket_path);
+        let listener = cx
+            .background_spawn(async move {
+                if net::async_net::UnixStream::connect(&socket_path)
+                    .await
+                    .is_ok()
+                {
+                    return anyhow::Ok(None);
+                }
+                if let Some(parent) = socket_path.parent() {
+                    smol::fs::create_dir_all(parent).await?;
+                }
+                // A server that ran before may have left its socket behind.
+                smol::fs::remove_file(&socket_path).await.ok();
+                anyhow::Ok(Some(net::async_net::UnixListener::bind(&socket_path)?))
+            })
+            .await?;
+        let Some(listener) = listener else {
+            return Ok(proto::Ack {});
+        };
+        let weak_this = this.downgrade();
+        let task = cx.spawn(async move |cx| {
+            let mut failures = 0;
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        failures = 0;
+                        let session = session.clone();
+                        cx.background_spawn(async move {
+                            if let Err(error) = relay_ssh_agent_connection(stream, session).await {
+                                log::debug!("SSH agent connection ended: {error:#}");
+                            }
+                        })
+                        .detach();
+                    }
+                    Err(error) => {
+                        failures += 1;
+                        if failures >= MAX_FORWARDED_SOCKET_ACCEPT_FAILURES {
+                            log::warn!("Stopped forwarding the SSH agent: {error}");
+                            break;
+                        }
+                        log::debug!("Failed to accept an SSH agent connection: {error}");
+                        cx.background_executor()
+                            .timer(FORWARDED_SOCKET_ACCEPT_RETRY_DELAY)
+                            .await;
+                    }
+                }
+            }
+            // So that the next EnableSshAgentForwarding, on reconnect, listens again.
+            weak_this
+                .update(cx, |this, _| this.ssh_agent_forwarding = None)
+                .ok();
+        });
+        this.update(&mut cx, |this, _| this.ssh_agent_forwarding = Some(task));
         Ok(proto::Ack {})
     }
 
@@ -1669,6 +1745,12 @@ fn parse_listening_ports(proc_net_tcp: &str) -> std::collections::BTreeSet<u16> 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn ssh_agent_messages_are_prefixed_by_their_length() {
+        assert_eq!(super::ssh_agent_frame(&[11]).unwrap(), [0, 0, 0, 1, 11]);
+        assert_eq!(super::SSH_AGENT_FAILURE, [0, 0, 0, 1, 5]);
+    }
+
+    #[test]
     fn git_credential_requests_carry_the_operation_on_the_first_line() {
         assert_eq!(
             super::parse_git_credential_request("get\nprotocol=https\nhost=github.com\n"),
@@ -1703,13 +1785,13 @@ mod tests {
     }
 }
 
-/// How long to wait after a failed `accept` of a git credential request, e.g. when
-/// out of file descriptors.
-const GIT_CREDENTIAL_ACCEPT_RETRY_DELAY: std::time::Duration =
+/// How long to wait after a failed `accept` of a forwarded socket (git credentials,
+/// SSH agent), e.g. when out of file descriptors.
+const FORWARDED_SOCKET_ACCEPT_RETRY_DELAY: std::time::Duration =
     std::time::Duration::from_millis(100);
-/// Consecutive failed `accept`s after which git credential forwarding stops, until
-/// the client enables it again.
-const MAX_GIT_CREDENTIAL_ACCEPT_FAILURES: usize = 50;
+/// Consecutive failed `accept`s after which a forwarded socket stops, until the
+/// client enables it again.
+const MAX_FORWARDED_SOCKET_ACCEPT_FAILURES: usize = 50;
 
 fn git_credential_socket_path() -> PathBuf {
     paths::remote_server_state_dir().join("git-credential.sock")
@@ -1758,6 +1840,56 @@ fn git_credential_helper_script(server_binary: &Path) -> Result<String> {
     Ok(format!(
         "#!/bin/sh\nexec {quoted_binary} git-credential \"$@\"\n"
     ))
+}
+
+/// The largest SSH agent message relayed, like OpenSSH's `AGENT_MAX_LEN`.
+const MAX_SSH_AGENT_MESSAGE_LENGTH: usize = 256 * 1024;
+/// The agent's `SSH_AGENT_FAILURE` response, length prefix included.
+const SSH_AGENT_FAILURE: [u8; 5] = [0, 0, 0, 1, 5];
+
+/// Relays the messages of one SSH agent client to the client's SSH agent. The agent
+/// protocol answers each request with one response, both prefixed by their length.
+async fn relay_ssh_agent_connection(
+    mut stream: net::async_net::UnixStream,
+    session: AnyProtoClient,
+) -> Result<()> {
+    use futures::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    loop {
+        let mut length = [0; 4];
+        match stream.read_exact(&mut length).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        let length = u32::from_be_bytes(length) as usize;
+        anyhow::ensure!(
+            length <= MAX_SSH_AGENT_MESSAGE_LENGTH,
+            "SSH agent message too long: {length} bytes"
+        );
+        let mut data = vec![0; length];
+        stream.read_exact(&mut data).await?;
+        match session
+            .request(proto::ForwardSshAgentMessage { data })
+            .await
+        {
+            Ok(response) => {
+                stream.write_all(&ssh_agent_frame(&response.data)?).await?;
+            }
+            Err(error) => {
+                log::debug!("The SSH agent of Zed's machine didn't answer: {error:#}");
+                stream.write_all(&SSH_AGENT_FAILURE).await?;
+            }
+        }
+    }
+}
+
+/// `data` with the length prefix of the SSH agent protocol.
+fn ssh_agent_frame(data: &[u8]) -> Result<Vec<u8>> {
+    let length = u32::try_from(data.len()).context("SSH agent message too long")?;
+    let mut frame = length.to_be_bytes().to_vec();
+    frame.extend_from_slice(data);
+    Ok(frame)
 }
 
 /// The operation and the input of a request from [`run_git_credential_helper`].

@@ -531,7 +531,10 @@ message Envelope {
     ClosePortTunnel close_port_tunnel = 499;
     EnableGitCredentialForwarding enable_git_credential_forwarding = 500;
     ForwardGitCredential forward_git_credential = 501;
-    ForwardGitCredentialResponse forward_git_credential_response = 502; // current max
+    ForwardGitCredentialResponse forward_git_credential_response = 502;
+    EnableSshAgentForwarding enable_ssh_agent_forwarding = 503;
+    ForwardSshAgentMessage forward_ssh_agent_message = 504;
+    ForwardSshAgentMessageResponse forward_ssh_agent_message_response = 505; // current max
   }
 
   reserved 87 to 88;

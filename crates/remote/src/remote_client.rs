@@ -542,6 +542,23 @@ impl RemoteClient {
                             }
                         })
                         .detach();
+
+                        // Like VS Code, ssh and git in a dev container use this
+                        // machine's SSH agent, wherever the container engine runs.
+                        proto_client.add_request_handler(
+                            cx.weak_entity(),
+                            Self::handle_forward_ssh_agent_message,
+                        );
+                        let enable = proto_client.request(proto::EnableSshAgentForwarding {
+                            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+                            socket_path: crate::CONTAINER_SSH_AGENT_SOCKET.to_string(),
+                        });
+                        cx.background_spawn(async move {
+                            if let Err(error) = enable.await {
+                                log::warn!("Failed to forward the SSH agent: {error:#}");
+                            }
+                        })
+                        .detach();
                     }
                 });
 
@@ -1057,6 +1074,22 @@ impl RemoteClient {
                 String::new()
             },
         })
+    }
+
+    /// Answers a request of ssh or git in a dev container with this machine's SSH
+    /// agent.
+    async fn handle_forward_ssh_agent_message(
+        _this: Entity<Self>,
+        envelope: TypedEnvelope<proto::ForwardSshAgentMessage>,
+        _cx: AsyncApp,
+    ) -> Result<proto::ForwardSshAgentMessageResponse> {
+        let request = envelope.payload.data;
+        let data = smol::unblock(move || {
+            let agent = connect_local_ssh_agent()?;
+            exchange_ssh_agent_message(agent, &request)
+        })
+        .await?;
+        Ok(proto::ForwardSshAgentMessageResponse { data })
     }
 
     pub fn proto_client(&self) -> AnyProtoClient {
@@ -2194,6 +2227,52 @@ impl ProtoClient for ChannelClient {
 
 /// The `git credential` command of this machine that answers a credential
 /// helper's `operation`.
+/// The largest SSH agent response relayed, like OpenSSH's `AGENT_MAX_LEN`.
+const MAX_SSH_AGENT_MESSAGE_LENGTH: usize = 256 * 1024;
+
+#[cfg(unix)]
+fn connect_local_ssh_agent() -> Result<std::os::unix::net::UnixStream> {
+    let socket = std::env::var_os("SSH_AUTH_SOCK").context("SSH_AUTH_SOCK isn't set")?;
+    std::os::unix::net::UnixStream::connect(&socket)
+        .with_context(|| format!("connecting to the SSH agent at {socket:?}"))
+}
+
+/// The agent of Windows' OpenSSH, unless `SSH_AUTH_SOCK` names another pipe.
+#[cfg(windows)]
+fn connect_local_ssh_agent() -> Result<std::fs::File> {
+    let pipe = std::env::var("SSH_AUTH_SOCK")
+        .ok()
+        .filter(|path| path.starts_with(r"\\.\pipe\"))
+        .unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".to_string());
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&pipe)
+        .with_context(|| format!("connecting to the SSH agent at {pipe}"))
+}
+
+/// Sends one request to an SSH agent and reads its response. Both are prefixed by
+/// their length on the wire, but not in the protocol messages Zed relays.
+fn exchange_ssh_agent_message(
+    mut agent: impl std::io::Read + std::io::Write,
+    request: &[u8],
+) -> Result<Vec<u8>> {
+    let length = u32::try_from(request.len()).context("SSH agent request too long")?;
+    agent.write_all(&length.to_be_bytes())?;
+    agent.write_all(request)?;
+    agent.flush()?;
+    let mut length = [0; 4];
+    agent.read_exact(&mut length)?;
+    let length = u32::from_be_bytes(length) as usize;
+    anyhow::ensure!(
+        length <= MAX_SSH_AGENT_MESSAGE_LENGTH,
+        "SSH agent response too long: {length} bytes"
+    );
+    let mut response = vec![0; length];
+    agent.read_exact(&mut response)?;
+    Ok(response)
+}
+
 fn git_credential_command(operation: &str) -> Option<crate::HostCommand> {
     let subcommand = match operation {
         "get" => "fill",

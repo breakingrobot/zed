@@ -10,7 +10,7 @@ use regex::Regex;
 
 use fs::{Fs, RenameOptions};
 use http_client::HttpClient;
-use remote::{EngineHost, HostCommand};
+use remote::{CONTAINER_SSH_AGENT_SOCKET, EngineHost, HostCommand};
 
 use crate::host_files::{HostFiles, copy_dir};
 use util::{ResultExt, command::Command, normalize_path, redact::is_valid_environment_name};
@@ -254,13 +254,14 @@ impl DevContainerManifest {
         }
     }
 
-    /// The engine host's SSH agent socket to share with the container, so that `git`
+    /// The engine host's SSH agent socket to mount into the container, so that `git`
     /// and `ssh` in it use the user's keys.
     ///
     /// Docker Desktop for macOS exposes the Mac's agent at a fixed path inside its
     /// VM. Elsewhere the socket must be a path on a Linux engine host. An SSH engine
     /// host gets a new socket on every connection, which a mount made when the
-    /// container is created can't follow, so it isn't shared.
+    /// container is created can't follow. Without a mount, the remote server relays
+    /// [`CONTAINER_SSH_AGENT_SOCKET`] to the agent of Zed's machine instead.
     fn ssh_agent_socket(&self) -> Option<String> {
         let host = self.docker_client.engine_host();
         if matches!(host, EngineHost::Ssh(_)) || host.is_windows() || self.remote_engine {
@@ -1457,12 +1458,11 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 }
             }
         }
-        if ssh_agent_socket.is_some() {
-            container_env.insert(
-                "SSH_AUTH_SOCK".to_string(),
-                CONTAINER_SSH_AGENT_SOCKET.to_string(),
-            );
-        }
+        // Mounted from the engine host, or else relayed by the remote server.
+        container_env.insert(
+            "SSH_AUTH_SOCK".to_string(),
+            CONTAINER_SSH_AGENT_SOCKET.to_string(),
+        );
         if let Some(config_env) = &dev_container.container_env {
             for (k, v) in config_env {
                 container_env.insert(k.clone(), v.clone());
@@ -4520,8 +4520,6 @@ fn config_changed(container_hash: Option<&str>, current_hash: Option<&str>) -> b
     matches!((container_hash, current_hash), (Some(container), Some(current)) if container != current)
 }
 
-/// Where the container sees the engine host's SSH agent socket.
-const CONTAINER_SSH_AGENT_SOCKET: &str = "/tmp/zed-ssh-agent.sock";
 /// The Mac's SSH agent, as Docker Desktop for macOS shares it with containers.
 const DOCKER_DESKTOP_SSH_AGENT_SOCKET: &str = "/run/host-services/ssh-auth.sock";
 

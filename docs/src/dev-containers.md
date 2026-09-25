@@ -38,7 +38,7 @@ Run {#action projects::CloneRepositoryInContainerVolume} and type a repository's
 
 Zed clones with the `alpine/git` image, so the repository must be reachable without credentials, and keeps a copy of it under `devcontainer/volumes` in its data folder to read the configuration and build from. It refreshes that copy from the volume each time it starts or rebuilds the container. Docker Compose configurations mount what their Compose files say, so they use the copy rather than the volume.
 
-This also works when Docker uses a container engine on another machine, through `DOCKER_HOST` or the current Docker context (`docker context use`): Zed builds with contexts sent from your machine and keeps the sources in a volume of that engine. For a project folder on your machine, such an engine can't mount it: open the project over SSH on the engine's machine instead. Your SSH agent isn't shared with containers of a remote engine.
+This also works when Docker uses a container engine on another machine, through `DOCKER_HOST` or the current Docker context (`docker context use`): Zed builds with contexts sent from your machine and keeps the sources in a volume of that engine. For a project folder on your machine, such an engine can't mount it: open the project over SSH on the engine's machine instead.
 
 ### Attaching to a running container
 
@@ -153,6 +153,10 @@ To give dev containers tokens or passwords without writing them into the configu
 ```
 
 Lifecycle commands, terminals, tasks and the remote server in the container get these variables. Zed reads the file each time it starts or connects to a dev container and doesn't store the values; it passes them to `docker exec` through its environment rather than its arguments. When the container engine runs on an SSH host, the values are part of the command Zed runs there.
+
+## SSH agent
+
+Like VS Code, `ssh` and `git` in a dev container use the keys of your SSH agent, through `SSH_AUTH_SOCK` (`/tmp/zed-ssh-agent.sock`). When the container engine runs on your Linux machine, in WSL, or in Docker Desktop for macOS, Zed mounts the agent into the container. Otherwise, such as on an SSH host, on another machine's engine or with Docker Desktop for Windows, the remote server relays the agent's requests to your machine through Zed's connection. On Windows, Zed uses the agent of Windows' OpenSSH (the "OpenSSH Authentication Agent" service), unless `SSH_AUTH_SOCK` names another pipe.
 
 ## Git credentials
 
