@@ -330,6 +330,17 @@ impl Docker {
         }
     }
 
+    /// A client for commands that don't build images, which skips probing for
+    /// BuildKit.
+    pub(crate) async fn without_builds(docker_cli: &str, host: EngineHost) -> Self {
+        Self {
+            docker_cli: docker_cli.to_string(),
+            has_buildx: false,
+            engine_environment: host.engine_environment().await,
+            host,
+        }
+    }
+
     fn is_podman(&self) -> bool {
         self.docker_cli == "podman"
     }

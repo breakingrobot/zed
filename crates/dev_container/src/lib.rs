@@ -109,6 +109,8 @@ pub struct DevContainerContext {
     pub use_buildkit: Option<bool>,
     /// The user's dotfiles, installed in new containers.
     pub dotfiles: Option<Dotfiles>,
+    /// What Zed learned about engines and containers earlier in this session.
+    pub session_cache: SessionCache,
     pub fs: Arc<dyn Fs>,
     pub http_client: Arc<dyn HttpClient>,
     pub environment: WeakEntity<ProjectEnvironment>,
@@ -152,6 +154,7 @@ impl DevContainerContext {
             use_podman: settings.use_podman,
             use_buildkit: settings.use_buildkit,
             dotfiles: settings.dotfiles.clone(),
+            session_cache: cx.try_global::<SessionCache>().cloned().unwrap_or_default(),
             fs: workspace.app_state().fs.clone(),
             http_client: cx.http_client().clone(),
             environment: workspace.project().read(cx).environment().downgrade(),
@@ -182,6 +185,75 @@ async fn host_environment(host: &EngineHost) -> HashMap<String, String> {
             log::error!("{error:#}");
             HashMap::default()
         })
+}
+
+/// What Zed learned about container engines and containers earlier in this
+/// session, so reopening a dev container doesn't ask again: whether an engine
+/// has BuildKit, and the environment of a container's user shell.
+#[derive(Clone, Default)]
+pub struct SessionCache(Arc<std::sync::Mutex<SessionCacheState>>);
+
+#[derive(Default)]
+struct SessionCacheState {
+    buildkit: HashMap<(String, EngineHost), bool>,
+    user_environments: HashMap<UserEnvironmentKey, HashMap<String, String>>,
+}
+
+/// A container's user shell environment stays valid until the container
+/// restarts.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct UserEnvironmentKey {
+    pub(crate) container_id: String,
+    pub(crate) started_at: Option<String>,
+    pub(crate) remote_user: String,
+}
+
+impl gpui::Global for SessionCache {}
+
+impl SessionCache {
+    fn with_state<R>(&self, f: impl FnOnce(&mut SessionCacheState) -> R) -> Option<R> {
+        match self.0.lock() {
+            Ok(mut state) => Some(f(&mut state)),
+            Err(error) => {
+                log::error!("The dev container session cache is unusable: {error}");
+                None
+            }
+        }
+    }
+
+    pub(crate) fn buildkit(&self, docker_cli: &str, host: &EngineHost) -> Option<bool> {
+        self.with_state(|state| {
+            state
+                .buildkit
+                .get(&(docker_cli.to_string(), host.clone()))
+                .copied()
+        })
+        .flatten()
+    }
+
+    pub(crate) fn set_buildkit(&self, docker_cli: &str, host: &EngineHost, buildkit: bool) {
+        self.with_state(|state| {
+            state
+                .buildkit
+                .insert((docker_cli.to_string(), host.clone()), buildkit)
+        });
+    }
+
+    pub(crate) fn user_environment(
+        &self,
+        key: &UserEnvironmentKey,
+    ) -> Option<HashMap<String, String>> {
+        self.with_state(|state| state.user_environments.get(key).cloned())
+            .flatten()
+    }
+
+    pub(crate) fn set_user_environment(
+        &self,
+        key: UserEnvironmentKey,
+        environment: HashMap<String, String>,
+    ) {
+        self.with_state(|state| state.user_environments.insert(key, environment));
+    }
 }
 
 /// A dotfiles repository to install in new dev containers, like VS Code's
@@ -283,6 +355,7 @@ impl Settings for DevContainerSettings {
 struct InitializeDevContainer;
 
 pub fn init(cx: &mut App) {
+    cx.set_global(SessionCache::default());
     cx.on_action(|_: &InitializeDevContainer, cx| {
         with_active_or_new_workspace(cx, move |workspace, window, cx| {
             let weak_entity = cx.weak_entity();
