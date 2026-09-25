@@ -1,6 +1,6 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
-use dev_container::{BuildMode, DevContainerConfig, DevContainerContext, StartedDevContainer};
+use dev_container::{DevContainerConfig, DevContainerContext};
 use gpui::{
     AnyElement, App, AppContext as _, Context, DismissEvent, SharedString, Task, WeakEntity, Window,
 };
@@ -8,17 +8,12 @@ use picker::{Picker, PickerDelegate};
 use remote::EngineHost;
 use ui::{Icon, IconName, ListItem, ListItemSpacing, prelude::*};
 use workspace::{
-    OpenOptions, Workspace,
+    Workspace,
     notifications::{NotificationId, simple_message_notification::MessageNotification},
 };
 use zed_actions::CloneRepositoryInContainerVolume;
 
-use crate::{
-    dev_container_lifecycle::{
-        prompt_start_error, run_deferred_hooks, show_warnings, suggest_rebuild,
-    },
-    remote_connections::{Connection, open_remote_project},
-};
+use crate::dev_container_lifecycle::{prompt_start_error, start_and_open_dev_container};
 
 pub(crate) fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
@@ -144,7 +139,7 @@ fn clone_and_open(
     let app_state = workspace.app_state().clone();
     let fs = app_state.fs.clone();
     cx.spawn_in(window, async move |workspace, cx| {
-        let result = async {
+        let prepared = async {
             let project_directory = dev_container::clone_repository_in_volume(&url, use_podman)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -174,70 +169,24 @@ fn clone_and_open(
                     cx,
                 )
             })?;
-            let environment = context.environment(cx).await;
-            dev_container::start_dev_container_with_config(
-                context,
-                Some(config),
-                environment,
-                BuildMode::Reuse,
-                true,
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("{error}"))
+            anyhow::Ok((context, config))
         }
         .await;
+        let error_title = "Failed to clone the repository in a container volume";
+        match prepared {
+            Ok((context, config)) => {
+                start_and_open_dev_container(context, config, app_state, error_title, cx).await;
+            }
+            Err(error) => {
+                log::error!("Failed to clone {url} in a container volume: {error:#}");
+                prompt_start_error(cx, error_title, format!("{error:#}")).await;
+            }
+        }
         workspace
             .update(cx, |workspace, cx| {
                 workspace.dismiss_notification(&notification_id, cx)
             })
             .ok();
-        let StartedDevContainer {
-            connection,
-            remote_workspace_folder,
-            deferred_hooks,
-            config_changed,
-            warnings,
-        } = match result {
-            Ok(started) => started,
-            Err(error) => {
-                log::error!("Failed to clone {url} in a container volume: {error:#}");
-                prompt_start_error(
-                    cx,
-                    "Failed to clone the repository in a container volume",
-                    format!("{error:#}"),
-                )
-                .await;
-                return;
-            }
-        };
-        let opened = open_remote_project(
-            Connection::DevContainer(connection).into(),
-            vec![PathBuf::from(&remote_workspace_folder)],
-            app_state,
-            OpenOptions::default(),
-            cx,
-        )
-        .await;
-        match opened {
-            Ok(window) => {
-                show_warnings(window, warnings, cx);
-                if config_changed {
-                    suggest_rebuild(window, cx);
-                }
-                run_deferred_hooks(window, remote_workspace_folder, deferred_hooks, cx);
-            }
-            Err(error) => {
-                log::error!("Failed to connect: {error:#}");
-                cx.prompt(
-                    gpui::PromptLevel::Critical,
-                    "Failed to connect",
-                    Some(&format!("{error:#}")),
-                    &["OK"],
-                )
-                .await
-                .ok();
-            }
-        }
     })
     .detach();
 }

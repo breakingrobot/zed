@@ -945,6 +945,62 @@ fn show_forwarded_port(forwarded: ForwardedPort, url: Option<String>, cx: &mut A
     });
 }
 
+/// Starts the dev container of `context`'s project from `config`, reusing its
+/// container, and opens it in a new window, reporting failures under
+/// `error_title`.
+pub(crate) async fn start_and_open_dev_container(
+    context: DevContainerContext,
+    config: DevContainerConfig,
+    app_state: Arc<AppState>,
+    error_title: &str,
+    cx: &mut AsyncWindowContext,
+) {
+    let environment = context.environment(cx).await;
+    let started = dev_container::start_dev_container_with_config(
+        context,
+        Some(config),
+        environment,
+        BuildMode::Reuse,
+        true,
+    )
+    .await;
+    let StartedDevContainer {
+        connection,
+        remote_workspace_folder,
+        deferred_hooks,
+        config_changed,
+        warnings,
+    } = match started {
+        Ok(started) => started,
+        Err(error) => {
+            log::error!("Failed to start dev container: {error}");
+            prompt_start_error(cx, error_title, &error).await;
+            return;
+        }
+    };
+    let opened = open_remote_project(
+        Connection::DevContainer(connection).into(),
+        vec![PathBuf::from(&remote_workspace_folder)],
+        app_state,
+        OpenOptions::default(),
+        cx,
+    )
+    .await;
+    match opened {
+        Ok(window) => {
+            show_warnings(window, warnings, cx);
+            if config_changed {
+                suggest_rebuild(window, cx);
+            }
+            run_deferred_hooks(window, remote_workspace_folder, deferred_hooks, cx);
+        }
+        Err(error) => {
+            log::error!("Failed to connect: {error:#}");
+            prompt_error(cx, "Failed to connect", format!("{error:#}")).await;
+        }
+    }
+}
+
 /// Shows the problems found while starting the dev container that didn't stop it.
 pub(crate) fn show_warnings(
     window: WindowHandle<MultiWorkspace>,

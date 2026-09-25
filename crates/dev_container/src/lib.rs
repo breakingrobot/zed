@@ -64,10 +64,10 @@ use crate::oci::get_oci_token;
 
 pub use devcontainer_api::{
     AttachTarget, BuildMode, DeferredCommand, DeferredHook, DevContainerConfig, DevContainerError,
-    DevContainerOrigin, RunningContainer, StartedDevContainer, attach_target, container_logs,
-    dev_container_origin, find_configs_in_snapshot, find_devcontainer_configs,
-    rebuild_dev_container, remove_dev_container, restart_dev_container, running_containers,
-    shut_down_dev_container, shutdown_command, start_dev_container,
+    DevContainerOrigin, DevContainerSummary, RunningContainer, StartedDevContainer, attach_target,
+    container_logs, dev_container_origin, find_configs_in_snapshot, find_devcontainer_configs,
+    list_dev_containers, rebuild_dev_container, remove_dev_container, restart_dev_container,
+    running_containers, shut_down_dev_container, shutdown_command, start_dev_container,
     start_dev_container_with_config, stop_dev_container,
 };
 pub use workspace_volume::clone_repository_in_volume;

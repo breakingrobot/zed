@@ -736,6 +736,92 @@ pub async fn shut_down_dev_container(
     }
 }
 
+/// A container created from a dev container configuration, running or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevContainerSummary {
+    pub id: String,
+    pub name: String,
+    pub running: bool,
+    /// The project folder on the engine host (the `devcontainer.local_folder` label).
+    pub local_folder: String,
+    /// The configuration file on the engine host (the `devcontainer.config_file`
+    /// label).
+    pub config_file: Option<String>,
+}
+
+/// The dev containers of the engine on `engine_host`, created by Zed or other
+/// tools that follow the spec's labels.
+pub async fn list_dev_containers(
+    use_podman: bool,
+    engine_host: &EngineHost,
+) -> Result<Vec<DevContainerSummary>, DevContainerError> {
+    let docker = Docker::without_builds(
+        if use_podman { "podman" } else { "docker" },
+        engine_host.clone(),
+    )
+    .await;
+    let mut command = docker.docker_command();
+    command.args([
+        "ps",
+        "--all",
+        "--filter",
+        "label=devcontainer.local_folder",
+        "--format",
+        "{{json .}}",
+    ]);
+    let output = command.output().await.map_err(|e| {
+        log::error!("Error running docker ps: {e}");
+        DevContainerError::CommandFailed(command.get_program().to_string())
+    })?;
+    if !output.status.success() {
+        log::error!(
+            "Non-success status from docker ps: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Err(DevContainerError::CommandFailed(
+            command.get_program().to_string(),
+        ));
+    }
+    Ok(parse_dev_containers(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// Reads `docker ps --format '{{json .}}'`, whose `Labels` is a `key=value,…`
+/// string for Docker and an object for Podman.
+fn parse_dev_containers(output: &str) -> Vec<DevContainerSummary> {
+    output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+        .filter_map(|fields| {
+            let container = parse_container(&fields)?;
+            let label = |key: &str| -> Option<String> {
+                match fields.get("Labels")? {
+                    serde_json::Value::String(labels) => labels
+                        .split(',')
+                        .find_map(|label| label.strip_prefix(key)?.strip_prefix('='))
+                        .map(str::to_string),
+                    serde_json::Value::Object(labels) => {
+                        labels.get(key)?.as_str().map(str::to_string)
+                    }
+                    _ => None,
+                }
+            };
+            let state = fields
+                .get("State")
+                .and_then(|state| state.as_str())
+                .unwrap_or_default();
+            Some(DevContainerSummary {
+                running: state.eq_ignore_ascii_case("running"),
+                local_folder: label("devcontainer.local_folder")?,
+                config_file: label("devcontainer.config_file"),
+                id: container.id,
+                name: container.name,
+            })
+        })
+        .collect()
+}
+
 /// A running container of an engine, which Zed can attach to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningContainer {
@@ -779,25 +865,28 @@ pub async fn running_containers(
 fn parse_running_containers(output: &str) -> Vec<RunningContainer> {
     output
         .lines()
-        .filter_map(|line| {
-            let container: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-            let id = container
-                .get("ID")
-                .or_else(|| container.get("Id"))?
-                .as_str()?;
-            let name = match container.get("Names")? {
-                serde_json::Value::String(names) => names.split(',').next()?.to_string(),
-                serde_json::Value::Array(names) => names.first()?.as_str()?.to_string(),
-                _ => return None,
-            };
-            let image = container.get("Image")?.as_str()?;
-            Some(RunningContainer {
-                id: id.to_string(),
-                name,
-                image: image.to_string(),
-            })
-        })
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+        .filter_map(|container| parse_container(&container))
         .collect()
+}
+
+/// A container of `docker ps --format '{{json .}}'`.
+fn parse_container(container: &serde_json::Value) -> Option<RunningContainer> {
+    let id = container
+        .get("ID")
+        .or_else(|| container.get("Id"))?
+        .as_str()?;
+    let name = match container.get("Names")? {
+        serde_json::Value::String(names) => names.split(',').next()?.to_string(),
+        serde_json::Value::Array(names) => names.first()?.as_str()?.to_string(),
+        _ => return None,
+    };
+    let image = container.get("Image")?.as_str()?;
+    Some(RunningContainer {
+        id: id.to_string(),
+        name,
+        image: image.to_string(),
+    })
 }
 
 /// Who to run as in a container Zed attaches to, and where to open it: its
@@ -1121,6 +1210,40 @@ fn get_backup_project_name(remote_workspace_folder: &str, container_id: &str) ->
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    #[test]
+    fn dev_containers_come_with_their_project_folder_and_state() {
+        let docker = r#"{"ID":"4f2a","Image":"vsc-app","Names":"app_dev","State":"running","Labels":"devcontainer.config_file=/src/app/.devcontainer/devcontainer.json,devcontainer.local_folder=/src/app"}
+{"ID":"9c1e","Image":"vsc-api","Names":"api_dev","State":"exited","Labels":"devcontainer.local_folder=/src/api"}
+"#;
+        assert_eq!(
+            super::parse_dev_containers(docker),
+            vec![
+                super::DevContainerSummary {
+                    id: "4f2a".to_string(),
+                    name: "app_dev".to_string(),
+                    running: true,
+                    local_folder: "/src/app".to_string(),
+                    config_file: Some("/src/app/.devcontainer/devcontainer.json".to_string()),
+                },
+                super::DevContainerSummary {
+                    id: "9c1e".to_string(),
+                    name: "api_dev".to_string(),
+                    running: false,
+                    local_folder: "/src/api".to_string(),
+                    config_file: None,
+                },
+            ]
+        );
+        let podman = r#"{"Id":"77ab","Image":"vsc-web","Names":["web_dev"],"State":"running","Labels":{"devcontainer.local_folder":"/home/dev/web"}}"#;
+        assert_eq!(
+            super::parse_dev_containers(podman)
+                .into_iter()
+                .map(|container| (container.name, container.local_folder))
+                .collect::<Vec<_>>(),
+            [("web_dev".to_string(), "/home/dev/web".to_string())]
+        );
+    }
 
     #[test]
     fn remote_engines_need_the_sources_in_a_volume() {
