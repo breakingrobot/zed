@@ -528,7 +528,10 @@ message Envelope {
     OpenPortTunnel open_port_tunnel = 496;
     OpenPortTunnelResponse open_port_tunnel_response = 497;
     PortTunnelData port_tunnel_data = 498;
-    ClosePortTunnel close_port_tunnel = 499; // current max
+    ClosePortTunnel close_port_tunnel = 499;
+    EnableGitCredentialForwarding enable_git_credential_forwarding = 500;
+    ForwardGitCredential forward_git_credential = 501;
+    ForwardGitCredentialResponse forward_git_credential_response = 502; // current max
   }
 
   reserved 87 to 88;

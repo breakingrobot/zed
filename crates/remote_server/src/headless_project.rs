@@ -75,6 +75,8 @@ pub struct HeadlessProject {
     pub kernels: HashMap<String, Child>,
     /// Where the data the client sends through each open port tunnel goes.
     port_tunnels: HashMap<u64, futures::channel::mpsc::UnboundedSender<Vec<u8>>>,
+    /// Answers the git credential helper once the client forwards git credentials.
+    git_credential_forwarding: Option<gpui::Task<()>>,
 }
 
 pub struct HeadlessAppState {
@@ -319,6 +321,7 @@ impl HeadlessProject {
         session.add_entity_stream_request_handler(Self::handle_open_port_tunnel);
         session.add_entity_message_handler(Self::handle_port_tunnel_data);
         session.add_entity_message_handler(Self::handle_close_port_tunnel);
+        session.add_entity_request_handler(Self::handle_enable_git_credential_forwarding);
         session.add_entity_request_handler(BufferStore::handle_update_buffer);
         session.add_entity_message_handler(BufferStore::handle_close_buffer);
 
@@ -368,6 +371,7 @@ impl HeadlessProject {
             _toolchain_store: toolchain_store,
             kernels: Default::default(),
             port_tunnels: Default::default(),
+            git_credential_forwarding: None,
         }
     }
 
@@ -1321,6 +1325,52 @@ impl HeadlessProject {
         Ok(())
     }
 
+    async fn handle_enable_git_credential_forwarding(
+        this: Entity<Self>,
+        _envelope: TypedEnvelope<proto::EnableGitCredentialForwarding>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let already_enabled =
+            this.read_with(&mut cx, |this, _| this.git_credential_forwarding.is_some());
+        // The helper is a POSIX script, for the Linux machines of dev containers.
+        if already_enabled || cfg!(not(unix)) {
+            return Ok(proto::Ack {});
+        }
+        let session = this.read_with(&mut cx, |this, _| this.session.clone());
+        let socket_path = git_credential_socket_path();
+        let helper_path = paths::remote_server_state_dir().join("git-credential-helper");
+        let server_binary = std::env::current_exe()?;
+        let listener = cx
+            .background_spawn({
+                let socket_path = socket_path.clone();
+                async move {
+                    install_git_credential_helper(&helper_path, &server_binary).await?;
+                    if let Some(parent) = socket_path.parent() {
+                        smol::fs::create_dir_all(parent).await?;
+                    }
+                    // A server that ran before may have left its socket behind.
+                    smol::fs::remove_file(&socket_path).await.ok();
+                    anyhow::Ok(net::async_net::UnixListener::bind(&socket_path)?)
+                }
+            })
+            .await?;
+        let task = cx.spawn(async move |cx| {
+            while let Ok((stream, _)) = listener.accept().await {
+                let session = session.clone();
+                cx.background_spawn(async move {
+                    if let Err(error) = answer_git_credential_request(stream, session).await {
+                        log::warn!("Failed to forward a git credential request: {error:#}");
+                    }
+                })
+                .detach();
+            }
+        });
+        this.update(&mut cx, |this, _| {
+            this.git_credential_forwarding = Some(task)
+        });
+        Ok(proto::Ack {})
+    }
+
     async fn handle_list_remote_directory(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::ListRemoteDirectory>,
@@ -1559,6 +1609,23 @@ fn parse_listening_ports(proc_net_tcp: &str) -> std::collections::BTreeSet<u16> 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn git_credential_requests_carry_the_operation_on_the_first_line() {
+        assert_eq!(
+            super::parse_git_credential_request("get\nprotocol=https\nhost=github.com\n"),
+            Some(("get", "protocol=https\nhost=github.com\n"))
+        );
+        assert_eq!(super::parse_git_credential_request("get"), None);
+        assert_eq!(super::parse_git_credential_request("\nhost=x\n"), None);
+        assert_eq!(
+            super::git_credential_helper_script(std::path::Path::new(
+                "/home/dev/.zed_server/zed-remote-server-stable-1.0"
+            ))
+            .unwrap(),
+            "#!/bin/sh\nexec /home/dev/.zed_server/zed-remote-server-stable-1.0 git-credential \"$@\"\n"
+        );
+    }
+
+    #[test]
     fn finds_listening_ports_in_proc_net_tcp() {
         let proc_net_tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0
@@ -1574,4 +1641,108 @@ mod tests {
             [3306, 8080, 9090]
         );
     }
+}
+
+fn git_credential_socket_path() -> PathBuf {
+    paths::remote_server_state_dir().join("git-credential.sock")
+}
+
+/// Writes a helper that runs this server's `git-credential` command, at a path
+/// that stays the same across server versions, and makes it git's credential
+/// helper unless the user configured one.
+async fn install_git_credential_helper(helper_path: &Path, server_binary: &Path) -> Result<()> {
+    let script = git_credential_helper_script(server_binary)?;
+    if let Some(parent) = helper_path.parent() {
+        smol::fs::create_dir_all(parent).await?;
+    }
+    smol::fs::write(helper_path, script).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        smol::fs::set_permissions(helper_path, std::fs::Permissions::from_mode(0o755)).await?;
+    }
+
+    let configured = util::command::new_command("git")
+        .args(["config", "--global", "--get", "credential.helper"])
+        .output()
+        .await?;
+    if configured.status.success() {
+        return Ok(());
+    }
+    let output = util::command::new_command("git")
+        .args(["config", "--global", "credential.helper"])
+        .arg(helper_path)
+        .output()
+        .await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "configuring git's credential helper failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn git_credential_helper_script(server_binary: &Path) -> Result<String> {
+    let quoted_binary = util::shell::ShellKind::Posix
+        .try_quote(&server_binary.to_string_lossy())
+        .context("quoting the server's path")?
+        .into_owned();
+    Ok(format!(
+        "#!/bin/sh\nexec {quoted_binary} git-credential \"$@\"\n"
+    ))
+}
+
+/// The operation and the input of a request from [`run_git_credential_helper`].
+fn parse_git_credential_request(request: &str) -> Option<(&str, &str)> {
+    let (operation, input) = request.split_once('\n')?;
+    (!operation.is_empty()).then_some((operation, input))
+}
+
+/// Reads what [`run_git_credential_helper`] sends, has Zed's machine answer it,
+/// and sends the answer back.
+async fn answer_git_credential_request(
+    mut stream: net::async_net::UnixStream,
+    session: AnyProtoClient,
+) -> Result<()> {
+    use futures::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let mut request = String::new();
+    stream.read_to_string(&mut request).await?;
+    let (operation, input) =
+        parse_git_credential_request(&request).context("malformed git credential request")?;
+    let response = session
+        .request(proto::ForwardGitCredential {
+            operation: operation.to_string(),
+            input: input.to_string(),
+        })
+        .await?;
+    stream.write_all(response.output.as_bytes()).await?;
+    stream.close().await?;
+    Ok(())
+}
+
+/// Runs as git's credential helper: sends git's request to the running server,
+/// which asks Zed's machine, and prints the answer. When no server answers, git
+/// carries on as if the helper knew nothing.
+#[cfg(unix)]
+pub(crate) fn run_git_credential_helper(operation: &str) -> Result<()> {
+    use std::io::{Read as _, Write as _};
+
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(git_credential_socket_path())
+    else {
+        return Ok(());
+    };
+    stream.write_all(format!("{operation}\n{input}").as_bytes())?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let mut output = String::new();
+    stream.read_to_string(&mut output)?;
+    std::io::stdout().write_all(output.as_bytes())?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn run_git_credential_helper(_operation: &str) -> Result<()> {
+    Ok(())
 }
