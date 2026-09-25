@@ -46,7 +46,16 @@ fn main() -> anyhow::Result<()> {
         if let Err(e) = &res
             && let Some(e) = e.downcast_ref::<ExecuteProxyError>()
         {
-            std::io::stderr().write_fmt(format_args!("{e:#}\n")).ok();
+            // The causes tell why, e.g. which folder the server couldn't create.
+            let mut message = e.to_string();
+            let mut cause = std::error::Error::source(e);
+            while let Some(error) = cause {
+                message.push_str(&format!(": {error}"));
+                cause = error.source();
+            }
+            std::io::stderr()
+                .write_fmt(format_args!("{message}\n"))
+                .ok();
             // It is important for us to report the proxy spawn exit code here
             // instead of the generic 1 that result returns
             // The client reads the exit code to determine if the server process has died when trying to reconnect
