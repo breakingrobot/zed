@@ -80,6 +80,11 @@ pub enum Commands {
         identifier: String,
     },
     Version,
+    /// A git credential helper that asks Zed's machine for credentials, which the
+    /// server configures when Zed forwards git credentials.
+    GitCredential {
+        operation: String,
+    },
 }
 
 pub fn run(command: Commands) -> anyhow::Result<()> {
@@ -104,6 +109,9 @@ pub fn run(command: Commands) -> anyhow::Result<()> {
             identifier,
             reconnect,
         } => execute_proxy(identifier, reconnect).context("running proxy on the remote server"),
+        Commands::GitCredential { operation } => {
+            crate::headless_project::run_git_credential_helper(&operation)
+        }
         Commands::Version => {
             let release_channel = *RELEASE_CHANNEL;
             match release_channel {

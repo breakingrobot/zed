@@ -32,7 +32,7 @@ use parking_lot::Mutex;
 
 use release_channel::ReleaseChannel;
 use rpc::{
-    AnyProtoClient, ErrorExt, ProtoClient, ProtoMessageHandlerSet, RpcError,
+    AnyProtoClient, ErrorExt, ProtoClient, ProtoMessageHandlerSet, RpcError, TypedEnvelope,
     proto::{self, Envelope, EnvelopedMessage, PeerId, RequestMessage, build_typed_envelope},
 };
 use semver::Version;
@@ -525,6 +525,23 @@ impl RemoteClient {
                             executor: cx.background_executor().clone(),
                         };
                         this._port_forwarding = Some(cx.background_spawn(forwarder.run()));
+
+                        // Like VS Code, git in a dev container asks this machine for
+                        // credentials.
+                        let proto_client = AnyProtoClient::from(this.client.clone());
+                        proto_client.add_request_handler(
+                            cx.weak_entity(),
+                            Self::handle_forward_git_credential,
+                        );
+                        let enable = proto_client.request(proto::EnableGitCredentialForwarding {
+                            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+                        });
+                        cx.background_spawn(async move {
+                            if let Err(error) = enable.await {
+                                log::warn!("Failed to forward git credentials: {error:#}");
+                            }
+                        })
+                        .detach();
                     }
                 });
 
@@ -1015,6 +1032,33 @@ impl RemoteClient {
         connection.upload_directory(src_path, dest_path, cx)
     }
 
+    /// Answers git's credential helper in a dev container with this machine's git
+    /// credentials. Git doesn't prompt in a terminal here; a credential manager
+    /// with a window still can.
+    async fn handle_forward_git_credential(
+        _this: Entity<Self>,
+        envelope: TypedEnvelope<proto::ForwardGitCredential>,
+        _cx: AsyncApp,
+    ) -> Result<proto::ForwardGitCredentialResponse> {
+        let Some(command) = git_credential_command(&envelope.payload.operation) else {
+            anyhow::bail!(
+                "unknown git credential operation {:?}",
+                envelope.payload.operation
+            );
+        };
+        let output = command
+            .output_with_stdin(envelope.payload.input.as_bytes())
+            .await?;
+        // `fill` fails when no credential is known, which git takes as an empty answer.
+        Ok(proto::ForwardGitCredentialResponse {
+            output: if output.status.success() {
+                String::from_utf8_lossy(&output.stdout).into_owned()
+            } else {
+                String::new()
+            },
+        })
+    }
+
     pub fn proto_client(&self) -> AnyProtoClient {
         self.client.clone().into()
     }
@@ -1403,6 +1447,29 @@ impl RemoteConnectionOptions {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn git_credential_operations_map_to_git_credential_commands() {
+        let args = |operation: &str| {
+            super::git_credential_command(operation).map(|command| {
+                command
+                    .to_command()
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(args("get"), Some(vec!["credential".into(), "fill".into()]));
+        assert_eq!(
+            args("store"),
+            Some(vec!["credential".into(), "approve".into()])
+        );
+        assert_eq!(
+            args("erase"),
+            Some(vec!["credential".into(), "reject".into()])
+        );
+        assert_eq!(args("capability"), None);
+    }
+
     use super::*;
     use gpui::TestAppContext;
     use rpc::{ErrorCodeExt, proto::ErrorCode};
@@ -2123,4 +2190,19 @@ impl ProtoClient for ChannelClient {
     fn has_wsl_interop(&self) -> bool {
         self.has_wsl_interop
     }
+}
+
+/// The `git credential` command of this machine that answers a credential
+/// helper's `operation`.
+fn git_credential_command(operation: &str) -> Option<crate::HostCommand> {
+    let subcommand = match operation {
+        "get" => "fill",
+        "store" => "approve",
+        "erase" => "reject",
+        _ => return None,
+    };
+    let mut command = crate::EngineHost::Local.command("git");
+    command.args(["credential", subcommand]);
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    Some(command)
 }

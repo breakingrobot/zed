@@ -438,6 +438,9 @@ messages!(
     (OpenPortTunnelResponse, Background),
     (PortTunnelData, Background),
     (ClosePortTunnel, Background),
+    (EnableGitCredentialForwarding, Background),
+    (ForwardGitCredential, Background),
+    (ForwardGitCredentialResponse, Background),
 );
 
 request_messages!(
@@ -679,6 +682,8 @@ request_messages!(
     (GetRemoteProfilingData, GetRemoteProfilingDataResponse),
     (ListListeningPorts, ListListeningPortsResponse),
     (OpenPortTunnel, OpenPortTunnelResponse),
+    (EnableGitCredentialForwarding, Ack),
+    (ForwardGitCredential, ForwardGitCredentialResponse),
 );
 
 lsp_messages!(
@@ -916,7 +921,8 @@ entity_messages!(
     ListListeningPorts,
     OpenPortTunnel,
     PortTunnelData,
-    ClosePortTunnel
+    ClosePortTunnel,
+    EnableGitCredentialForwarding
 );
 
 entity_messages!(

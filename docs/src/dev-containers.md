@@ -126,6 +126,10 @@ To bring your shell and tool configuration into every new dev container, set a d
 
 After creating a container and running its `onCreateCommand`, `updateContentCommand` and `postCreateCommand`, Zed clones the repository (a Git URL, or `owner/repository` on GitHub) into `dev_container_dotfiles_target_path` (`~/dotfiles` by default) in the container and runs `dev_container_dotfiles_install_command` there. Without an install command, Zed runs the first of `install.sh`, `install`, `bootstrap.sh`, `bootstrap`, `script/bootstrap`, `setup.sh`, `setup` and `script/setup` in the repository, or links the repository's dotfiles into your home folder if it has none. The container needs `git`, and access to the repository. If installing the dotfiles fails, the container is still used, and the error is in Zed's log.
 
+## Git credentials
+
+Like VS Code, Zed lets git in a dev container use the git credentials of your machine: when git in the container needs a password or token, for example to push over HTTPS, your machine's `git credential fill` answers it through Zed's connection. Zed sets this up by making its helper git's `credential.helper` in the container, unless one is already configured there. Git on your machine doesn't prompt in a terminal for this, but a credential manager that shows a window, such as Git Credential Manager, can.
+
 ## Remote server
 
 Zed runs its remote server in the container. Containers created by Zed mount a `zed-remote-server` volume at `/zed-remote-server`, where Zed keeps a copy of the server, so other containers on the same engine reuse it instead of downloading it again. Remove the volume with `docker volume rm zed-remote-server` to clear it; containers created before this don't have the volume and download the server themselves.
