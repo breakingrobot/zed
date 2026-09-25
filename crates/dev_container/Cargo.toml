@@ -25,6 +25,7 @@ gpui.workspace = true
 fs.workspace = true
 futures.workspace = true
 log.workspace = true
+paths.workspace = true
 menu.workspace = true
 regex.workspace = true
 remote.workspace = true

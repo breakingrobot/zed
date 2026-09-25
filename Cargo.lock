@@ -5044,6 +5044,7 @@ dependencies = [
  "indoc",
  "log",
  "menu",
+ "paths",
  "picker",
  "project",
  "regex",

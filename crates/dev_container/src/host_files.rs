@@ -121,7 +121,7 @@ impl HostFiles {
     }
 }
 
-async fn copy_dir(fs: &dyn Fs, source: &Path, destination: &Path) -> Result<()> {
+pub(crate) async fn copy_dir(fs: &dyn Fs, source: &Path, destination: &Path) -> Result<()> {
     for (item_path, is_dir) in fs::read_dir_items(fs, source).await? {
         let relative = item_path.strip_prefix(source)?;
         let dest_path = destination.join(relative);

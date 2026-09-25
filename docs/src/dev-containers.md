@@ -108,6 +108,8 @@ To keep a port from being forwarded, set its `onAutoForward` to `ignore` in `por
 
 Like VS Code, Zed keeps the features in `devcontainer-lock.json` (`.devcontainer-lock.json` for a `.devcontainer.json`), next to the configuration, when that file exists. Zed installs each feature listed there at its recorded digest, fails if the downloaded feature doesn't match its recorded `integrity`, and updates the file after resolving the features. To start using a lockfile, create an empty `devcontainer-lock.json`, or one with the Dev Container CLI, and commit it.
 
+Zed keeps the features it downloads in its data folder, under `devcontainer/features`, and reuses them in later builds instead of downloading them again. Delete that folder to clear the cache.
+
 ## Dotfiles
 
 To bring your shell and tool configuration into every new dev container, set a dotfiles repository in your settings, like VS Code's `dotfiles.*` settings:

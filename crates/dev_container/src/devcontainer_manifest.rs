@@ -12,7 +12,7 @@ use fs::{Fs, RenameOptions};
 use http_client::HttpClient;
 use remote::{EngineHost, HostCommand};
 
-use crate::host_files::HostFiles;
+use crate::host_files::{HostFiles, copy_dir};
 use util::{ResultExt, command::Command, normalize_path, redact::is_valid_environment_name};
 
 use crate::{
@@ -86,6 +86,8 @@ struct DevContainerManifest {
     uses_gpu: bool,
     /// The configuration's `devcontainer-lock.json`, once features are resolved.
     lockfile: Option<FeatureLockfile>,
+    /// Where downloaded features are kept for later builds.
+    feature_cache_directory: PathBuf,
     /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
     /// has been parsed.
     config_hash: Option<String>,
@@ -143,6 +145,7 @@ impl DevContainerManifest {
             dotfiles: context.dotfiles.clone(),
             uses_gpu: false,
             lockfile: None,
+            feature_cache_directory: paths::devcontainer_dir().join("features"),
             config_hash: None,
         })
     }
@@ -741,16 +744,12 @@ impl DevContainerManifest {
                 format!("{}/{}@{manifest_digest}", oci_ref.registry, oci_ref.path),
                 digest.clone(),
             ));
-            download_oci_tarball(
+            self.download_feature_layer(
                 &token,
                 &oci_ref.registry,
                 &oci_ref.path,
                 digest,
-                "application/vnd.devcontainers.layer.v1+tar",
-                &destination.to_path_buf(),
-                &self.http_client,
-                &self.fs,
-                None,
+                destination,
             )
             .await?;
         }
@@ -783,6 +782,68 @@ impl DevContainerManifest {
             integrity,
         });
         Ok((feature_json, locked))
+    }
+
+    /// Downloads a feature's layer into `destination`, or copies it from the local
+    /// cache of features, which are keyed by the digest of their content.
+    async fn download_feature_layer(
+        &self,
+        token: &str,
+        registry: &str,
+        path: &str,
+        digest: &str,
+        destination: &Path,
+    ) -> Result<(), DevContainerError> {
+        let cached = self.feature_cache_directory.join(digest.replace(':', "-"));
+        if self.fs.is_dir(&cached).await {
+            match copy_dir(&*self.fs, &cached, destination).await {
+                Ok(()) => return Ok(()),
+                Err(error) => log::warn!("Downloading feature {digest} again: {error:#}"),
+            }
+        }
+        download_oci_tarball(
+            token,
+            registry,
+            path,
+            digest,
+            "application/vnd.devcontainers.layer.v1+tar",
+            &destination.to_path_buf(),
+            &self.http_client,
+            &self.fs,
+            None,
+        )
+        .await?;
+        // Copied through a temporary folder, so that a copy cut short isn't reused.
+        let partial = cached.with_extension("partial");
+        self.fs
+            .remove_dir(
+                &partial,
+                fs::RemoveOptions {
+                    recursive: true,
+                    ignore_if_not_exists: true,
+                },
+            )
+            .await
+            .log_err();
+        let cache_result = async {
+            self.fs.create_dir(&partial).await?;
+            copy_dir(&*self.fs, destination, &partial).await?;
+            self.fs
+                .rename(
+                    &partial,
+                    &cached,
+                    RenameOptions {
+                        overwrite: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+        }
+        .await;
+        if let Err(error) = cache_result {
+            log::warn!("Failed to cache feature {digest}: {error:#}");
+        }
+        Ok(())
     }
 
     fn lockfile_path(&self) -> PathBuf {
@@ -5046,6 +5107,45 @@ mod test {
         assert_eq!(
             locked.integrity,
             "sha256:bc7ab0d8d8339416e1491419ab9ffe931458d0130110f4b18351b0fa184e67d5"
+        );
+    }
+
+    #[gpui::test]
+    async fn reuses_features_downloaded_before(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, DOCKER_IN_DOCKER_CONFIG)
+                .await
+                .unwrap();
+        devcontainer_manifest.feature_cache_directory = PathBuf::from("/feature-cache");
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        let feature = "ghcr.io/devcontainers/features/docker-in-docker:2";
+
+        devcontainer_manifest
+            .fetch_feature_content(feature, Path::new("/first"))
+            .await
+            .unwrap();
+        let cached = PathBuf::from(
+            "/feature-cache/sha256-bc7ab0d8d8339416e1491419ab9ffe931458d0130110f4b18351b0fa184e67d5",
+        );
+        let cached_install_script = cached.join("install.sh");
+        assert!(test_dependencies.fs.is_file(&cached_install_script).await);
+
+        test_dependencies
+            .fs
+            .atomic_write(cached_install_script, "echo from the cache".to_string())
+            .await
+            .unwrap();
+        devcontainer_manifest
+            .fetch_feature_content(feature, Path::new("/second"))
+            .await
+            .unwrap();
+        assert_eq!(
+            test_dependencies
+                .fs
+                .load(Path::new("/second/install.sh"))
+                .await
+                .unwrap(),
+            "echo from the cache"
         );
     }
 
