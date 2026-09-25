@@ -1744,6 +1744,7 @@ impl WorkspaceDb {
         let mut container_id = None;
         let mut use_podman = None;
         let mut remote_env = None;
+        let mut engine_host = None;
 
         match identity {
             RemoteConnectionIdentity::Ssh {
@@ -1790,6 +1791,7 @@ impl WorkspaceDb {
             name = Some(options.name);
             use_podman = Some(options.use_podman);
             remote_env = serde_json::to_string(&options.remote_env).ok();
+            engine_host = serialize_engine_host(&options.host);
         }
 
         Self::get_or_create_remote_connection_query(
@@ -1803,6 +1805,7 @@ impl WorkspaceDb {
             container_id,
             use_podman,
             remote_env,
+            engine_host,
         )
     }
 
@@ -1888,6 +1891,7 @@ impl WorkspaceDb {
         container_id: Option<String>,
         use_podman: Option<bool>,
         remote_env: Option<String>,
+        engine_host: Option<String>,
     ) -> Result<RemoteConnectionId> {
         if let Some(id) = this.select_row_bound(sql!(
             SELECT id
@@ -1899,7 +1903,8 @@ impl WorkspaceDb {
                 user IS ? AND
                 distro IS ? AND
                 name IS ? AND
-                container_id IS ?
+                container_id IS ? AND
+                engine_host IS ?
             LIMIT 1
         ))?((
             kind.serialize(),
@@ -1909,6 +1914,7 @@ impl WorkspaceDb {
             distro.clone(),
             name.clone(),
             container_id.clone(),
+            engine_host.clone(),
         ))? {
             Ok(RemoteConnectionId(id))
         } else {
@@ -1922,8 +1928,9 @@ impl WorkspaceDb {
                     name,
                     container_id,
                     use_podman,
-                    remote_env
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    remote_env,
+                    engine_host
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 RETURNING id
             ))?((
                 kind.serialize(),
@@ -1934,7 +1941,7 @@ impl WorkspaceDb {
                 name,
                 container_id,
                 use_podman,
-                remote_env,
+                (remote_env, engine_host),
             ))?
             .context("failed to insert remote project")?;
             Ok(RemoteConnectionId(id))
@@ -4520,6 +4527,46 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(first, different);
+    }
+
+    #[gpui::test]
+    async fn test_docker_connection_without_labels_keeps_its_engine_host() {
+        let db = WorkspaceDb::open_test_db(
+            "test_docker_connection_without_labels_keeps_its_engine_host",
+        )
+        .await;
+
+        let ssh_host = EngineHost::Ssh(remote::SshEngineHost {
+            host: "build-box".to_string(),
+            username: Some("user".to_string()),
+            port: Some(2222),
+            args: Vec::new(),
+        });
+        let make_options = |host: EngineHost| {
+            RemoteConnectionOptions::Docker(DockerConnectionOptions {
+                name: "container".to_string(),
+                container_id: "container-1".to_string(),
+                remote_user: "root".to_string(),
+                host,
+                ..Default::default()
+            })
+        };
+
+        let on_ssh = db
+            .get_or_create_remote_connection(make_options(ssh_host.clone()))
+            .await
+            .unwrap();
+        let RemoteConnectionOptions::Docker(reloaded) = db.remote_connection(on_ssh).unwrap()
+        else {
+            panic!("expected a docker connection");
+        };
+        assert_eq!(reloaded.host, ssh_host);
+        assert_ne!(
+            db.get_or_create_remote_connection(make_options(EngineHost::Local))
+                .await
+                .unwrap(),
+            on_ssh
+        );
     }
 
     #[gpui::test]
