@@ -109,6 +109,9 @@ pub struct DevContainerContext {
     pub use_buildkit: Option<bool>,
     /// The user's dotfiles, installed in new containers.
     pub dotfiles: Option<Dotfiles>,
+    /// A JSON object of secrets that lifecycle commands get as environment
+    /// variables.
+    pub secrets_file: Option<std::path::PathBuf>,
     /// What Zed learned about engines and containers earlier in this session.
     pub session_cache: SessionCache,
     pub fs: Arc<dyn Fs>,
@@ -154,6 +157,7 @@ impl DevContainerContext {
             use_podman: settings.use_podman,
             use_buildkit: settings.use_buildkit,
             dotfiles: settings.dotfiles.clone(),
+            secrets_file: settings.secrets_file.clone(),
             session_cache: cx.try_global::<SessionCache>().cloned().unwrap_or_default(),
             fs: workspace.app_state().fs.clone(),
             http_client: cx.http_client().clone(),
@@ -273,6 +277,7 @@ struct DevContainerSettings {
     use_podman: bool,
     use_buildkit: Option<bool>,
     dotfiles: Option<Dotfiles>,
+    secrets_file: Option<std::path::PathBuf>,
 }
 
 /// Where the container engine of `project`'s dev containers runs: where its
@@ -327,6 +332,15 @@ impl Settings for DevContainerSettings {
         Self {
             use_podman: content.remote.use_podman.unwrap_or(false),
             use_buildkit: content.remote.dev_container_use_buildkit,
+            secrets_file: content
+                .remote
+                .dev_container_secrets_file
+                .as_deref()
+                .filter(|path| !path.trim().is_empty())
+                .map(|path| match path.strip_prefix("~/") {
+                    Some(relative) => util::paths::home_dir().join(relative),
+                    None => std::path::PathBuf::from(path),
+                }),
             dotfiles: content
                 .remote
                 .dev_container_dotfiles_repository
@@ -356,6 +370,16 @@ struct InitializeDevContainer;
 
 pub fn init(cx: &mut App) {
     cx.set_global(SessionCache::default());
+    // The connections to dev containers read the secrets file from here.
+    let secrets_file = |cx: &App| {
+        remote::DevContainerSecretsFile(DevContainerSettings::get_global(cx).secrets_file.clone())
+    };
+    cx.set_global(secrets_file(cx));
+    cx.observe_global::<settings::SettingsStore>(move |cx| {
+        let secrets_file = secrets_file(cx);
+        cx.set_global(secrets_file);
+    })
+    .detach();
     cx.on_action(|_: &InitializeDevContainer, cx| {
         with_active_or_new_workspace(cx, move |workspace, window, cx| {
             let weak_entity = cx.weak_entity();

@@ -126,6 +126,18 @@ To bring your shell and tool configuration into every new dev container, set a d
 
 After creating a container and running its `onCreateCommand`, `updateContentCommand` and `postCreateCommand`, Zed clones the repository (a Git URL, or `owner/repository` on GitHub) into `dev_container_dotfiles_target_path` (`~/dotfiles` by default) in the container and runs `dev_container_dotfiles_install_command` there. Without an install command, Zed runs the first of `install.sh`, `install`, `bootstrap.sh`, `bootstrap`, `script/bootstrap`, `setup.sh`, `setup` and `script/setup` in the repository, or links the repository's dotfiles into your home folder if it has none. The container needs `git`, and access to the repository. If installing the dotfiles fails, the container is still used, and the error is in Zed's log.
 
+## Secrets
+
+To give dev containers tokens or passwords without writing them into the configuration, put them in a JSON file of variable names and values, like the Dev Container CLI's `--secrets-file`, and point Zed to it:
+
+```json [settings]
+{
+  "dev_container_secrets_file": "~/.config/dev-container-secrets.json"
+}
+```
+
+Lifecycle commands, terminals, tasks and the remote server in the container get these variables. Zed reads the file each time it starts or connects to a dev container and doesn't store the values; it passes them to `docker exec` through its environment rather than its arguments. When the container engine runs on an SSH host, the values are part of the command Zed runs there.
+
 ## Git credentials
 
 Like VS Code, Zed lets git in a dev container use the git credentials of your machine: when git in the container needs a password or token, for example to push over HTTPS, your machine's `git credential fill` answers it through Zed's connection. Zed sets this up by making its helper git's `credential.helper` in the container, unless one is already configured there. Git on your machine doesn't prompt in a terminal for this, but a credential manager that shows a window, such as Git Credential Manager, can.

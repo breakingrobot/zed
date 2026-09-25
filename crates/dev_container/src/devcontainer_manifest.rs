@@ -3525,7 +3525,9 @@ async fn engine_client(context: &DevContainerContext) -> Docker {
             .session_cache
             .buildkit(docker_cli, &context.engine_host)
     });
-    let docker = Docker::new(docker_cli, use_buildkit, context.engine_host.clone()).await;
+    let docker = Docker::new(docker_cli, use_buildkit, context.engine_host.clone())
+        .await
+        .with_secrets(remote::load_dev_container_secrets(context.secrets_file.as_deref()).await);
     if use_buildkit.is_none() {
         context.session_cache.set_buildkit(
             docker_cli,
@@ -4674,6 +4676,7 @@ mod test {
             use_podman: false,
             use_buildkit: None,
             dotfiles: None,
+            secrets_file: None,
             session_cache: Default::default(),
             fs: fs.clone(),
             http_client: http_client.clone(),
@@ -7480,7 +7483,11 @@ ENV DOCKER_BUILDKIT=1
         assert_eq!(app_service.volumes.len(), 2);
         assert_eq!(app_service.volumes[0].target, "/var/lib/docker");
         assert_eq!(app_service.volumes[1].target, remote::SERVER_CACHE_PATH);
-        assert!(runtime_config.volumes.contains_key(remote::SERVER_CACHE_VOLUME));
+        assert!(
+            runtime_config
+                .volumes
+                .contains_key(remote::SERVER_CACHE_VOLUME)
+        );
 
         let db_service = runtime_config.services.get("db").expect("db service");
         assert_eq!(db_service.ports.len(), 3);

@@ -77,6 +77,7 @@ impl EngineHost {
             program: program.into(),
             args: Vec::new(),
             env: Vec::new(),
+            secret_env: Vec::new(),
             current_dir: None,
             interactive: false,
             forwarded_ports: Vec::new(),
@@ -250,6 +251,8 @@ pub struct HostCommand {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
+    /// Variables whose values stay off the command line where the host allows.
+    secret_env: Vec<(String, String)>,
     current_dir: Option<String>,
     interactive: bool,
     forwarded_ports: Vec<u16>,
@@ -275,6 +278,45 @@ impl HostCommand {
     pub fn env(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
         self.env.push((key.into(), value.into()));
         self
+    }
+
+    /// Sets a variable that, unlike [`Self::env`], doesn't appear in the arguments of
+    /// the process started here: locally and in WSL, which gets it through
+    /// `WSLENV`. SSH can only pass it on the remote command line.
+    pub fn secret_env(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
+        self.secret_env.push((key.into(), value.into()));
+        self
+    }
+
+    /// The environment of the process started here, for callers that start it
+    /// from [`Self::to_command`]'s program and arguments alone.
+    pub fn process_env(&self) -> Vec<(String, String)> {
+        match &self.host {
+            EngineHost::Local => self.env.iter().chain(&self.secret_env).cloned().collect(),
+            EngineHost::Wsl(_) => {
+                let mut env = self.secret_env.clone();
+                if let Some(wslenv) = self.wslenv() {
+                    env.push(("WSLENV".to_string(), wslenv));
+                }
+                env
+            }
+            EngineHost::Ssh(_) => Vec::new(),
+        }
+    }
+
+    /// `WSLENV` extended with the secret variables, which WSL then passes to the
+    /// distribution.
+    fn wslenv(&self) -> Option<String> {
+        if self.secret_env.is_empty() {
+            return None;
+        }
+        let mut entries: Vec<String> = std::env::var("WSLENV")
+            .ok()
+            .filter(|wslenv| !wslenv.is_empty())
+            .into_iter()
+            .collect();
+        entries.extend(self.secret_env.iter().map(|(key, _)| format!("{key}/u")));
+        Some(entries.join(":"))
     }
 
     /// Sets the working directory, a path on the host.
@@ -315,7 +357,7 @@ impl HostCommand {
             EngineHost::Local => {
                 let mut command = Command::new(&self.program);
                 command.args(&self.args);
-                for (key, value) in &self.env {
+                for (key, value) in self.env.iter().chain(&self.secret_env) {
                     command.env(key, value);
                 }
                 if let Some(dir) = &self.current_dir {
@@ -326,6 +368,9 @@ impl HostCommand {
             EngineHost::Wsl(options) => {
                 let mut command = Command::new("wsl.exe");
                 command.args(self.wsl_args(options));
+                for (key, value) in self.process_env() {
+                    command.env(key, value);
+                }
                 command
             }
             EngineHost::Ssh(options) => {
@@ -361,9 +406,9 @@ impl HostCommand {
             script.push_str(&format!("cd {} && ", posix_quote(dir)));
         }
         script.push_str("exec");
-        if !self.env.is_empty() {
+        if !self.env.is_empty() || !self.secret_env.is_empty() {
             script.push_str(" env");
-            for (key, value) in &self.env {
+            for (key, value) in self.env.iter().chain(&self.secret_env) {
                 script.push(' ');
                 script.push_str(&posix_quote(&format!("{key}={value}")));
             }
@@ -442,6 +487,39 @@ mod tests {
             distro_name: "Ubuntu".to_string(),
             user: user.map(ToString::to_string),
         })
+    }
+
+    #[test]
+    fn secret_variables_stay_off_the_command_line_locally_and_in_wsl() {
+        for host in [EngineHost::Local, wsl(None)] {
+            let mut command = host.command("docker");
+            command
+                .args(["exec", "-e", "API_TOKEN", "container", "env"])
+                .secret_env("API_TOKEN", "s3cret");
+            let args = command
+                .to_command()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(
+                !args.iter().any(|arg| arg.contains("s3cret")),
+                "{host:?}: {args:?}"
+            );
+            let process_env = command.process_env();
+            assert!(
+                process_env.contains(&("API_TOKEN".to_string(), "s3cret".to_string())),
+                "{host:?}: {process_env:?}"
+            );
+        }
+
+        let mut command = wsl(None).command("docker");
+        command.secret_env("API_TOKEN", "s3cret");
+        let wslenv = command
+            .process_env()
+            .into_iter()
+            .find(|(key, _)| key == "WSLENV")
+            .map(|(_, value)| value);
+        assert!(wslenv.is_some_and(|wslenv| wslenv.ends_with("API_TOKEN/u")));
     }
 
     #[test]

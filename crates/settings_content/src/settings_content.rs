@@ -1382,6 +1382,13 @@ pub struct RemoteSettingsContent {
     ///
     /// Default: null
     pub dev_container_dotfiles_install_command: Option<String>,
+    /// A JSON file of secrets that dev containers get as environment variables,
+    /// like the Dev Container CLI's `--secrets-file`: an object of variable names
+    /// and values. Their values aren't stored with the container or its
+    /// connection.
+    ///
+    /// Default: null
+    pub dev_container_secrets_file: Option<String>,
     /// Where the dotfiles are cloned in the container.
     ///
     /// Default: "~/dotfiles"

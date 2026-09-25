@@ -244,8 +244,80 @@ impl DockerConnectionOptions {
     }
 }
 
+/// The file of secrets that dev containers get as environment variables, from the
+/// settings.
+pub struct DevContainerSecretsFile(pub Option<PathBuf>);
+
+impl gpui::Global for DevContainerSecretsFile {}
+
+/// Reads a secrets file: a JSON object of variable names and values, like the Dev
+/// Container CLI's `--secrets-file`.
+pub async fn read_dev_container_secrets(path: &Path) -> Result<BTreeMap<String, String>> {
+    let contents = smol::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("reading {}", path.display()))?;
+    parse_dev_container_secrets(&contents).with_context(|| format!("parsing {}", path.display()))
+}
+
+fn parse_dev_container_secrets(contents: &str) -> Result<BTreeMap<String, String>> {
+    let secrets: BTreeMap<String, serde_json::Value> = serde_json::from_str(contents)?;
+    Ok(secrets
+        .into_iter()
+        .filter_map(|(name, value)| {
+            // Names also go into `WSLENV`, which separates them with `:` and `/`.
+            let is_variable_name = name
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+                && name
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_');
+            if !is_variable_name {
+                log::warn!("Ignoring the dev container secret {name:?}: not a variable name");
+                return None;
+            }
+            match value {
+                serde_json::Value::String(value) => Some((name, value)),
+                _ => {
+                    log::warn!("Ignoring the dev container secret {name}: not a string");
+                    None
+                }
+            }
+        })
+        .collect())
+}
+
+/// The secrets of the settings' secrets file, or none when it can't be read.
+pub async fn load_dev_container_secrets(path: Option<&Path>) -> BTreeMap<String, String> {
+    let Some(path) = path else {
+        return BTreeMap::new();
+    };
+    read_dev_container_secrets(path)
+        .await
+        .unwrap_or_else(|error| {
+            log::error!("Dev containers get no secrets: {error:#}");
+            BTreeMap::new()
+        })
+}
+
+/// Passes `secrets` to a `docker exec` that `args` builds, by name only, so that
+/// their values aren't in its arguments.
+pub fn push_secrets(
+    args: &mut Vec<String>,
+    command: &mut HostCommand,
+    secrets: &BTreeMap<String, String>,
+) {
+    for (name, value) in secrets {
+        args.push("-e".to_string());
+        args.push(name.clone());
+        command.secret_env(name, value);
+    }
+}
+
 pub(crate) struct DockerExecConnection {
     proxy_process: Mutex<Option<u32>>,
+    /// Environment variables the container's processes get without storing them.
+    secrets: BTreeMap<String, String>,
     remote_dir_for_server: String,
     remote_binary_relpath: Option<Arc<RelPath>>,
     connection_options: DockerConnectionOptions,
@@ -265,6 +337,7 @@ impl DockerExecConnection {
     ) -> Result<Self> {
         let mut this = Self {
             proxy_process: Mutex::new(None),
+            secrets: BTreeMap::new(),
             remote_dir_for_server: "/".to_string(),
             remote_binary_relpath: None,
             connection_options,
@@ -275,6 +348,11 @@ impl DockerExecConnection {
             engine_environment: Vec::new(),
         };
         this.engine_environment = this.connection_options.host.engine_environment().await;
+        let secrets_file = cx.update(|cx| {
+            cx.try_global::<DevContainerSecretsFile>()
+                .and_then(|secrets_file| secrets_file.0.clone())
+        });
+        this.secrets = load_dev_container_secrets(secrets_file.as_deref()).await;
         let (release_channel, version, commit) = cx.update(|cx| {
             (
                 ReleaseChannel::global(cx),
@@ -1125,6 +1203,10 @@ impl RemoteConnection for DockerExecConnection {
             self.docker_cli(),
             &self.engine_environment,
         );
+        // Right after `exec`, among its options.
+        let mut secret_args = Vec::new();
+        push_secrets(&mut secret_args, &mut host_command, &self.secrets);
+        docker_args.splice(1..1, secret_args);
         host_command.args(&docker_args);
         for port in &self.connection_options.forward_ports {
             host_command.forward_port(*port);
@@ -1242,6 +1324,12 @@ impl RemoteConnection for DockerExecConnection {
 
         push_environment(&mut docker_args, &self.connection_options.remote_env);
         push_environment(&mut docker_args, env);
+        let mut command = engine_command(
+            &self.connection_options,
+            self.docker_cli(),
+            &self.engine_environment,
+        );
+        push_secrets(&mut docker_args, &mut command, &self.secrets);
 
         match interactive {
             Interactive::Yes => docker_args.push("-it".to_string()),
@@ -1251,14 +1339,12 @@ impl RemoteConnection for DockerExecConnection {
 
         docker_args.append(&mut inner_program);
 
-        let mut command = engine_command(
-            &self.connection_options,
-            self.docker_cli(),
-            &self.engine_environment,
-        );
         command
             .args(&docker_args)
             .interactive(interactive == Interactive::Yes);
+        // Docker-exec pipes in environment via the "-e" argument, except for secrets,
+        // which it reads from its own environment.
+        let env = command.process_env().into_iter().collect();
         let command = command.to_command();
         Ok(CommandTemplate {
             program: command.get_program().to_string_lossy().into_owned(),
@@ -1266,8 +1352,7 @@ impl RemoteConnection for DockerExecConnection {
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect(),
-            // Docker-exec pipes in environment via the "-e" argument
-            env: Default::default(),
+            env,
         })
     }
 
@@ -1492,6 +1577,40 @@ mod tests {
     }
 
     #[test]
+    fn secrets_reach_commands_by_name_only() {
+        let mut connection = connection(&[]);
+        connection.secrets = super::parse_dev_container_secrets(
+            r#"{ "API_TOKEN": "s3cret", "not a name": "x", "COUNT": 3 }"#,
+        )
+        .unwrap();
+        assert_eq!(connection.secrets.len(), 1);
+
+        let template = connection
+            .build_command(
+                Some("env".to_string()),
+                &[],
+                &Default::default(),
+                None,
+                None,
+                Interactive::No,
+            )
+            .unwrap();
+        assert!(
+            template
+                .args
+                .windows(2)
+                .any(|pair| pair == ["-e", "API_TOKEN"]),
+            "{:?}",
+            template.args
+        );
+        assert!(!template.args.iter().any(|arg| arg.contains("s3cret")));
+        assert_eq!(
+            template.env.get("API_TOKEN").map(String::as_str),
+            Some("s3cret")
+        );
+    }
+
+    #[test]
     fn redacts_forwarded_env() {
         let connection = connection(&[
             ("DATABASE_URL", "postgres://user:password@host/db"),
@@ -1606,6 +1725,7 @@ mod tests {
     fn connection(remote_env: &[(&str, &str)]) -> DockerExecConnection {
         DockerExecConnection {
             proxy_process: Mutex::new(None),
+            secrets: BTreeMap::new(),
             remote_dir_for_server: "/tmp/zed".to_string(),
             remote_binary_relpath: None,
             connection_options: DockerConnectionOptions {
