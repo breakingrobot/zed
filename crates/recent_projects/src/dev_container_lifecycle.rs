@@ -553,6 +553,7 @@ fn reconnect_connected_dev_container(
             remote_workspace_folder: starting_dir,
             deferred_hooks,
             config_changed,
+            warnings,
         } = match start_result {
             Ok(result) => result,
             Err(e) => {
@@ -581,6 +582,7 @@ fn reconnect_connected_dev_container(
 
         match result {
             Ok(window) => {
+                show_warnings(window, warnings, cx);
                 if config_changed {
                     suggest_rebuild(window, cx);
                 }
@@ -622,6 +624,29 @@ pub(crate) fn suggest_rebuild(window: WindowHandle<MultiWorkspace>, cx: &mut Asy
             })
         })
         .ok();
+}
+
+/// Shows the problems found while starting the dev container that didn't stop it.
+pub(crate) fn show_warnings(
+    window: WindowHandle<MultiWorkspace>,
+    warnings: Vec<String>,
+    cx: &mut AsyncApp,
+) {
+    struct DevContainerWarning;
+
+    for warning in warnings {
+        window
+            .update(cx, |multi_workspace, _window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    workspace.show_notification(
+                        NotificationId::composite::<DevContainerWarning>(warning.clone()),
+                        cx,
+                        |cx| cx.new(|cx| MessageNotification::new(warning, cx)),
+                    );
+                })
+            })
+            .ok();
+    }
 }
 
 /// Runs the lifecycle hooks the spec's `waitFor` let through after connecting, as

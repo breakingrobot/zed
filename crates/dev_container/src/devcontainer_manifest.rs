@@ -1336,6 +1336,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
             created_at: running_container.created.clone(),
             deferred_hooks: Vec::new(),
             config_changed: false,
+            warnings: Vec::new(),
             container_id: running_container.id,
             remote_user,
             remote_workspace_folder: remote_workspace_folder.display().to_string(),
@@ -2692,6 +2693,8 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
     async fn build_and_run(&mut self) -> Result<DevContainerUp, DevContainerError> {
         self.dev_container().validate_devcontainer_contents()?;
 
+        let warnings = self.unmet_host_requirements().await;
+
         self.download_feature_and_dockerfile_resources().await?;
 
         let build_resources = self.build_resources().await?;
@@ -2699,11 +2702,33 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         let devcontainer_up = self.run_dev_container(build_resources).await?;
 
         let mut devcontainer_up = devcontainer_up;
+        devcontainer_up.warnings = warnings;
         devcontainer_up.deferred_hooks = self
             .run_remote_scripts(&devcontainer_up, true, true)
             .await?;
 
         Ok(devcontainer_up)
+    }
+
+    /// Like VS Code, a container whose `hostRequirements` exceed what the engine has
+    /// is still created, with a warning for the user.
+    async fn unmet_host_requirements(&self) -> Vec<String> {
+        let Some(requirements) = self.dev_container().host_requirements() else {
+            return Vec::new();
+        };
+        let Some(resources) = self.docker_client.engine_resources().await else {
+            return Vec::new();
+        };
+        let unmet = requirements.unmet_by(&resources);
+        if unmet.is_empty() {
+            return Vec::new();
+        }
+        let warning = format!(
+            "This dev container needs more than its container engine has: {}. It may run slowly or fail.",
+            unmet.join(", ")
+        );
+        log::warn!("{warning}");
+        vec![warning]
     }
 
     async fn run_remote_scripts(
@@ -2925,6 +2950,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                     .and_then(|state| state.started_at.clone()),
                 created_at: docker_inspect.created.clone(),
                 deferred_hooks: Vec::new(),
+                warnings: Vec::new(),
                 config_changed: config_changed(
                     docker_inspect.config.labels.config_hash.as_deref(),
                     self.config_hash.as_deref(),
@@ -4091,7 +4117,7 @@ mod test {
         docker::{
             DockerClient, DockerComposeConfig, DockerComposeService, DockerComposeServiceBuild,
             DockerComposeVolume, DockerConfigLabels, DockerInspectConfig, DockerInspectMount,
-            DockerPs,
+            DockerPs, EngineResources,
         },
         oci::TokenResponse,
     };
@@ -4394,6 +4420,38 @@ mod test {
         assert!(remote_user.is_ok());
         let remote_user = remote_user.expect("ok");
         assert_eq!(&remote_user, "vsCode")
+    }
+
+    #[gpui::test]
+    async fn warns_when_the_engine_falls_short_of_host_requirements(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"
+            {
+              "image": "test_image:latest",
+              "hostRequirements": { "cpus": 16, "memory": "4gb", "storage": "1tb" }
+            }
+            "#,
+        )
+        .await
+        .unwrap();
+        test_dependencies
+            .docker
+            .set_engine_resources(EngineResources {
+                cpus: 8,
+                memory_bytes: 16 << 30,
+            });
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+
+        assert_eq!(
+            devcontainer_manifest.unmet_host_requirements().await,
+            vec![
+                "This dev container needs more than its container engine has: 16 CPUs (the \
+                 container engine has 8). It may run slowly or fail."
+                    .to_string()
+            ]
+        );
     }
 
     #[gpui::test]
@@ -4890,6 +4948,7 @@ mod test {
             created_at: None,
             deferred_hooks: Vec::new(),
             config_changed: false,
+            warnings: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -4967,6 +5026,7 @@ mod test {
             created_at: None,
             deferred_hooks: Vec::new(),
             config_changed: false,
+            warnings: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5041,6 +5101,7 @@ mod test {
             created_at: None,
             deferred_hooks: Vec::new(),
             config_changed: false,
+            warnings: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5097,6 +5158,7 @@ mod test {
             created_at: None,
             deferred_hooks: Vec::new(),
             config_changed: false,
+            warnings: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5157,6 +5219,7 @@ mod test {
             created_at: None,
             deferred_hooks: Vec::new(),
             config_changed: false,
+            warnings: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5196,6 +5259,7 @@ mod test {
             created_at: None,
             deferred_hooks: Vec::new(),
             config_changed: false,
+            warnings: Vec::new(),
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -8865,6 +8929,7 @@ RUN echo $RUBY_VERSION2
         /// no existing container matching the identifying labels.
         no_existing_container: Mutex<bool>,
         removed_container_ids: Mutex<Vec<String>>,
+        engine_resources: Mutex<Option<EngineResources>>,
     }
 
     impl FakeDocker {
@@ -8879,7 +8944,12 @@ RUN echo $RUBY_VERSION2
                 engine_host: EngineHost::Local,
                 no_existing_container: Mutex::new(false),
                 removed_container_ids: Mutex::new(Vec::new()),
+                engine_resources: Mutex::new(None),
             }
+        }
+
+        fn set_engine_resources(&self, resources: EngineResources) {
+            *self.engine_resources.lock().expect("should be available") = Some(resources);
         }
 
         fn recorded_compose_build_services(&self) -> Vec<Option<Vec<String>>> {
@@ -9302,6 +9372,9 @@ RUN echo $RUBY_VERSION2
         }
         fn supports_compose_buildkit(&self) -> bool {
             !self.podman && self.has_buildx
+        }
+        async fn engine_resources(&self) -> Option<EngineResources> {
+            *self.engine_resources.lock().expect("should be available")
         }
         fn docker_cli(&self) -> String {
             if self.podman {
