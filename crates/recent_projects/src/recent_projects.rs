@@ -302,6 +302,8 @@ pub(crate) fn open_dev_container(
 }
 
 pub fn init(cx: &mut App) {
+    dev_container_lifecycle::announce_forwarded_ports(cx);
+
     #[cfg(target_os = "windows")]
     cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenFolderInWsl, cx| {
         let create_new_window = open_wsl

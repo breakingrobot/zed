@@ -90,6 +90,8 @@ Zed connects once the container is created and the lifecycle command set by `wai
 
 When a program in the container starts listening on a TCP port, Zed forwards it to the same port on your machine, so `http://localhost:<port>` reaches it. Zed skips ports that are already in use on your machine, such as those published with `forwardPorts` or `appPort`.
 
+When Zed starts forwarding a port, it follows the port's `onAutoForward` in `portsAttributes` (or `otherPortsAttributes`): `notify` (the default) shows a notification naming the port and its `label`, `openBrowser` and `openPreview` open `http://localhost:<port>` in your browser, `openBrowserOnce` does so only the first time the port is forwarded while Zed runs, and `silent` forwards it without telling you.
+
 To keep a port from being forwarded, set its `onAutoForward` to `ignore` in `portsAttributes`. Keys can be a port or a range such as `"3000-3010"`. Set `otherPortsAttributes` to `{ "onAutoForward": "ignore" }` to forward only the ports listed in `portsAttributes`:
 
 ```json

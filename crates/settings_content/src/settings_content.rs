@@ -1414,6 +1414,11 @@ pub struct DevContainerConnection {
     ///
     /// Default: true
     pub auto_forward_other_ports: Option<bool>,
+    /// How Zed tells the user that a port `auto_forward_ports` doesn't cover is
+    /// forwarded.
+    ///
+    /// Default: notify
+    pub auto_forward_other_ports_notice: Option<DevContainerForwardNotice>,
 }
 
 #[with_fallible_options]
@@ -1425,6 +1430,31 @@ pub struct DevContainerPortRule {
     pub end: u16,
     /// Whether ports in the range are forwarded.
     pub forward: bool,
+    /// The name shown for ports in the range.
+    pub label: Option<String>,
+    /// How Zed tells the user that a port in the range is forwarded.
+    ///
+    /// Default: notify
+    pub notice: Option<DevContainerForwardNotice>,
+}
+
+/// What Zed does when it starts forwarding a dev container port, from the
+/// configuration's `onAutoForward`.
+#[with_fallible_options]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, MergeFrom,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DevContainerForwardNotice {
+    /// Tell the user which port is forwarded.
+    #[default]
+    Notify,
+    /// Open the port in the browser.
+    OpenBrowser,
+    /// Open the port in the browser the first time it's forwarded.
+    OpenBrowserOnce,
+    /// Forward the port without telling the user.
+    Silent,
 }
 
 #[with_fallible_options]
