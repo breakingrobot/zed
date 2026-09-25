@@ -754,19 +754,23 @@ impl DevContainerManifest {
                     DevContainerError::ResourceFetchFailed
                 })?
                 .digest;
+            // Like the reference CLI, an OCI feature's integrity is the digest of its
+            // manifest, which pins its content. Lockfiles from earlier versions of Zed
+            // hold the digest of its layer instead, and are rewritten.
             if let Some(locked) = self
                 .lockfile
                 .as_ref()
                 .and_then(|lockfile| lockfile.features.get(feature_ref))
+                && locked.integrity != manifest_digest
                 && locked.integrity != *digest
             {
                 return Err(DevContainerError::DevContainerValidationFailed(format!(
-                    "Feature '{feature_ref}' doesn't match its integrity in devcontainer-lock.json"
+                    "Feature '{feature_ref}' doesn't match its integrity in devcontainer-lock.json.                      If you trust its new content, remove its entry from the lockfile to update it."
                 )));
             }
             resolved = Some((
                 format!("{}/{}@{manifest_digest}", oci_ref.registry, oci_ref.path),
-                digest.clone(),
+                manifest_digest.clone(),
             ));
             self.download_feature_layer(
                 &token,
@@ -5379,9 +5383,118 @@ mod test {
                 .starts_with("ghcr.io/devcontainers/features/docker-in-docker@sha256:"),
             "{locked:?}"
         );
+        // Like the reference CLI's, so that VS Code and Zed share lockfiles: the
+        // integrity is the manifest's digest, the one the feature is resolved to.
         assert_eq!(
+            locked.resolved.rsplit_once('@').map(|(_, digest)| digest),
+            Some(locked.integrity.as_str())
+        );
+        assert_ne!(
             locked.integrity,
-            "sha256:8b37cc2539088e92b7e0e1ff5ab5605724d65041b64a0c27b025a6648e050372"
+            "sha256:8b37cc2539088e92b7e0e1ff5ab5605724d65041b64a0c27b025a6648e050372",
+            "not the layer's digest"
+        );
+    }
+
+    #[gpui::test]
+    async fn accepts_lockfiles_written_by_vs_code(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, DOCKER_IN_DOCKER_CONFIG)
+                .await
+                .unwrap();
+        let lockfile_path =
+            PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer/devcontainer-lock.json");
+        test_dependencies
+            .fs
+            .atomic_write(lockfile_path.clone(), String::new())
+            .await
+            .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest
+            .download_feature_and_dockerfile_resources()
+            .await
+            .unwrap();
+        let lockfile: FeatureLockfile =
+            serde_json::from_str(&test_dependencies.fs.load(&lockfile_path).await.unwrap())
+                .unwrap();
+        let manifest_digest =
+            lockfile.features["ghcr.io/devcontainers/features/docker-in-docker:2"]
+                .integrity
+                .clone();
+
+        // What VS Code writes, resolved by the tag the fake registry serves, for a
+        // project that Zed didn't open before.
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, DOCKER_IN_DOCKER_CONFIG)
+                .await
+                .unwrap();
+        test_dependencies
+            .fs
+            .atomic_write(
+                lockfile_path.clone(),
+                format!(
+                    r#"{{
+                        "features": {{
+                            "ghcr.io/devcontainers/features/docker-in-docker:2": {{
+                                "version": "2.16.1",
+                                "resolved": "ghcr.io/devcontainers/features/docker-in-docker@2",
+                                "integrity": "{manifest_digest}"
+                            }}
+                        }}
+                    }}"#
+                ),
+            )
+            .await
+            .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest
+            .download_feature_and_dockerfile_resources()
+            .await
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn accepts_lockfiles_from_earlier_versions_of_zed(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, DOCKER_IN_DOCKER_CONFIG)
+                .await
+                .unwrap();
+        let lockfile_path =
+            PathBuf::from(TEST_PROJECT_PATH).join(".devcontainer/devcontainer-lock.json");
+        // The integrity is the digest of the feature's layer, which Zed used to record.
+        // The fake registry serves the feature's manifest by its tag, `2`.
+        test_dependencies
+            .fs
+            .atomic_write(
+                lockfile_path.clone(),
+                r#"{
+                    "features": {
+                        "ghcr.io/devcontainers/features/docker-in-docker:2": {
+                            "version": "2.16.1",
+                            "resolved": "ghcr.io/devcontainers/features/docker-in-docker@2",
+                            "integrity": "sha256:8b37cc2539088e92b7e0e1ff5ab5605724d65041b64a0c27b025a6648e050372"
+                        }
+                    }
+                }"#
+                .to_string(),
+            )
+            .await
+            .unwrap();
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest
+            .download_feature_and_dockerfile_resources()
+            .await
+            .unwrap();
+
+        let lockfile: FeatureLockfile =
+            serde_json::from_str(&test_dependencies.fs.load(&lockfile_path).await.unwrap())
+                .unwrap();
+        let locked = &lockfile.features["ghcr.io/devcontainers/features/docker-in-docker:2"];
+        assert_eq!(
+            locked.resolved.rsplit_once('@').map(|(_, digest)| digest),
+            Some(locked.integrity.as_str()),
+            "rewritten with the manifest's digest"
         );
     }
 
