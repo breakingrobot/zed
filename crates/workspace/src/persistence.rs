@@ -1764,7 +1764,9 @@ impl WorkspaceDb {
                 distro = Some(distro_name);
                 user = identity_user;
             }
-            RemoteConnectionIdentity::Docker { remote_user, key } => {
+            RemoteConnectionIdentity::Docker {
+                remote_user, key, ..
+            } => {
                 kind = RemoteConnectionKind::Docker;
                 user = Some(remote_user);
                 match key {
