@@ -32,6 +32,10 @@ When you open a project that contains the `.devcontainer/devcontainer.json` dire
 If you dismiss the prompt or want to reopen the project inside a container later, you can use Zed's command palette to run the "Project: Open Remote" command and select the option to open the project in a dev container.
 Alternatively, you can reach for the Remote Projects modal (through the {#kb projects::OpenRemote} binding) and choose the "Connect Dev Container" option.
 
+### Adding a configuration from a template
+
+To add a dev container to a project that doesn't have one, run {#action projects::InitializeDevContainer} and pick a template of the [official collection](https://containers.dev/templates), like VS Code's "Add Dev Container Configuration Files". Zed asks for the template's options and the features to add, then writes `.devcontainer/devcontainer.json` into the project.
+
 ### Cloning a repository in a container volume
 
 Run {#action projects::CloneRepositoryInContainerVolume} and type a repository's URL to clone it into a volume of the container engine on your machine and open it in its dev container, like VS Code's "Clone Repository in Container Volume". The sources stay in the volume, mounted at `/workspaces`, which is faster than a folder of your machine when the engine runs in a virtual machine, as Docker Desktop does. The repository needs a `.devcontainer/devcontainer.json` or `.devcontainer.json`.
