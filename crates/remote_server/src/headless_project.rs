@@ -74,7 +74,7 @@ pub struct HeadlessProject {
     pub _toolchain_store: Entity<ToolchainStore>,
     pub kernels: HashMap<String, Child>,
     /// Where the data the client sends through each open port tunnel goes.
-    port_tunnels: HashMap<u64, futures::channel::mpsc::UnboundedSender<Vec<u8>>>,
+    pub(crate) port_tunnels: HashMap<u64, futures::channel::mpsc::UnboundedSender<Vec<u8>>>,
     /// Answers the git credential helper once the client forwards git credentials.
     git_credential_forwarding: Option<gpui::Task<()>>,
 }
@@ -1259,7 +1259,7 @@ impl HeadlessProject {
         envelope: TypedEnvelope<proto::OpenPortTunnel>,
         mut cx: AsyncApp,
     ) -> Result<impl futures::Stream<Item = Result<proto::OpenPortTunnelResponse>>> {
-        use futures::{AsyncReadExt as _, AsyncWriteExt as _, StreamExt as _};
+        use futures::{AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 
         let port = u16::try_from(envelope.payload.port)?;
         let tunnel_id = envelope.payload.tunnel_id;
@@ -1280,25 +1280,62 @@ impl HeadlessProject {
             },
         };
         let (reader, mut writer) = socket.split();
-        cx.background_spawn(async move {
-            while let Some(data) = receiver.next().await {
-                if writer.write_all(&data).await.is_err() {
-                    break;
+        // Dropped with the stream of responses, once the port stops sending or the
+        // client stops listening, which ends the tunnel.
+        let (reader_alive, reader_ended) = futures::channel::oneshot::channel::<()>();
+        let weak_this = this.downgrade();
+        let forward_data = cx.background_spawn(async move {
+            // `select!` skips a receiver whose other end is already dropped, as it
+            // counts as terminated, unless it's wrapped in `Fuse`.
+            let mut reader_ended = reader_ended.fuse();
+            loop {
+                futures::select_biased! {
+                    data = receiver.next().fuse() => match data {
+                        Some(data) => {
+                            if writer.write_all(&data).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    },
+                    _ = reader_ended => break,
                 }
             }
             writer.close().await.ok();
+            receiver
+        });
+        cx.spawn(async move |cx| {
+            let receiver = forward_data.await;
+            // The client may have reused the id for a newer tunnel already.
+            weak_this
+                .update(cx, |this, _| {
+                    if this
+                        .port_tunnels
+                        .get(&tunnel_id)
+                        .is_some_and(|sender| sender.is_connected_to(&receiver))
+                    {
+                        this.port_tunnels.remove(&tunnel_id);
+                    }
+                })
+                .ok();
         })
         .detach();
-        Ok(futures::stream::unfold(reader, |mut reader| async move {
-            let mut buffer = vec![0; 64 * 1024];
-            match reader.read(&mut buffer).await {
-                Ok(0) | Err(_) => None,
-                Ok(length) => {
-                    buffer.truncate(length);
-                    Some((Ok(proto::OpenPortTunnelResponse { data: buffer }), reader))
+        Ok(futures::stream::unfold(
+            (reader, reader_alive),
+            |(mut reader, reader_alive)| async move {
+                let mut buffer = vec![0; 64 * 1024];
+                match reader.read(&mut buffer).await {
+                    Ok(0) | Err(_) => None,
+                    Ok(length) => {
+                        buffer.truncate(length);
+                        Some((
+                            Ok(proto::OpenPortTunnelResponse { data: buffer }),
+                            (reader, reader_alive),
+                        ))
+                    }
                 }
-            }
-        }))
+            },
+        ))
     }
 
     async fn handle_port_tunnel_data(

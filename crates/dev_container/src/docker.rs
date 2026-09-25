@@ -359,7 +359,8 @@ impl Docker {
     async fn run_logged(&self, command: &HostCommand) -> std::io::Result<std::process::Output> {
         let output = command.output().await;
         if let Some(log) = &self.log {
-            log.record(&command.to_command(), &output).await;
+            log.record(&command.to_command(), &command.secret_values(), &output)
+                .await;
         }
         output
     }

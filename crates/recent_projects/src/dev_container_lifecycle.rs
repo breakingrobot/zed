@@ -331,10 +331,16 @@ pub async fn delete_dev_container_with_options(
         shutdown_remote_connection(workspace_handle, cx).await;
     }
 
+    // If the window closed meanwhile, the container's cached environment merely
+    // stays until the session ends.
+    let session_cache = cx
+        .update(|_, cx| dev_container::SessionCache::global(cx))
+        .unwrap_or_default();
     if let Err(e) = dev_container::remove_dev_container(
         &options.container_id,
         options.use_podman,
         &options.host,
+        &session_cache,
     )
     .await
     {

@@ -61,6 +61,42 @@ fn send_command(container_id: &str, command: impl Fn() -> PortCommand) {
     let mut forwarders = FORWARDER_COMMANDS.lock();
     if let Some(senders) = forwarders.get_mut(container_id) {
         senders.retain(|sender| sender.unbounded_send(command()).is_ok());
+        if senders.is_empty() {
+            forwarders.remove(container_id);
+        }
+    }
+}
+
+/// Takes a forwarder's command channel out of [`FORWARDER_COMMANDS`] once the
+/// forwarder stops.
+struct ForwarderRegistration {
+    container_id: String,
+    sender: UnboundedSender<PortCommand>,
+}
+
+impl ForwarderRegistration {
+    fn new(container_id: &str, sender: UnboundedSender<PortCommand>) -> Self {
+        FORWARDER_COMMANDS
+            .lock()
+            .entry(container_id.to_string())
+            .or_default()
+            .push(sender.clone());
+        Self {
+            container_id: container_id.to_string(),
+            sender,
+        }
+    }
+}
+
+impl Drop for ForwarderRegistration {
+    fn drop(&mut self) {
+        let mut forwarders = FORWARDER_COMMANDS.lock();
+        if let Some(senders) = forwarders.get_mut(&self.container_id) {
+            senders.retain(|sender| !sender.same_receiver(&self.sender));
+            if senders.is_empty() {
+                forwarders.remove(&self.container_id);
+            }
+        }
     }
 }
 
@@ -133,11 +169,7 @@ impl PortForwarder {
     pub(crate) async fn run(self) {
         let container_id = self.connection_options.container_id.clone();
         let (command_sender, mut commands) = futures::channel::mpsc::unbounded();
-        FORWARDER_COMMANDS
-            .lock()
-            .entry(container_id.clone())
-            .or_default()
-            .push(command_sender);
+        let _registration = ForwarderRegistration::new(&container_id, command_sender);
         let mut handled = HashSet::new();
         let mut forwards = Forwards {
             container_id: container_id.clone(),
@@ -303,14 +335,8 @@ async fn tunnel(client: AnyProtoClient, stream: smol::net::TcpStream, port: u16)
                 }
             }
         }
-        // Lets the port see the end of what was sent, while its answer keeps coming.
-        client
-            .send(proto::ClosePortTunnel {
-                project_id: REMOTE_SERVER_PROJECT_ID,
-                tunnel_id,
-            })
-            .ok();
-    };
+    }
+    .fuse();
     let download = async {
         while let Some(Ok(response)) = responses.next().await {
             if to_local.write_all(&response.data).await.is_err() {
@@ -318,8 +344,25 @@ async fn tunnel(client: AnyProtoClient, stream: smol::net::TcpStream, port: u16)
             }
         }
         to_local.close().await.ok();
+    }
+    .fuse();
+    futures::pin_mut!(upload, download);
+    let close = proto::ClosePortTunnel {
+        project_id: REMOTE_SERVER_PROJECT_ID,
+        tunnel_id,
     };
-    futures::future::join(upload, download).await;
+    futures::select_biased! {
+        () = download => {
+            // The server has dropped its end of the tunnel, so what the connection
+            // still sends has nowhere to go.
+            client.send(close).ok();
+        }
+        () = upload => {
+            // Lets the port see the end of what was sent, while its answer keeps coming.
+            client.send(close).ok();
+            download.await;
+        }
+    }
     Ok(())
 }
 
@@ -361,6 +404,25 @@ mod tests {
             let same = super::bind_local_port(port, true).await.unwrap();
             assert_eq!(same.local_addr().unwrap().port(), port);
         });
+    }
+
+    #[test]
+    fn stopped_forwarders_are_forgotten() {
+        let (first_sender, _first_commands) = futures::channel::mpsc::unbounded();
+        let (second_sender, _second_commands) = futures::channel::mpsc::unbounded();
+        let first = super::ForwarderRegistration::new("registered-container", first_sender);
+        let second = super::ForwarderRegistration::new("registered-container", second_sender);
+        let registered = || {
+            super::FORWARDER_COMMANDS
+                .lock()
+                .get("registered-container")
+                .map(Vec::len)
+        };
+        assert_eq!(registered(), Some(2));
+        drop(first);
+        assert_eq!(registered(), Some(1));
+        drop(second);
+        assert_eq!(registered(), None);
     }
 
     #[test]

@@ -160,6 +160,7 @@ impl DevContainersDelegate {
     fn stop_or_remove(&self, container: DevContainerSummary, window: &mut Window, cx: &mut App) {
         let engine_host = self.engine_host.clone();
         let use_podman = self.use_podman;
+        let session_cache = dev_container::SessionCache::global(cx);
         window
             .spawn(cx, async move |cx| {
                 let result = if container.running {
@@ -179,8 +180,13 @@ impl DevContainersDelegate {
                     if !matches!(confirmed, Ok(0)) {
                         return;
                     }
-                    dev_container::remove_dev_container(&container.id, use_podman, &engine_host)
-                        .await
+                    dev_container::remove_dev_container(
+                        &container.id,
+                        use_podman,
+                        &engine_host,
+                        &session_cache,
+                    )
+                    .await
                 };
                 if let Err(error) = result {
                     cx.prompt(

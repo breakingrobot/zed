@@ -51,10 +51,17 @@ impl DevContainerLog {
         }
     }
 
-    pub(crate) async fn record(&self, command: &Command, output: &Result<Output, std::io::Error>) {
+    /// Appends `command` and its output, with the values of `secrets` redacted from
+    /// the command line.
+    pub(crate) async fn record(
+        &self,
+        command: &Command,
+        secrets: &[String],
+        output: &Result<Output, std::io::Error>,
+    ) {
         use futures::AsyncWriteExt as _;
 
-        let mut entry = format!("$ {}\n", describe_command(command));
+        let mut entry = format!("$ {}\n", describe_command(command, secrets));
         match output {
             Ok(output) => {
                 entry.push_str(&String::from_utf8_lossy(&output.stdout));
@@ -84,17 +91,32 @@ impl DevContainerLog {
 }
 
 /// The command line, without the values of the environment variables that
-/// `docker exec -e` or `docker run -e` passes, which may be secret.
-fn describe_command(command: &Command) -> String {
+/// `docker exec -e` or `docker run -e` passes, which may be secret, nor the
+/// `secrets`, which can be anywhere in an argument, such as the remote command
+/// that `ssh` runs.
+fn describe_command(command: &Command, secrets: &[String]) -> String {
+    let mut secrets: Vec<&str> = secrets
+        .iter()
+        .map(String::as_str)
+        .filter(|secret| !secret.is_empty())
+        .collect();
+    // Longest first, so that a secret containing another isn't partly left behind.
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+
     let mut words = vec![command.get_program().to_string_lossy().into_owned()];
     let mut previous_was_env_flag = false;
     for arg in command.get_args() {
         let arg = arg.to_string_lossy();
-        let word = match arg.split_once('=') {
+        let mut word = match arg.split_once('=') {
             Some((name, _)) if previous_was_env_flag => format!("{name}=<redacted>"),
             _ => arg.into_owned(),
         };
         previous_was_env_flag = word == "-e" || word == "--env";
+        for secret in &secrets {
+            if word.contains(secret) {
+                word = word.replace(secret, "<redacted>");
+            }
+        }
         words.push(word);
     }
     words.join(" ")
@@ -110,7 +132,7 @@ pub(crate) struct LoggingCommandRunner {
 impl CommandRunner for LoggingCommandRunner {
     async fn run_command(&self, command: &mut Command) -> Result<Output, std::io::Error> {
         let output = self.inner.run_command(command).await;
-        self.log.record(command, &output).await;
+        self.log.record(command, &[], &output).await;
         output
     }
 }
@@ -212,9 +234,10 @@ mod tests {
                 stdout: b"built\n".to_vec(),
                 stderr: b"warning".to_vec(),
             });
-            log.record(&command, &output).await;
+            log.record(&command, &[], &output).await;
             log.record(
                 &util::command::new_command("missing"),
+                &[],
                 &Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
             )
             .await;
@@ -236,6 +259,39 @@ mod tests {
             super::DevContainerLog::start(path.clone()).await.unwrap();
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
         });
+    }
+
+    #[test]
+    fn dev_container_log_redacts_secrets_passed_through_ssh() {
+        let host = remote::EngineHost::Ssh(remote::SshEngineHost {
+            host: "example.com".to_string(),
+            username: None,
+            port: None,
+            args: Vec::new(),
+        });
+        let mut command = host.command("docker");
+        command
+            .args([
+                "exec",
+                "-e",
+                "API_TOKEN",
+                "-e",
+                "EMPTY",
+                "container",
+                "true",
+            ])
+            .secret_env("API_TOKEN", "it's s3cret")
+            .secret_env("EMPTY", "");
+        let ssh_command = command.to_command();
+        let unredacted = super::describe_command(&ssh_command, &[]);
+        assert!(unredacted.contains(r"it'\''s s3cret"), "{unredacted}");
+
+        let description = super::describe_command(&ssh_command, &command.secret_values());
+        assert!(!description.contains("s3cret"), "{description}");
+        assert!(
+            description.contains("exec env 'API_TOKEN=<redacted>' 'EMPTY=' 'docker' 'exec'"),
+            "{description}"
+        );
     }
 
     use std::process::ExitStatus;

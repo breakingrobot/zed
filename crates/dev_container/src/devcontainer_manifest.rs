@@ -37,7 +37,7 @@ use crate::{
         LockedFeature, compute_feature_install_order, parse_oci_feature_ref,
     },
     get_oci_token,
-    oci::{TokenResponse, download_oci_tarball, get_oci_manifest_with_digest},
+    oci::{TokenResponse, download_oci_tarball, get_oci_manifest_with_digest, validate_oci_digest},
     safe_id_lower,
 };
 
@@ -818,6 +818,7 @@ impl DevContainerManifest {
         digest: &str,
         destination: &Path,
     ) -> Result<(), DevContainerError> {
+        validate_oci_digest(digest)?;
         let cached = self.feature_cache_directory.join(digest.replace(':', "-"));
         if self.fs.is_dir(&cached).await {
             match copy_dir(&*self.fs, &cached, destination).await {
@@ -1114,7 +1115,7 @@ impl DevContainerManifest {
             };
 
             let feature_id = extract_feature_id(feature_ref);
-            let consecutive_id = format!("{}_{}", feature_id, index);
+            let consecutive_id = feature_directory_name(feature_id, index);
             let feature_dir = build_info.features_content_dir.join(&consecutive_id);
 
             self.fs
@@ -3400,6 +3401,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                 docker_ps.id
             );
             self.docker_client.remove_container(&docker_ps.id).await?;
+            self.session_cache.forget_container(&docker_ps.id);
         }
         Ok(())
     }
@@ -3915,6 +3917,23 @@ fn compose_fragment_declares_name(contents: &str) -> bool {
 /// - `ghcr.io/user/repo/go` → `go`
 /// - `ghcr.io/devcontainers/features/rust@sha256:abc` → `rust`
 /// - `./myFeature` → `myFeature`
+/// The folder of a feature's content. Features named by the `dependsOn` of a
+/// registry's feature metadata can have any id, so only characters that can't
+/// leave the folder are kept.
+fn feature_directory_name(feature_id: &str, index: usize) -> String {
+    let feature_id: String = feature_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{feature_id}_{index}")
+}
+
 fn extract_feature_id(feature_ref: &str) -> &str {
     let without_version = if let Some(at_idx) = feature_ref.rfind('@') {
         &feature_ref[..at_idx]
@@ -4673,8 +4692,9 @@ mod test {
         devcontainer_manifest::{
             ConfigStatus, DevContainerManifest, DockerBuildResources, DockerComposeResources,
             DockerInspect, dockerfile_inject_alias, escape_compose_interpolation,
-            extract_feature_id, find_primary_service, get_remote_user_from_config,
-            image_from_dockerfile, is_local_feature_ref, resolve_compose_dockerfile,
+            extract_feature_id, feature_directory_name, find_primary_service,
+            get_remote_user_from_config, image_from_dockerfile, is_local_feature_ref,
+            resolve_compose_dockerfile,
         },
         docker::{
             DockerClient, DockerComposeConfig, DockerComposeDeploy, DockerComposeService,
@@ -5352,7 +5372,7 @@ mod test {
         );
         assert_eq!(
             locked.integrity,
-            "sha256:bc7ab0d8d8339416e1491419ab9ffe931458d0130110f4b18351b0fa184e67d5"
+            "sha256:8b37cc2539088e92b7e0e1ff5ab5605724d65041b64a0c27b025a6648e050372"
         );
     }
 
@@ -5371,7 +5391,7 @@ mod test {
             .await
             .unwrap();
         let cached = PathBuf::from(
-            "/feature-cache/sha256-bc7ab0d8d8339416e1491419ab9ffe931458d0130110f4b18351b0fa184e67d5",
+            "/feature-cache/sha256-8b37cc2539088e92b7e0e1ff5ab5605724d65041b64a0c27b025a6648e050372",
         );
         let cached_install_script = cached.join("install.sh");
         assert!(test_dependencies.fs.is_file(&cached_install_script).await);
@@ -5500,6 +5520,14 @@ mod test {
             extract_feature_id("ghcr.io/devcontainers/features/rust@sha256:abc123"),
             "rust"
         );
+    }
+
+    #[test]
+    fn feature_directories_stay_in_the_features_folder() {
+        assert_eq!(feature_directory_name("aws-cli", 0), "aws-cli_0");
+        assert_eq!(feature_directory_name("..", 1), ".._1");
+        assert_eq!(feature_directory_name(r"..\..\x", 2), ".._.._x_2");
+        assert_eq!(feature_directory_name("/abs", 3), "_abs_3");
     }
 
     #[test]
@@ -10786,7 +10814,7 @@ RUN echo $RUBY_VERSION2
                         "layers": [
                             {
                                 "mediaType": "application/vnd.devcontainers.layer.v1+tar",
-                                "digest": "sha256:bc7ab0d8d8339416e1491419ab9ffe931458d0130110f4b18351b0fa184e67d5",
+                                "digest": "sha256:8b37cc2539088e92b7e0e1ff5ab5605724d65041b64a0c27b025a6648e050372",
                                 "size": 59392,
                                 "annotations": {
                                     "org.opencontainers.image.title": "devcontainer-feature-docker-in-docker.tgz"
@@ -10806,7 +10834,7 @@ RUN echo $RUBY_VERSION2
             }
 
             if parts.uri.path()
-                == "/v2/devcontainers/features/docker-in-docker/blobs/sha256:bc7ab0d8d8339416e1491419ab9ffe931458d0130110f4b18351b0fa184e67d5"
+                == "/v2/devcontainers/features/docker-in-docker/blobs/sha256:8b37cc2539088e92b7e0e1ff5ab5605724d65041b64a0c27b025a6648e050372"
             {
                 let response = build_tarball(vec![
                     ("./NOTES.md", r#"
@@ -12020,7 +12048,7 @@ RUN echo $RUBY_VERSION2
                         "layers": [
                             {
                                 "mediaType": "application/vnd.devcontainers.layer.v1+tar",
-                                "digest": "sha256:eadd8a4757ee8ea6c1bc0aae22da49b7e5f2f1e32a87a5eac3cadeb7d2ccdad1",
+                                "digest": "sha256:690371a4fe28d319747b3e80bc3f23f4ef270413bd8c1ab9e520e759cc753d5f",
                                 "size": 20992,
                                 "annotations": {
                                     "org.opencontainers.image.title": "devcontainer-feature-go.tgz"
@@ -12040,7 +12068,7 @@ RUN echo $RUBY_VERSION2
                     .unwrap());
             }
             if parts.uri.path()
-                == "/v2/devcontainers/features/go/blobs/sha256:eadd8a4757ee8ea6c1bc0aae22da49b7e5f2f1e32a87a5eac3cadeb7d2ccdad1"
+                == "/v2/devcontainers/features/go/blobs/sha256:690371a4fe28d319747b3e80bc3f23f4ef270413bd8c1ab9e520e759cc753d5f"
             {
                 let response = build_tarball(vec![
                     ("./devcontainer-feature.json", r#"
@@ -12470,7 +12498,7 @@ RUN echo $RUBY_VERSION2
                         "layers": [
                             {
                                 "mediaType": "application/vnd.devcontainers.layer.v1+tar",
-                                "digest": "sha256:4e9b04b394fb63e297b3d5f58185406ea45bddb639c2ba83b5a8394643cd5b13",
+                                "digest": "sha256:8bb5bfef65a938462ef91286787de47f1ec6e9f6695d757199f97136115ad44b",
                                 "size": 19968,
                                 "annotations": {
                                     "org.opencontainers.image.title": "devcontainer-feature-aws-cli.tgz"
@@ -12488,7 +12516,7 @@ RUN echo $RUBY_VERSION2
                     .unwrap());
             }
             if parts.uri.path()
-                == "/v2/devcontainers/features/aws-cli/blobs/sha256:4e9b04b394fb63e297b3d5f58185406ea45bddb639c2ba83b5a8394643cd5b13"
+                == "/v2/devcontainers/features/aws-cli/blobs/sha256:8bb5bfef65a938462ef91286787de47f1ec6e9f6695d757199f97136115ad44b"
             {
                 let response = build_tarball(vec![
                     (
