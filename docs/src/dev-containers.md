@@ -77,6 +77,8 @@ From a dev container window, the command palette and the dev container menu in t
 
 These actions work the same for containers running locally, in WSL, or on an SSH host.
 
+When you close the last window connected to a dev container, or quit Zed, Zed carries out the configuration's `shutdownAction`: `stopContainer` (the default for image and Dockerfile configurations) stops the container, `stopCompose` (the default for Docker Compose configurations) stops every container of the Compose project, and `none` keeps them running. `stopCompose` runs `docker compose --project-name <project> stop`, which needs Docker Compose v2, or a Podman compose provider that can stop a project by name.
+
 ## Working in a Dev Container
 
 Once connected, Zed operates inside the container environment for tasks, terminals, and language servers.

@@ -1419,6 +1419,29 @@ pub struct DevContainerConnection {
     ///
     /// Default: notify
     pub auto_forward_other_ports_notice: Option<DevContainerForwardNotice>,
+    /// What happens to the container once no window is connected to it.
+    ///
+    /// Default: none
+    pub shutdown_action: Option<DevContainerShutdownAction>,
+    /// The Compose project that `shutdown_action` stops.
+    pub compose_project: Option<String>,
+}
+
+/// What happens to a dev container once no window is connected to it, from the
+/// configuration's `shutdownAction`.
+#[with_fallible_options]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, MergeFrom,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DevContainerShutdownAction {
+    /// Keep the container running.
+    #[default]
+    None,
+    /// Stop the container.
+    StopContainer,
+    /// Stop every container of `compose_project`.
+    StopCompose,
 }
 
 #[with_fallible_options]

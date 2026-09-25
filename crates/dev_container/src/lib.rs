@@ -65,7 +65,8 @@ pub use devcontainer_api::{
     BuildMode, DeferredCommand, DeferredHook, DevContainerConfig, DevContainerError,
     DevContainerOrigin, StartedDevContainer, dev_container_origin, find_configs_in_snapshot,
     find_devcontainer_configs, rebuild_dev_container, remove_dev_container, restart_dev_container,
-    start_dev_container, start_dev_container_with_config, stop_dev_container,
+    shut_down_dev_container, shutdown_command, start_dev_container,
+    start_dev_container_with_config, stop_dev_container,
 };
 
 /// Converts a string to a safe environment variable name.

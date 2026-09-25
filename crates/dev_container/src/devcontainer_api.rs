@@ -8,12 +8,12 @@ use std::{
 use futures::TryFutureExt;
 use gpui::{AsyncWindowContext, Entity};
 use project::Worktree;
-use remote::EngineHost;
-use remote::ForwardNotice;
+use remote::{DockerConnectionOptions, EngineHost, HostCommand};
+use remote::{ForwardNotice, ShutdownAction};
 use serde::Deserialize;
 use settings::{
     DevContainerConnection, DevContainerForwardNotice, DevContainerPortRule,
-    infer_json_indent_size, replace_value_in_json_text,
+    DevContainerShutdownAction, infer_json_indent_size, replace_value_in_json_text,
 };
 use util::rel_path::RelPath;
 use walkdir::WalkDir;
@@ -130,6 +130,9 @@ pub(crate) struct DevContainerUp {
     /// Problems worth telling the user about that didn't stop the container.
     #[serde(skip)]
     pub(crate) warnings: Vec<String>,
+    /// The Compose project the container belongs to, for Compose configurations.
+    #[serde(skip)]
+    pub(crate) compose_project: Option<String>,
     /// The container's `devcontainer.metadata` label entries, which carry the
     /// lifecycle commands contributed by features.
     #[serde(skip)]
@@ -397,6 +400,7 @@ pub async fn start_dev_container_with_config(
             deferred_hooks,
             config_changed,
             warnings,
+            compose_project,
             ..
         }) => {
             let configuration =
@@ -407,11 +411,12 @@ pub async fn start_dev_container_with_config(
                 }) => name.clone(),
                 _ => get_backup_project_name(&remote_workspace_folder, &container_id),
             };
-            let (forward_ports, auto_forward) = configuration
+            let (forward_ports, auto_forward, shutdown_action) = configuration
                 .map(|configuration| {
                     (
                         configuration.published_host_ports(),
                         configuration.auto_forward_ports(),
+                        configuration.shutdown_action(compose_project),
                     )
                 })
                 .unwrap_or_default();
@@ -475,6 +480,15 @@ pub async fn start_dev_container_with_config(
                 auto_forward_other_ports_notice: Some(forward_notice_setting(
                     auto_forward.other_ports_notice,
                 )),
+                shutdown_action: Some(match &shutdown_action {
+                    ShutdownAction::None => DevContainerShutdownAction::None,
+                    ShutdownAction::StopContainer => DevContainerShutdownAction::StopContainer,
+                    ShutdownAction::StopCompose { .. } => DevContainerShutdownAction::StopCompose,
+                }),
+                compose_project: match shutdown_action {
+                    ShutdownAction::StopCompose { project } => Some(project),
+                    ShutdownAction::None | ShutdownAction::StopContainer => None,
+                },
             };
 
             Ok(StartedDevContainer {
@@ -610,6 +624,68 @@ pub async fn stop_dev_container(
     };
 
     docker.stop_container(container_id).await
+}
+
+/// The engine command that carries out the connection's `shutdownAction`, or
+/// `None` when the container keeps running.
+pub fn shutdown_command(
+    options: &DockerConnectionOptions,
+    engine_environment: &[(String, String)],
+) -> Option<HostCommand> {
+    let cli = if options.use_podman {
+        "podman"
+    } else {
+        "docker"
+    };
+    let mut command = options.host.command(cli);
+    for (key, value) in engine_environment {
+        command.env(key, value);
+    }
+    match &options.shutdown_action {
+        ShutdownAction::None => return None,
+        ShutdownAction::StopContainer => {
+            command.args(["stop", &options.container_id]);
+        }
+        // Compose finds the project's containers by their labels, so the Compose
+        // files aren't needed.
+        ShutdownAction::StopCompose { project } => {
+            command.args(["compose", "--project-name", project, "stop"]);
+        }
+    }
+    Some(command)
+}
+
+/// Carries out the connection's `shutdownAction`, once no window is connected to
+/// its container.
+pub async fn shut_down_dev_container(
+    options: &DockerConnectionOptions,
+) -> Result<(), DevContainerError> {
+    match &options.shutdown_action {
+        ShutdownAction::None => Ok(()),
+        ShutdownAction::StopContainer => {
+            stop_dev_container(&options.container_id, options.use_podman, &options.host).await
+        }
+        ShutdownAction::StopCompose { .. } => {
+            let engine_environment = options.host.engine_environment().await;
+            let Some(command) = shutdown_command(options, &engine_environment) else {
+                return Ok(());
+            };
+            let output = command.output().await.map_err(|e| {
+                log::error!("Error running docker compose stop: {e}");
+                DevContainerError::CommandFailed(command.get_program().to_string())
+            })?;
+            if !output.status.success() {
+                log::error!(
+                    "Non-success status from docker compose stop: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return Err(DevContainerError::CommandFailed(
+                    command.get_program().to_string(),
+                ));
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Starts a stopped dev container (a `docker start`; a no-op if it is already
@@ -851,6 +927,48 @@ fn get_backup_project_name(remote_workspace_folder: &str, container_id: &str) ->
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    use remote::{DockerConnectionOptions, ShutdownAction};
+
+    #[test]
+    fn shutdown_actions_stop_the_container_or_its_compose_project() {
+        let args = |shutdown_action: ShutdownAction, use_podman: bool| {
+            let options = DockerConnectionOptions {
+                container_id: "abc123".to_string(),
+                use_podman,
+                shutdown_action,
+                ..Default::default()
+            };
+            super::shutdown_command(&options, &[]).map(|command| {
+                let command = command.to_command();
+                std::iter::once(command.get_program())
+                    .chain(command.get_args())
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        assert_eq!(args(ShutdownAction::None, false), None);
+        assert_eq!(
+            args(ShutdownAction::StopContainer, false),
+            Some(vec!["docker".into(), "stop".into(), "abc123".into()])
+        );
+        assert_eq!(
+            args(
+                ShutdownAction::StopCompose {
+                    project: "app_devcontainer".to_string()
+                },
+                true
+            ),
+            Some(vec![
+                "podman".into(),
+                "compose".into(),
+                "--project-name".into(),
+                "app_devcontainer".into(),
+                "stop".into()
+            ])
+        );
+    }
 
     #[test]
     fn recognizes_engines_on_other_machines() {

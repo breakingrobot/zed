@@ -207,6 +207,7 @@ mod tests {
             host: Default::default(),
             forward_ports: Vec::new(),
             auto_forward: Default::default(),
+            shutdown_action: Default::default(),
         });
         let right = RemoteConnectionOptions::Docker(DockerConnectionOptions {
             name: "zed-dev".to_string(),
@@ -220,6 +221,7 @@ mod tests {
             host: Default::default(),
             forward_ports: Vec::new(),
             auto_forward: Default::default(),
+            shutdown_action: Default::default(),
         });
 
         assert!(same_remote_connection_identity(Some(&left), Some(&right),));

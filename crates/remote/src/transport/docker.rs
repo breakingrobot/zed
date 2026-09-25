@@ -74,6 +74,33 @@ pub struct DockerConnectionOptions {
     /// Which ports that start listening in the container are forwarded automatically.
     #[serde(default)]
     pub auto_forward: AutoForwardPorts,
+    /// What happens to the container once no window is connected to it.
+    #[serde(default)]
+    pub shutdown_action: ShutdownAction,
+}
+
+/// What happens to a dev container once no window is connected to it, from its
+/// `shutdownAction`.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum ShutdownAction {
+    /// Keep it running.
+    #[default]
+    None,
+    /// Stop the container.
+    StopContainer,
+    /// Stop every container of the Compose project.
+    StopCompose { project: String },
 }
 
 /// Which of the ports that start listening in a dev container are forwarded
@@ -1625,6 +1652,7 @@ mod tests {
                 host: EngineHost::Local,
                 forward_ports: Vec::new(),
                 auto_forward: Default::default(),
+                shutdown_action: Default::default(),
             },
             remote_platform: None,
             os_version: None,

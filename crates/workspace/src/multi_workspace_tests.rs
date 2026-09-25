@@ -72,6 +72,7 @@ fn dev_container_project_group_key_is_stable_across_rebuilds() {
                     host: Default::default(),
                     forward_ports: Vec::new(),
                     auto_forward: Default::default(),
+                    shutdown_action: Default::default(),
                 },
             )),
             paths.clone(),

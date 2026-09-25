@@ -3,6 +3,7 @@ use std::{collections::HashMap, fmt::Display, path::Path, sync::Arc};
 use crate::{
     command_json::CommandRunner, devcontainer_api::DevContainerError, docker::EngineResources,
 };
+use remote::ShutdownAction as ContainerShutdownAction;
 use remote::{AutoForwardPorts, AutoForwardRule, EngineHost, ForwardNotice};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json_lenient::Value;
@@ -387,6 +388,24 @@ impl UserEnvProbe {
 }
 
 impl DevContainer {
+    /// What happens to the container once no window is connected to it. The spec
+    /// stops the Compose project of Compose configurations, and the container
+    /// otherwise. `compose_project` is the project the container belongs to.
+    pub(crate) fn shutdown_action(
+        &self,
+        compose_project: Option<String>,
+    ) -> ContainerShutdownAction {
+        match (&self.shutdown_action, compose_project) {
+            (Some(ShutdownAction::None), _) => ContainerShutdownAction::None,
+            (Some(ShutdownAction::StopContainer), _) | (_, None) => {
+                ContainerShutdownAction::StopContainer
+            }
+            (Some(ShutdownAction::StopCompose) | None, Some(project)) => {
+                ContainerShutdownAction::StopCompose { project }
+            }
+        }
+    }
+
     /// How the environment of the remote user's shell is found, which the spec
     /// probes with a login interactive shell unless configured otherwise.
     pub(crate) fn user_env_probe(&self) -> UserEnvProbe {

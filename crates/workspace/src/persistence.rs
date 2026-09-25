@@ -2154,6 +2154,7 @@ impl WorkspaceDb {
                     // Known once the container is up; not stored.
                     forward_ports: Vec::new(),
                     auto_forward: Default::default(),
+                    shutdown_action: Default::default(),
                 }))
             }
         }
@@ -4465,6 +4466,7 @@ mod tests {
                 host: Default::default(),
                 forward_ports: Vec::new(),
                 auto_forward: Default::default(),
+                shutdown_action: Default::default(),
             })
         };
 
@@ -4509,6 +4511,7 @@ mod tests {
             host: Default::default(),
             forward_ports: Vec::new(),
             auto_forward: Default::default(),
+            shutdown_action: Default::default(),
         });
         let different = db
             .get_or_create_remote_connection(other_config)
@@ -4539,6 +4542,7 @@ mod tests {
                 host,
                 forward_ports: Vec::new(),
                 auto_forward: Default::default(),
+                shutdown_action: Default::default(),
             })
         };
 
