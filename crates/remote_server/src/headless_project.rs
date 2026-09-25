@@ -1391,16 +1391,39 @@ impl HeadlessProject {
                 }
             })
             .await?;
+        let weak_this = this.downgrade();
         let task = cx.spawn(async move |cx| {
-            while let Ok((stream, _)) = listener.accept().await {
-                let session = session.clone();
-                cx.background_spawn(async move {
-                    if let Err(error) = answer_git_credential_request(stream, session).await {
-                        log::warn!("Failed to forward a git credential request: {error:#}");
+            let mut failures = 0;
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        failures = 0;
+                        let session = session.clone();
+                        cx.background_spawn(async move {
+                            if let Err(error) = answer_git_credential_request(stream, session).await
+                            {
+                                log::warn!("Failed to forward a git credential request: {error:#}");
+                            }
+                        })
+                        .detach();
                     }
-                })
-                .detach();
+                    Err(error) => {
+                        failures += 1;
+                        if failures >= MAX_GIT_CREDENTIAL_ACCEPT_FAILURES {
+                            log::warn!("Stopped forwarding git credentials: {error}");
+                            break;
+                        }
+                        log::debug!("Failed to accept a git credential request: {error}");
+                        cx.background_executor()
+                            .timer(GIT_CREDENTIAL_ACCEPT_RETRY_DELAY)
+                            .await;
+                    }
+                }
             }
+            // So that the next EnableGitCredentialForwarding, on reconnect, listens again.
+            weak_this
+                .update(cx, |this, _| this.git_credential_forwarding = None)
+                .ok();
         });
         this.update(&mut cx, |this, _| {
             this.git_credential_forwarding = Some(task)
@@ -1679,6 +1702,14 @@ mod tests {
         );
     }
 }
+
+/// How long to wait after a failed `accept` of a git credential request, e.g. when
+/// out of file descriptors.
+const GIT_CREDENTIAL_ACCEPT_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(100);
+/// Consecutive failed `accept`s after which git credential forwarding stops, until
+/// the client enables it again.
+const MAX_GIT_CREDENTIAL_ACCEPT_FAILURES: usize = 50;
 
 fn git_credential_socket_path() -> PathBuf {
     paths::remote_server_state_dir().join("git-credential.sock")
