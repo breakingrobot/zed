@@ -409,6 +409,16 @@ impl HostCommand {
         args.extend(options.args.iter().cloned());
         // Fail instead of waiting for a password nobody can type.
         args.extend(["-o".to_string(), "BatchMode=yes".to_string()]);
+        if let Some(control_path) = ssh_control_path(options) {
+            args.extend([
+                "-o".to_string(),
+                "ControlMaster=auto".to_string(),
+                "-o".to_string(),
+                format!("ControlPath={}", control_path.display()),
+                "-o".to_string(),
+                "ControlPersist=5m".to_string(),
+            ]);
+        }
         for port in &self.forwarded_ports {
             args.extend(["-L".to_string(), format!("{port}:localhost:{port}")]);
         }
@@ -479,6 +489,36 @@ impl HostCommand {
         }
         child.output().await
     }
+}
+
+/// Where the engine commands for `options` share one SSH connection, which saves
+/// a new SSH connection per command: Zed runs dozens of them to build and start a
+/// container. Windows' OpenSSH doesn't support connection sharing.
+fn ssh_control_path(options: &SshEngineHost) -> Option<std::path::PathBuf> {
+    use sha2::{Digest as _, Sha256};
+
+    if cfg!(windows) {
+        return None;
+    }
+    let directory = paths::temp_dir().join("ssh");
+    std::fs::create_dir_all(&directory).ok()?;
+    // Socket paths are limited to about a hundred bytes, hence a short name.
+    let digest = Sha256::digest(
+        format!(
+            "{}\0{}\0{}\0{}",
+            options.username.as_deref().unwrap_or_default(),
+            options.host,
+            options.port.unwrap_or_default(),
+            options.args.join("\0")
+        )
+        .as_bytes(),
+    );
+    let name: String = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Some(directory.join(name))
 }
 
 /// Quotes `value` as a single word for a POSIX shell.
@@ -658,6 +698,20 @@ mod tests {
         assert_eq!(
             args.last().unwrap(),
             "exec 'docker' 'exec' '-it' 'container' 'bash'"
+        );
+    }
+
+    #[test]
+    fn ssh_commands_share_one_connection_where_openssh_can() {
+        let args = ssh()
+            .command("docker")
+            .to_command()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args.contains(&"ControlMaster=auto".to_string()),
+            !cfg!(windows)
         );
     }
 
