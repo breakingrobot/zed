@@ -2260,6 +2260,7 @@ impl RemoteServerProjects {
                 remote_workspace_folder: starting_dir,
                 deferred_hooks,
                 config_changed,
+                warnings,
             } = match start_dev_container_with_config(
                 context,
                 config,
@@ -2326,6 +2327,7 @@ impl RemoteServerProjects {
             )
             .await;
             if let Ok(window) = &result {
+                crate::dev_container_lifecycle::show_warnings(*window, warnings, cx);
                 if config_changed {
                     crate::dev_container_lifecycle::suggest_rebuild(*window, cx);
                 }

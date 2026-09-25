@@ -1,6 +1,8 @@
 use std::{collections::HashMap, fmt::Display, path::Path, sync::Arc};
 
-use crate::{command_json::CommandRunner, devcontainer_api::DevContainerError};
+use crate::{
+    command_json::CommandRunner, devcontainer_api::DevContainerError, docker::EngineResources,
+};
 use remote::{AutoForwardPorts, AutoForwardRule, EngineHost};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json_lenient::Value;
@@ -306,7 +308,63 @@ pub(crate) fn deserialize_devcontainer_json(json: &str) -> Result<DevContainer, 
     deserialize_devcontainer_json_to_value(json).and_then(deserialize_devcontainer_json_from_value)
 }
 
+impl HostRequirements {
+    /// The requirements that `resources` falls short of, described for the user.
+    /// `storage` isn't checked: engines don't reliably report the space left for
+    /// containers.
+    pub(crate) fn unmet_by(&self, resources: &EngineResources) -> Vec<String> {
+        let mut unmet = Vec::new();
+        if let Some(cpus) = self.cpus
+            && u64::from(cpus) > resources.cpus
+        {
+            unmet.push(format!(
+                "{cpus} CPUs (the container engine has {})",
+                resources.cpus
+            ));
+        }
+        if let Some(memory) = &self.memory {
+            match parse_byte_size(memory) {
+                Some(bytes) if bytes > resources.memory_bytes => unmet.push(format!(
+                    "{memory} of memory (the container engine has {})",
+                    format_byte_size(resources.memory_bytes)
+                )),
+                Some(_) => {}
+                None => log::warn!("Ignoring hostRequirements.memory {memory:?}, not a size"),
+            }
+        }
+        unmet
+    }
+}
+
+/// Parses a `hostRequirements` size such as `8gb` or `512mb`, in bytes. The spec
+/// allows a whole number with an optional `kb`, `mb`, `gb` or `tb` unit.
+pub(crate) fn parse_byte_size(size: &str) -> Option<u64> {
+    let size = size.trim().to_ascii_lowercase();
+    let (number, multiplier) = match size.strip_suffix('b') {
+        Some(rest) => match rest.char_indices().last()? {
+            (index, 'k') => (&rest[..index], 1u64 << 10),
+            (index, 'm') => (&rest[..index], 1 << 20),
+            (index, 'g') => (&rest[..index], 1 << 30),
+            (index, 't') => (&rest[..index], 1 << 40),
+            _ => return None,
+        },
+        None => (size.as_str(), 1),
+    };
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    number.parse::<u64>().ok()?.checked_mul(multiplier)
+}
+
+fn format_byte_size(bytes: u64) -> String {
+    format!("{:.1}gb", bytes as f64 / (1u64 << 30) as f64)
+}
+
 impl DevContainer {
+    pub(crate) fn host_requirements(&self) -> Option<&HostRequirements> {
+        self.host_requirements.as_ref()
+    }
+
     /// The engine host ports that `docker run` publishes for this container:
     /// numeric `forwardPorts` and the host side of `appPort`.
     pub(crate) fn published_host_ports(&self) -> Vec<u16> {
@@ -813,9 +871,58 @@ mod test {
             ContainerBuild, DevContainer, DevContainerBuildType, FeatureOptions, ForwardPort,
             HostRequirements, LifecycleCommand, LifecycleScript, MountDefinition, OnAutoForward,
             PortAttributeProtocol, PortAttributes, ShutdownAction, UserEnvProbe, ZedCustomization,
-            ZedCustomizationsWrapper, deserialize_devcontainer_json,
+            ZedCustomizationsWrapper, deserialize_devcontainer_json, parse_byte_size,
         },
+        docker::EngineResources,
     };
+
+    #[test]
+    fn host_requirement_sizes_are_parsed_in_binary_units() {
+        assert_eq!(parse_byte_size("8gb"), Some(8 << 30));
+        assert_eq!(parse_byte_size("512MB"), Some(512 << 20));
+        assert_eq!(parse_byte_size(" 1tb "), Some(1 << 40));
+        assert_eq!(parse_byte_size("64kb"), Some(64 << 10));
+        assert_eq!(parse_byte_size("1024"), Some(1024));
+        assert_eq!(parse_byte_size("gb"), None);
+        assert_eq!(parse_byte_size("1.5gb"), None);
+        assert_eq!(parse_byte_size("8 gb"), None);
+        assert_eq!(parse_byte_size("8xb"), None);
+        assert_eq!(parse_byte_size("99999999999tb"), None);
+    }
+
+    #[test]
+    fn host_requirements_are_compared_with_the_engine() {
+        let resources = EngineResources {
+            cpus: 4,
+            memory_bytes: 8 << 30,
+        };
+        let met = HostRequirements {
+            cpus: Some(4),
+            memory: Some("8gb".to_string()),
+            storage: Some("1000tb".to_string()),
+        };
+        assert!(met.unmet_by(&resources).is_empty());
+
+        let unmet = HostRequirements {
+            cpus: Some(8),
+            memory: Some("16gb".to_string()),
+            storage: None,
+        };
+        assert_eq!(
+            unmet.unmet_by(&resources),
+            vec![
+                "8 CPUs (the container engine has 4)".to_string(),
+                "16gb of memory (the container engine has 8.0gb)".to_string(),
+            ]
+        );
+
+        let unparsable = HostRequirements {
+            cpus: None,
+            memory: Some("lots".to_string()),
+            storage: None,
+        };
+        assert!(unparsable.unmet_by(&resources).is_empty());
+    }
 
     #[test]
     fn auto_forward_ports_come_from_ports_attributes() {

@@ -81,6 +81,8 @@ These actions work the same for containers running locally, in WSL, or on an SSH
 Once connected, Zed operates inside the container environment for tasks, terminals, and language servers.
 Files are linked from your workspace into the container according to the dev container specification.
 
+If the configuration sets `hostRequirements`, Zed compares its `cpus` and `memory` with what the container engine reports before creating the container. When the engine has less, Zed still creates the container and shows a warning. `storage` isn't checked.
+
 Zed connects once the container is created and the lifecycle command set by `waitFor` has run (`updateContentCommand` by default). The later lifecycle commands, such as `postCreateCommand`, `postStartCommand` and `postAttachCommand`, then run as tasks in the Terminal Panel, where you can follow their output. If one fails, the ones after it don't run.
 
 When a program in the container starts listening on a TCP port, Zed forwards it to the same port on your machine, so `http://localhost:<port>` reaches it. Zed skips ports that are already in use on your machine, such as those published with `forwardPorts` or `appPort`.

@@ -208,6 +208,30 @@ pub(crate) struct DockerComposeConfig {
     pub(crate) volumes: HashMap<String, DockerComposeVolume>,
 }
 
+/// What the container engine can give a container, from `docker info`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EngineResources {
+    pub(crate) cpus: u64,
+    pub(crate) memory_bytes: u64,
+}
+
+/// Reads the CPUs and memory from `docker info --format '{{json .}}'`, or its
+/// Podman equivalent, which nests them under `host`.
+pub(crate) fn parse_engine_resources(info: &str) -> Option<EngineResources> {
+    let info: serde_json_lenient::Value = serde_json_lenient::from_str(info.trim()).ok()?;
+    let (cpus, memory) = match (info.get("NCPU"), info.get("MemTotal")) {
+        (Some(cpus), Some(memory)) => (cpus, memory),
+        _ => {
+            let host = info.get("host")?;
+            (host.get("cpus")?, host.get("memTotal")?)
+        }
+    };
+    Some(EngineResources {
+        cpus: cpus.as_u64()?,
+        memory_bytes: memory.as_u64()?,
+    })
+}
+
 pub(crate) struct Docker {
     docker_cli: String,
     has_buildx: bool,
@@ -512,6 +536,30 @@ impl DockerClient for Docker {
         })
     }
 
+    async fn engine_resources(&self) -> Option<EngineResources> {
+        let mut command = self.docker_command();
+        command.args(["info", "--format", "{{json .}}"]);
+        let output = match command.output().await {
+            Ok(output) if output.status.success() => output,
+            Ok(output) => {
+                log::warn!(
+                    "Failed to query the container engine's resources: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return None;
+            }
+            Err(error) => {
+                log::warn!("Failed to query the container engine's resources: {error:#}");
+                return None;
+            }
+        };
+        let resources = parse_engine_resources(&String::from_utf8_lossy(&output.stdout));
+        if resources.is_none() {
+            log::warn!("Unexpected output from {} info", self.docker_cli);
+        }
+        resources
+    }
+
     fn docker_cli(&self) -> String {
         self.docker_cli.clone()
     }
@@ -623,6 +671,10 @@ pub(crate) trait DockerClient: Send + Sync {
         filters: Vec<String>,
     ) -> Result<Option<DockerPs>, DevContainerError>;
     fn supports_compose_buildkit(&self) -> bool;
+    /// The CPUs and memory the engine has, when it reports them.
+    async fn engine_resources(&self) -> Option<EngineResources> {
+        None
+    }
     /// This operates as an escape hatch for more custom uses of the docker API.
     /// See DevContainerManifest::create_docker_build as an example
     fn docker_cli(&self) -> String;
@@ -895,11 +947,34 @@ mod test {
         docker::{
             Docker, DockerClient, DockerComposeConfig, DockerComposeService,
             DockerComposeServicePort, DockerComposeVolume, DockerInspect, DockerPs,
-            parse_find_process_output,
+            EngineResources, parse_engine_resources, parse_find_process_output,
         },
     };
     #[cfg(not(target_os = "windows"))]
     use util::command::Command;
+
+    #[test]
+    fn engine_resources_come_from_docker_and_podman_info() {
+        assert_eq!(
+            parse_engine_resources(r#"{"ID":"x","NCPU":8,"MemTotal":16663003136}"#),
+            Some(EngineResources {
+                cpus: 8,
+                memory_bytes: 16663003136,
+            })
+        );
+        assert_eq!(
+            parse_engine_resources(r#"{"host":{"cpus":4,"memTotal":8237195264},"store":{}}"#),
+            Some(EngineResources {
+                cpus: 4,
+                memory_bytes: 8237195264,
+            })
+        );
+        assert_eq!(parse_engine_resources(r#"{"NCPU":8}"#), None);
+        assert_eq!(
+            parse_engine_resources("Cannot connect to the Docker daemon"),
+            None
+        );
+    }
 
     #[test]
     fn use_buildkit_setting_overrides_buildx_detection() {

@@ -107,6 +107,9 @@ pub(crate) struct DevContainerUp {
     /// Whether the existing container was created from an older configuration.
     #[serde(skip)]
     pub(crate) config_changed: bool,
+    /// Problems worth telling the user about that didn't stop the container.
+    #[serde(skip)]
+    pub(crate) warnings: Vec<String>,
     /// The container's `devcontainer.metadata` label entries, which carry the
     /// lifecycle commands contributed by features.
     #[serde(skip)]
@@ -129,6 +132,8 @@ pub struct StartedDevContainer {
     /// Whether the container was created from an older configuration and needs a
     /// rebuild to pick up the changes.
     pub config_changed: bool,
+    /// Problems worth telling the user about that didn't stop the container.
+    pub warnings: Vec<String>,
 }
 
 /// A lifecycle hook that the spec's `waitFor` lets run after the editor connects.
@@ -371,6 +376,7 @@ pub async fn start_dev_container_with_config(
             remote_env,
             deferred_hooks,
             config_changed,
+            warnings,
             ..
         }) => {
             let configuration =
@@ -451,6 +457,7 @@ pub async fn start_dev_container_with_config(
                 remote_workspace_folder,
                 deferred_hooks,
                 config_changed,
+                warnings,
             })
         }
         Err(err @ DevContainerError::MultipleMatchingContainers(_)) => Err(err),
