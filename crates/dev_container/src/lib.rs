@@ -206,10 +206,54 @@ async fn host_environment(host: &EngineHost) -> HashMap<String, String> {
         })
 }
 
-/// Where the commands that created or started the last dev container, and their
-/// output, are recorded.
-pub fn dev_container_log_path() -> std::path::PathBuf {
-    paths::logs_dir().join("dev_container.log")
+/// Where the commands that created or started the dev container of `local_folder`
+/// and `config_file`, as in its labels, are recorded with their output. Each dev
+/// container has its own, so starting another one doesn't replace or mix into it.
+pub fn dev_container_log_path(local_folder: &str, config_file: &str) -> std::path::PathBuf {
+    use sha2::{Digest as _, Sha256};
+
+    let digest = Sha256::digest(format!("{local_folder}\0{config_file}"));
+    let id: String = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    paths::logs_dir().join(format!("dev_container-{id}.log"))
+}
+
+/// [`dev_container_log_path`] for starting `config` for `context`'s project.
+pub fn start_log_path(
+    context: &DevContainerContext,
+    config: &DevContainerConfig,
+) -> std::path::PathBuf {
+    let host = &context.engine_host;
+    let local_folder = devcontainer_manifest::normalize_label_path(
+        &host.host_path(&context.project_directory),
+        host.is_windows(),
+    );
+    let config_file = devcontainer_manifest::normalize_label_path(
+        &host.host_path(&context.project_directory.join(&config.config_path)),
+        host.is_windows(),
+    );
+    dev_container_log_path(&local_folder, &config_file)
+}
+
+static LAST_START_LOG_PATH: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
+
+/// The log of the dev container that was started last, for windows that aren't
+/// connected to one.
+pub fn last_start_log_path() -> Option<std::path::PathBuf> {
+    LAST_START_LOG_PATH
+        .lock()
+        .ok()
+        .and_then(|path| path.clone())
+}
+
+pub(crate) fn set_last_start_log_path(path: std::path::PathBuf) {
+    if let Ok(mut last) = LAST_START_LOG_PATH.lock() {
+        *last = Some(path);
+    }
 }
 
 /// What Zed learned about container engines and containers earlier in this
@@ -2079,6 +2123,35 @@ mod tests {
             cache
                 .user_environment(&key("second", "t1", "root"))
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn each_dev_container_has_its_own_log() {
+        let first = super::dev_container_log_path(
+            "/home/me/app",
+            "/home/me/app/.devcontainer/devcontainer.json",
+        );
+        assert_eq!(
+            first,
+            super::dev_container_log_path(
+                "/home/me/app",
+                "/home/me/app/.devcontainer/devcontainer.json"
+            )
+        );
+        assert_ne!(
+            first,
+            super::dev_container_log_path(
+                "/home/me/api",
+                "/home/me/api/.devcontainer/devcontainer.json"
+            )
+        );
+        assert_ne!(
+            first,
+            super::dev_container_log_path(
+                "/home/me/app",
+                "/home/me/app/.devcontainer/web/devcontainer.json"
+            )
         );
     }
 }

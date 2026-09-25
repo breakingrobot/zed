@@ -41,11 +41,12 @@ async fn prompt_error(cx: &mut AsyncWindowContext, title: &str, detail: impl std
 }
 
 /// Surfaces a failure to create or start a dev container, offering the log of
-/// what ran.
+/// what ran, at `log_path`.
 pub(crate) async fn prompt_start_error(
     cx: &mut AsyncWindowContext,
     title: &str,
     detail: impl std::fmt::Display,
+    log_path: Option<PathBuf>,
 ) {
     let answer = cx
         .prompt(
@@ -57,16 +58,33 @@ pub(crate) async fn prompt_start_error(
         .await;
     if matches!(answer, Ok(1)) {
         cx.update(|window, cx| {
-            window.dispatch_action(Box::new(zed_actions::ShowDevContainerLog), cx)
+            if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
+                let workspace = multi_workspace.read(cx).workspace().clone();
+                workspace.update(cx, |workspace, cx| {
+                    open_dev_container_log(workspace, log_path, window, cx)
+                });
+            }
         })
         .ok();
     }
 }
 
-/// Opens what the last dev container start ran and printed, followed by what the
-/// processes of the dev container that `workspace` is connected to printed.
+/// Opens what starting the dev container that `workspace` is connected to ran and
+/// printed, or the one started last, followed by what the processes of the dev
+/// container printed.
 pub(crate) fn show_dev_container_log(
     workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    open_dev_container_log(workspace, None, window, cx);
+}
+
+/// Opens the dev container log at `log_path`, or else the one of the dev container
+/// `workspace` is connected to, or the one started last.
+fn open_dev_container_log(
+    workspace: &mut Workspace,
+    log_path: Option<PathBuf>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
@@ -74,17 +92,29 @@ pub(crate) fn show_dev_container_log(
         Some(RemoteConnectionOptions::Docker(options)) => Some(options),
         _ => None,
     };
+    let log_path = log_path
+        .or_else(|| {
+            connection
+                .as_ref()
+                .and_then(|options| options.dev_container_labels())
+                .map(|(local_folder, config_file)| {
+                    dev_container::dev_container_log_path(local_folder, config_file)
+                })
+        })
+        .or_else(dev_container::last_start_log_path);
     let project = workspace.project().clone();
     let languages = workspace.app_state().languages.clone();
     let fs = workspace.app_state().fs.clone();
     cx.spawn_in(window, async move |workspace, cx| {
-        let log_path = dev_container::dev_container_log_path();
-        let mut text = match fs.load(&log_path).await {
-            Ok(log) if !log.is_empty() => log,
-            Ok(_) | Err(_) => format!(
-                "No dev container was started yet ({}).\n",
-                log_path.display()
-            ),
+        let mut text = match &log_path {
+            Some(log_path) => match fs.load(log_path).await {
+                Ok(log) if !log.is_empty() => log,
+                Ok(_) | Err(_) => format!(
+                    "This dev container wasn't started since Zed started ({}).\n",
+                    log_path.display()
+                ),
+            },
+            None => "No dev container was started yet.\n".to_string(),
         };
         if let Some(options) = connection {
             let container_log = dev_container::container_logs(
@@ -666,6 +696,7 @@ fn reconnect_connected_dev_container(
             }
         }
 
+        let log_path = dev_container::start_log_path(&context, &origin.config);
         let start_result = dev_container::start_dev_container_with_config(
             context,
             Some(origin.config),
@@ -686,7 +717,7 @@ fn reconnect_connected_dev_container(
             Err(e) => {
                 log::error!("Failed to start dev container: {e}");
                 dismiss_lifecycle_status(&workspace_handle, cx);
-                prompt_start_error(cx, error_title, &e).await;
+                prompt_start_error(cx, error_title, &e, Some(log_path)).await;
                 return;
             }
         };
@@ -962,6 +993,7 @@ pub(crate) async fn start_and_open_dev_container(
     cx: &mut AsyncWindowContext,
 ) {
     let environment = context.environment(cx).await;
+    let log_path = dev_container::start_log_path(&context, &config);
     let started = dev_container::start_dev_container_with_config(
         context,
         Some(config),
@@ -980,7 +1012,7 @@ pub(crate) async fn start_and_open_dev_container(
         Ok(started) => started,
         Err(error) => {
             log::error!("Failed to start dev container: {error}");
-            prompt_start_error(cx, error_title, &error).await;
+            prompt_start_error(cx, error_title, &error, Some(log_path)).await;
             return;
         }
     };

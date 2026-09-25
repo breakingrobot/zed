@@ -2254,6 +2254,9 @@ impl RemoteServerProjects {
 
         cx.spawn_in(window, async move |entity, cx| {
             let environment = context.environment(cx).await;
+            let log_path = config
+                .as_ref()
+                .map(|config| dev_container::start_log_path(&context, config));
 
             let dev_container::StartedDevContainer {
                 connection: dev_container_connection,
@@ -2277,6 +2280,7 @@ impl RemoteServerProjects {
                         cx,
                         "Failed to start Dev Container",
                         &e,
+                        log_path,
                     )
                     .await;
                     entity

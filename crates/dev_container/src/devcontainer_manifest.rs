@@ -3643,7 +3643,9 @@ pub(crate) async fn spawn_dev_container(
     build_mode: BuildMode,
     defer_hooks: bool,
 ) -> Result<DevContainerUp, DevContainerError> {
-    let log = DevContainerLog::start(crate::dev_container_log_path()).await;
+    let log_path = crate::start_log_path(context, &config);
+    crate::set_last_start_log_path(log_path.clone());
+    let log = DevContainerLog::start(log_path).await;
     let docker = engine_client(context).await.with_log(log.clone());
     let command_runner: Arc<dyn CommandRunner> = match log {
         Some(log) => Arc::new(LoggingCommandRunner {
