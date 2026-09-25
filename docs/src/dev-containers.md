@@ -32,6 +32,10 @@ When you open a project that contains the `.devcontainer/devcontainer.json` dire
 If you dismiss the prompt or want to reopen the project inside a container later, you can use Zed's command palette to run the "Project: Open Remote" command and select the option to open the project in a dev container.
 Alternatively, you can reach for the Remote Projects modal (through the {#kb projects::OpenRemote} binding) and choose the "Connect Dev Container" option.
 
+### Attaching to a running container
+
+To work in a container that Zed didn't create, such as one started with `docker run` or Docker Compose, run {#action projects::AttachToRunningContainer} and pick the container. Zed lists the running containers of the engine the current project uses (locally, in WSL, or on an SSH host), connects as the container's user and opens its working directory. Without a dev container configuration, Zed doesn't rebuild, stop or remove attached containers.
+
 ## WSL projects {#wsl-projects}
 
 On Windows, you can open a dev container from a project that lives in a WSL distribution. Zed then runs the container engine inside that distribution, where your sources are:

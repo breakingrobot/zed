@@ -690,6 +690,118 @@ pub async fn shut_down_dev_container(
     }
 }
 
+/// A running container of an engine, which Zed can attach to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+}
+
+/// The running containers of the engine on `engine_host`.
+pub async fn running_containers(
+    use_podman: bool,
+    engine_host: &EngineHost,
+) -> Result<Vec<RunningContainer>, DevContainerError> {
+    let docker = Docker::without_builds(
+        if use_podman { "podman" } else { "docker" },
+        engine_host.clone(),
+    )
+    .await;
+    let mut command = docker.docker_command();
+    command.args(["ps", "--format", "{{json .}}"]);
+    let output = command.output().await.map_err(|e| {
+        log::error!("Error running docker ps: {e}");
+        DevContainerError::CommandFailed(command.get_program().to_string())
+    })?;
+    if !output.status.success() {
+        log::error!(
+            "Non-success status from docker ps: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Err(DevContainerError::CommandFailed(
+            command.get_program().to_string(),
+        ));
+    }
+    Ok(parse_running_containers(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// Reads `docker ps --format '{{json .}}'`: one object per line, whose `Names` is
+/// a string for Docker and a list for Podman.
+fn parse_running_containers(output: &str) -> Vec<RunningContainer> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let container: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+            let id = container
+                .get("ID")
+                .or_else(|| container.get("Id"))?
+                .as_str()?;
+            let name = match container.get("Names")? {
+                serde_json::Value::String(names) => names.split(',').next()?.to_string(),
+                serde_json::Value::Array(names) => names.first()?.as_str()?.to_string(),
+                _ => return None,
+            };
+            let image = container.get("Image")?.as_str()?;
+            Some(RunningContainer {
+                id: id.to_string(),
+                name,
+                image: image.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Who to run as in a container Zed attaches to, and where to open it: its
+/// configured user and working directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachTarget {
+    pub remote_user: String,
+    pub working_directory: String,
+}
+
+pub async fn attach_target(
+    container_id: &str,
+    use_podman: bool,
+    engine_host: &EngineHost,
+) -> Result<AttachTarget, DevContainerError> {
+    let docker = Docker::without_builds(
+        if use_podman { "podman" } else { "docker" },
+        engine_host.clone(),
+    )
+    .await;
+    let mut command = docker.docker_command();
+    command.args(["inspect", "--format", "{{json .Config}}", container_id]);
+    let output = command.output().await.map_err(|e| {
+        log::error!("Error running docker inspect: {e}");
+        DevContainerError::CommandFailed(command.get_program().to_string())
+    })?;
+    if !output.status.success() {
+        return Err(DevContainerError::ContainerNotValid(
+            container_id.to_string(),
+        ));
+    }
+    parse_attach_target(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| DevContainerError::ContainerNotValid(container_id.to_string()))
+}
+
+fn parse_attach_target(config: &str) -> Option<AttachTarget> {
+    let config: serde_json::Value = serde_json::from_str(config.trim()).ok()?;
+    let non_empty = |key: &str| {
+        config
+            .get(key)
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    Some(AttachTarget {
+        remote_user: non_empty("User").unwrap_or_else(|| "root".to_string()),
+        working_directory: non_empty("WorkingDir").unwrap_or_else(|| "/".to_string()),
+    })
+}
+
 /// The last lines the container's processes printed, from `docker logs`.
 pub async fn container_logs(
     container_id: &str,
@@ -963,6 +1075,57 @@ fn get_backup_project_name(remote_workspace_folder: &str, container_id: &str) ->
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    #[test]
+    fn running_containers_come_from_docker_and_podman_ps() {
+        let docker = r#"{"ID":"4f2a","Image":"postgres:16","Names":"db,db-alias","State":"running"}
+{"ID":"9c1e","Image":"node:20","Names":"web"}
+not json
+"#;
+        assert_eq!(
+            super::parse_running_containers(docker),
+            vec![
+                super::RunningContainer {
+                    id: "4f2a".to_string(),
+                    name: "db".to_string(),
+                    image: "postgres:16".to_string(),
+                },
+                super::RunningContainer {
+                    id: "9c1e".to_string(),
+                    name: "web".to_string(),
+                    image: "node:20".to_string(),
+                },
+            ]
+        );
+        let podman = r#"{"Id":"77ab","Image":"docker.io/library/redis:7","Names":["cache"]}"#;
+        assert_eq!(
+            super::parse_running_containers(podman),
+            vec![super::RunningContainer {
+                id: "77ab".to_string(),
+                name: "cache".to_string(),
+                image: "docker.io/library/redis:7".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn attach_targets_default_to_root_in_the_root_folder() {
+        assert_eq!(
+            super::parse_attach_target(r#"{"User":"node","WorkingDir":"/app","Env":[]}"#),
+            Some(super::AttachTarget {
+                remote_user: "node".to_string(),
+                working_directory: "/app".to_string(),
+            })
+        );
+        assert_eq!(
+            super::parse_attach_target(r#"{"User":"","WorkingDir":""}"#),
+            Some(super::AttachTarget {
+                remote_user: "root".to_string(),
+                working_directory: "/".to_string(),
+            })
+        );
+        assert_eq!(super::parse_attach_target("Error: no such object"), None);
+    }
 
     use remote::{DockerConnectionOptions, ShutdownAction};
 

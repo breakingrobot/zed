@@ -745,6 +745,13 @@ pub struct RebuildDevContainer;
 #[serde(deny_unknown_fields)]
 pub struct RebuildDevContainerWithoutCache;
 
+/// Connects to a running container of the project's container engine, which Zed
+/// didn't need to create.
+#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
+#[action(namespace = projects)]
+#[serde(deny_unknown_fields)]
+pub struct AttachToRunningContainer;
+
 /// Opens what creating or starting the last dev container ran and printed, and
 /// the log of the dev container this window is connected to.
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
