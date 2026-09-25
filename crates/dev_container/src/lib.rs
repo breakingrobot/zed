@@ -63,10 +63,10 @@ use crate::oci::get_oci_token;
 
 pub use devcontainer_api::{
     BuildMode, DeferredCommand, DeferredHook, DevContainerConfig, DevContainerError,
-    DevContainerOrigin, StartedDevContainer, dev_container_origin, find_configs_in_snapshot,
-    find_devcontainer_configs, rebuild_dev_container, remove_dev_container, restart_dev_container,
-    shut_down_dev_container, shutdown_command, start_dev_container,
-    start_dev_container_with_config, stop_dev_container,
+    DevContainerOrigin, StartedDevContainer, container_logs, dev_container_origin,
+    find_configs_in_snapshot, find_devcontainer_configs, rebuild_dev_container,
+    remove_dev_container, restart_dev_container, shut_down_dev_container, shutdown_command,
+    start_dev_container, start_dev_container_with_config, stop_dev_container,
 };
 
 /// Converts a string to a safe environment variable name.
@@ -189,6 +189,12 @@ async fn host_environment(host: &EngineHost) -> HashMap<String, String> {
             log::error!("{error:#}");
             HashMap::default()
         })
+}
+
+/// Where the commands that created or started the last dev container, and their
+/// output, are recorded.
+pub fn dev_container_log_path() -> std::path::PathBuf {
+    paths::logs_dir().join("dev_container.log")
 }
 
 /// What Zed learned about container engines and containers earlier in this

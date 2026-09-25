@@ -745,6 +745,13 @@ pub struct RebuildDevContainer;
 #[serde(deny_unknown_fields)]
 pub struct RebuildDevContainerWithoutCache;
 
+/// Opens what creating or starting the last dev container ran and printed, and
+/// the log of the dev container this window is connected to.
+#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
+#[action(namespace = projects)]
+#[serde(deny_unknown_fields)]
+pub struct ShowDevContainerLog;
+
 /// Lists the ports forwarded from the current dev container, to open, stop, or
 /// forward more of them.
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]

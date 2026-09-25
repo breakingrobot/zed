@@ -690,6 +690,40 @@ pub async fn shut_down_dev_container(
     }
 }
 
+/// The last lines the container's processes printed, from `docker logs`.
+pub async fn container_logs(
+    container_id: &str,
+    use_podman: bool,
+    engine_host: &EngineHost,
+) -> Result<String, DevContainerError> {
+    let docker = Docker::without_builds(
+        if use_podman { "podman" } else { "docker" },
+        engine_host.clone(),
+    )
+    .await;
+    let mut command = docker.docker_command();
+    command.args(["logs", "--tail", "1000", container_id]);
+    let output = command.output().await.map_err(|e| {
+        log::error!("Error running docker logs: {e}");
+        DevContainerError::CommandFailed(command.get_program().to_string())
+    })?;
+    if !output.status.success() {
+        log::error!(
+            "Non-success status from docker logs: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Err(DevContainerError::CommandFailed(
+            command.get_program().to_string(),
+        ));
+    }
+    // The container's standard error comes on docker's.
+    Ok(format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
 /// Starts a stopped dev container (a `docker start`; a no-op if it is already
 /// running) so a subsequent connection attempt can reach it. This is the
 /// in-place counterpart to [`stop_dev_container`], used to reconnect to a

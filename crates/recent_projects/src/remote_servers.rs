@@ -2273,14 +2273,12 @@ impl RemoteServerProjects {
                 Ok(started) => started,
                 Err(e) => {
                     log::error!("Failed to start dev container: {:?}", e);
-                    cx.prompt(
-                        gpui::PromptLevel::Critical,
-                        "Failed to start Dev Container. See logs for details",
-                        Some(&format!("{e}")),
-                        &["OK"],
+                    crate::dev_container_lifecycle::prompt_start_error(
+                        cx,
+                        "Failed to start Dev Container",
+                        &e,
                     )
-                    .await
-                    .ok();
+                    .await;
                     entity
                         .update_in(cx, |remote_server_projects, window, cx| {
                             remote_server_projects.allow_dismissal = true;

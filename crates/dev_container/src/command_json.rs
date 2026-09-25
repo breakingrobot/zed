@@ -1,4 +1,4 @@
-use std::process::Output;
+use std::{path::PathBuf, process::Output, sync::Arc};
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -24,6 +24,95 @@ impl CommandRunner for DefaultCommandRunner {
 #[async_trait]
 pub(crate) trait CommandRunner: Send + Sync {
     async fn run_command(&self, command: &mut Command) -> Result<Output, std::io::Error>;
+}
+
+/// Where the commands that create and start a dev container, and their output,
+/// are written for the user, since the connection modal only shows a status.
+#[derive(Clone)]
+pub(crate) struct DevContainerLog {
+    path: PathBuf,
+}
+
+impl DevContainerLog {
+    /// Starts a new log at `path`, replacing the one of the previous start.
+    pub(crate) async fn start(path: PathBuf) -> Option<Self> {
+        if let Some(parent) = path.parent() {
+            smol::fs::create_dir_all(parent).await.ok()?;
+        }
+        match smol::fs::write(&path, "").await {
+            Ok(()) => Some(Self { path }),
+            Err(error) => {
+                log::warn!(
+                    "Can't write the dev container log {}: {error}",
+                    path.display()
+                );
+                None
+            }
+        }
+    }
+
+    pub(crate) async fn record(&self, command: &Command, output: &Result<Output, std::io::Error>) {
+        use futures::AsyncWriteExt as _;
+
+        let mut entry = format!("$ {}\n", describe_command(command));
+        match output {
+            Ok(output) => {
+                entry.push_str(&String::from_utf8_lossy(&output.stdout));
+                entry.push_str(&String::from_utf8_lossy(&output.stderr));
+                if !output.status.success() {
+                    entry.push_str(&format!("[{}]\n", output.status));
+                }
+            }
+            Err(error) => entry.push_str(&format!("[failed to run: {error}]\n")),
+        }
+        if !entry.ends_with('\n') {
+            entry.push('\n');
+        }
+        let result = async {
+            let mut file = smol::fs::OpenOptions::new()
+                .append(true)
+                .open(&self.path)
+                .await?;
+            file.write_all(entry.as_bytes()).await?;
+            file.flush().await
+        }
+        .await;
+        if let Err(error) = result {
+            log::warn!("Failed to write the dev container log: {error}");
+        }
+    }
+}
+
+/// The command line, without the values of the environment variables that
+/// `docker exec -e` or `docker run -e` passes, which may be secret.
+fn describe_command(command: &Command) -> String {
+    let mut words = vec![command.get_program().to_string_lossy().into_owned()];
+    let mut previous_was_env_flag = false;
+    for arg in command.get_args() {
+        let arg = arg.to_string_lossy();
+        let word = match arg.split_once('=') {
+            Some((name, _)) if previous_was_env_flag => format!("{name}=<redacted>"),
+            _ => arg.into_owned(),
+        };
+        previous_was_env_flag = word == "-e" || word == "--env";
+        words.push(word);
+    }
+    words.join(" ")
+}
+
+/// Runs commands with `inner`, recording them in the dev container's log.
+pub(crate) struct LoggingCommandRunner {
+    pub(crate) inner: Arc<dyn CommandRunner>,
+    pub(crate) log: DevContainerLog,
+}
+
+#[async_trait]
+impl CommandRunner for LoggingCommandRunner {
+    async fn run_command(&self, command: &mut Command) -> Result<Output, std::io::Error> {
+        let output = self.inner.run_command(command).await;
+        self.log.record(command, &output).await;
+        output
+    }
 }
 
 pub(crate) async fn evaluate_json_command<T>(
@@ -101,6 +190,54 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dev_container_log_records_commands_without_env_values() {
+        smol::block_on(async {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("logs").join("dev_container.log");
+            let log = super::DevContainerLog::start(path.clone()).await.unwrap();
+
+            let mut command = util::command::new_command("docker");
+            command.args([
+                "exec",
+                "-e",
+                "TOKEN=s3cret",
+                "-e",
+                "API_KEY",
+                "container",
+                "true",
+            ]);
+            let output = Ok(std::process::Output {
+                status: std::process::ExitStatus::default(),
+                stdout: b"built\n".to_vec(),
+                stderr: b"warning".to_vec(),
+            });
+            log.record(&command, &output).await;
+            log.record(
+                &util::command::new_command("missing"),
+                &Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            )
+            .await;
+
+            let contents = std::fs::read_to_string(&path).unwrap();
+            assert!(!contents.contains("s3cret"), "{contents}");
+            assert!(
+                contents.starts_with(
+                    "$ docker exec -e TOKEN=<redacted> -e API_KEY container true\nbuilt\nwarning\n"
+                ),
+                "{contents}"
+            );
+            assert!(
+                contents.contains("$ missing\n[failed to run: "),
+                "{contents}"
+            );
+
+            // A new start replaces the previous log.
+            super::DevContainerLog::start(path.clone()).await.unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        });
+    }
+
     use std::process::ExitStatus;
 
     use crate::docker::{DockerComposeConfig, DockerComposeServiceBuild};
