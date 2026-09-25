@@ -24,7 +24,9 @@ use task::{TaskContext, TaskTemplate};
 use workspace::notifications::{NotificationId, simple_message_notification::MessageNotification};
 use workspace::{AppState, MultiWorkspace, OpenOptions, Workspace, tasks::ScheduledTaskResult};
 
-use crate::remote_connections::{Connection, RemoteConnectionModal, open_remote_project};
+use crate::remote_connections::{
+    Connection, dismiss_connection_modal, open_remote_project, set_connection_modal_status,
+};
 
 /// Surfaces a lifecycle failure to the user. All of the operations here report
 /// errors the same way: a critical modal titled with the operation that
@@ -1139,18 +1141,7 @@ fn show_lifecycle_status(
     let status = status.to_string();
     workspace_handle
         .update_in(cx, |workspace, window, cx| {
-            if workspace
-                .active_modal::<RemoteConnectionModal>(cx)
-                .is_none()
-            {
-                workspace.toggle_modal(window, cx, |window, cx| {
-                    RemoteConnectionModal::new(&connection_options, Vec::new(), window, cx)
-                });
-            }
-            if let Some(modal) = workspace.active_modal::<RemoteConnectionModal>(cx) {
-                let prompt = modal.read(cx).prompt.clone();
-                prompt.update(cx, |prompt, cx| prompt.set_status(Some(status), cx));
-            }
+            set_connection_modal_status(workspace, &connection_options, status, window, cx)
         })
         .ok();
 }
@@ -1158,13 +1149,7 @@ fn show_lifecycle_status(
 /// Dismisses the connection modal previously shown by [`show_lifecycle_status`],
 /// so a subsequent error prompt isn't left sitting behind the spinner.
 fn dismiss_lifecycle_status(workspace_handle: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext) {
-    workspace_handle
-        .update_in(cx, |workspace, _window, cx| {
-            if let Some(modal) = workspace.active_modal::<RemoteConnectionModal>(cx) {
-                modal.update(cx, |modal, cx| modal.finished(cx));
-            }
-        })
-        .ok();
+    workspace_handle.update(cx, dismiss_connection_modal).ok();
 }
 
 /// Rebuilds the dev container described by `options` from scratch and returns
