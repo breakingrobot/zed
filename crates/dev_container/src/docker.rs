@@ -283,6 +283,9 @@ pub(crate) struct Docker {
     host: EngineHost,
     /// See [`EngineHost::engine_environment`].
     engine_environment: Vec<(String, String)>,
+    /// Variables that commands in containers get without their values being
+    /// stored or shown in arguments.
+    secrets: std::collections::BTreeMap<String, String>,
 }
 
 impl DockerInspect {
@@ -327,6 +330,7 @@ impl Docker {
             has_buildx,
             host,
             engine_environment,
+            secrets: Default::default(),
         }
     }
 
@@ -338,7 +342,16 @@ impl Docker {
             has_buildx: false,
             engine_environment: host.engine_environment().await,
             host,
+            secrets: Default::default(),
         }
+    }
+
+    pub(crate) fn with_secrets(
+        mut self,
+        secrets: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     fn is_podman(&self) -> bool {
@@ -507,6 +520,9 @@ impl DockerClient for Docker {
             let env_declaration = format!("{}={}", k, v);
             command.arg(&env_declaration);
         }
+        let mut secret_args = Vec::new();
+        remote::push_secrets(&mut secret_args, &mut command, &self.secrets);
+        command.args(secret_args);
 
         command.arg(container_id);
 
@@ -1238,6 +1254,7 @@ mod test {
             has_buildx: false,
             host: EngineHost::Local,
             engine_environment: Vec::new(),
+            secrets: Default::default(),
         };
         let given_id = "given_docker_id";
 
@@ -1261,6 +1278,7 @@ mod test {
             has_buildx: false,
             host: EngineHost::Local,
             engine_environment: Vec::new(),
+            secrets: Default::default(),
         };
 
         let result = gpui::block_on(docker.run_docker_exec(
@@ -1275,6 +1293,68 @@ mod test {
             result,
             Err(DevContainerError::DevContainerScriptsFailed)
         ));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn docker_exec_passes_secrets_by_name() {
+        use indoc::indoc;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fake_docker = temp_dir.path().join("docker.sh");
+        std::fs::write(
+            &fake_docker,
+            indoc! {r#"
+                #!/bin/sh
+                printf '%s\n' "$@" > "$(dirname "$0")/args"
+                printf '%s' "$API_TOKEN" > "$(dirname "$0")/secret"
+            "#},
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let docker = Docker {
+            docker_cli: fake_docker.display().to_string(),
+            has_buildx: false,
+            host: EngineHost::Local,
+            engine_environment: Vec::new(),
+            secrets: Default::default(),
+        }
+        .with_secrets(std::collections::BTreeMap::from([(
+            "API_TOKEN".to_string(),
+            "s3cret".to_string(),
+        )]));
+
+        // Another test forking while the script above is still open for writing
+        // makes executing it fail with "text file busy" until that child execs.
+        let mut attempts = 0;
+        let result = loop {
+            let result = gpui::block_on(docker.run_docker_exec(
+                "container",
+                "/workspace",
+                "root",
+                &HashMap::new(),
+                Command::new("true"),
+            ));
+            attempts += 1;
+            if result.is_ok() || attempts == 10 {
+                break result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert!(result.is_ok(), "docker exec failed: {result:?}");
+
+        let args = std::fs::read_to_string(temp_dir.path().join("args")).unwrap();
+        let args = args.lines().collect::<Vec<_>>();
+        assert!(
+            args.windows(2).any(|pair| pair == ["-e", "API_TOKEN"]),
+            "{args:?}"
+        );
+        assert!(!args.iter().any(|arg| arg.contains("s3cret")), "{args:?}");
+        assert_eq!(
+            std::fs::read_to_string(temp_dir.path().join("secret")).unwrap(),
+            "s3cret"
+        );
     }
 
     // Regression test: `run_docker_exec` used to re-flatten the command through a second `sh -c` that word-split it on whitespace, e.g. postCreateCommand:
@@ -1307,6 +1387,7 @@ mod test {
             has_buildx: false,
             host: EngineHost::Local,
             engine_environment: Vec::new(),
+            secrets: Default::default(),
         };
 
         // Another test forking while the script above is still open for writing
