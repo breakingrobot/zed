@@ -487,15 +487,22 @@ impl DevContainer {
         self.host_requirements.as_ref()
     }
 
-    /// The engine host ports that `docker run` publishes for this container:
-    /// numeric `forwardPorts` and the host side of `appPort`.
+    /// The engine host ports published for this container: numeric `forwardPorts`
+    /// and the host side of `appPort`, and for Compose configurations the
+    /// `service:port` entries of `forwardPorts`, which Zed publishes on their
+    /// service.
     pub(crate) fn published_host_ports(&self) -> Vec<u16> {
+        let is_compose = self.build_type() == DevContainerBuildType::DockerCompose;
         let forward_ports = self
             .forward_ports
             .iter()
             .flatten()
             .filter_map(|port| match port {
                 ForwardPort::Number(port) => Some(*port),
+                ForwardPort::String(port) if is_compose => {
+                    let (_, port) = port.rsplit_once(':').unwrap_or(("", port));
+                    port.trim().parse().ok()
+                }
                 ForwardPort::String(_) => None,
             });
         let app_ports = self.app_port.iter().filter_map(|mapping| {
@@ -1195,6 +1202,16 @@ mod test {
 
         let config = deserialize_devcontainer_json(r#"{"image":"ubuntu"}"#).expect("config");
         assert!(config.published_host_ports().is_empty());
+
+        let compose = deserialize_devcontainer_json(
+            r#"{
+                "dockerComposeFile": "compose.yaml",
+                "service": "app",
+                "forwardPorts": [3000, "db:5432", "8080", "db:not-a-port"]
+            }"#,
+        )
+        .expect("Compose config");
+        assert_eq!(compose.published_host_ports(), [3000, 5432, 8080]);
     }
 
     #[test]
