@@ -713,6 +713,16 @@ impl TitleBar {
                                     );
                                 },
                             )
+                            .entry(
+                                "Rebuild Dev Container Without Cache",
+                                Some(Box::new(zed_actions::RebuildDevContainerWithoutCache)),
+                                |window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(zed_actions::RebuildDevContainerWithoutCache),
+                                        cx,
+                                    );
+                                },
+                            )
                             .separator()
                             .entry(
                                 "Stop Dev Container",

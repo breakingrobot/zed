@@ -324,6 +324,44 @@ impl Docker {
         command
     }
 
+    fn create_docker_compose_build_command(
+        &self,
+        config_files: &Vec<PathBuf>,
+        project_name: &str,
+        services: Option<&Vec<String>>,
+        no_cache: bool,
+    ) -> HostCommand {
+        let mut command = self.docker_command();
+        if !self.is_podman() {
+            if self.has_buildx {
+                command.env("DOCKER_BUILDKIT", "1");
+            } else {
+                // Without a usable BuildKit, build through the classic builder so
+                // multi-stage `FROM` of locally-built images (the feature content
+                // image) resolves from the daemon's image store.
+                command.env("DOCKER_BUILDKIT", "0");
+                command.env("COMPOSE_DOCKER_CLI_BUILD", "0");
+            }
+        }
+        command.args(&["compose", "--project-name", project_name]);
+        for docker_compose_file in config_files {
+            command.args(&["-f", &self.host.host_path(docker_compose_file)]);
+        }
+        command.arg("build");
+        if no_cache {
+            command.arg("--no-cache");
+            // The classic builder would try to pull the feature content image,
+            // which only exists locally.
+            if self.has_buildx {
+                command.arg("--pull");
+            }
+        }
+        if let Some(services) = services {
+            command.args(services);
+        }
+        command
+    }
+
     fn create_docker_compose_config_command(&self, config_files: &Vec<PathBuf>) -> HostCommand {
         let mut command = self.docker_command();
         command.arg("compose");
@@ -371,27 +409,14 @@ impl DockerClient for Docker {
         config_files: &Vec<PathBuf>,
         project_name: &str,
         services: Option<&Vec<String>>,
+        no_cache: bool,
     ) -> Result<(), DevContainerError> {
-        let mut command = self.docker_command();
-        if !self.is_podman() {
-            if self.has_buildx {
-                command.env("DOCKER_BUILDKIT", "1");
-            } else {
-                // Without a usable BuildKit, build through the classic builder so
-                // multi-stage `FROM` of locally-built images (the feature content
-                // image) resolves from the daemon's image store.
-                command.env("DOCKER_BUILDKIT", "0");
-                command.env("COMPOSE_DOCKER_CLI_BUILD", "0");
-            }
-        }
-        command.args(&["compose", "--project-name", project_name]);
-        for docker_compose_file in config_files {
-            command.args(&["-f", &self.host.host_path(docker_compose_file)]);
-        }
-        command.arg("build");
-        if let Some(services) = services {
-            command.args(services);
-        }
+        let command = self.create_docker_compose_build_command(
+            config_files,
+            project_name,
+            services,
+            no_cache,
+        );
 
         let output = command.output().await.map_err(|e| {
             log::error!("Error running docker compose up: {e}");
@@ -616,6 +641,7 @@ pub(crate) trait DockerClient: Send + Sync {
         config_files: &Vec<PathBuf>,
         project_name: &str,
         services: Option<&Vec<String>>,
+        no_cache: bool,
     ) -> Result<(), DevContainerError>;
 
     /// Runs `inner_command` in the container, returning `Ok(())` only if it
@@ -935,6 +961,7 @@ mod test {
     use std::{
         collections::HashMap,
         ffi::OsStr,
+        path::PathBuf,
         process::{ExitStatus, Output},
     };
 
@@ -974,6 +1001,31 @@ mod test {
             parse_engine_resources("Cannot connect to the Docker daemon"),
             None
         );
+    }
+
+    #[test]
+    fn compose_builds_without_cache_pull_only_with_buildkit() {
+        let files = vec![PathBuf::from("/project/.devcontainer/docker-compose.yml")];
+        let services = vec!["app".to_string()];
+        let args = |docker: &Docker, no_cache: bool| {
+            docker
+                .create_docker_compose_build_command(&files, "project", Some(&services), no_cache)
+                .to_command()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let buildkit =
+            futures::executor::block_on(Docker::new("docker", Some(true), EngineHost::Local));
+        let classic =
+            futures::executor::block_on(Docker::new("docker", Some(false), EngineHost::Local));
+
+        assert_eq!(
+            args(&buildkit, true)[5..],
+            ["build", "--no-cache", "--pull", "app"]
+        );
+        assert_eq!(args(&classic, true)[5..], ["build", "--no-cache", "app"]);
+        assert_eq!(args(&buildkit, false)[5..], ["build", "app"]);
     }
 
     #[test]
