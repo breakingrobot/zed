@@ -189,33 +189,49 @@ pub fn state_dir() -> &'static PathBuf {
     })
 }
 
+static CUSTOM_TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Makes [`temp_dir`] return `dir`, for when the user can't write to
+/// [`default_temp_dir`]. Has no effect once [`temp_dir`] has been called.
+pub fn set_custom_temp_dir(dir: PathBuf) -> &'static PathBuf {
+    CUSTOM_TEMP_DIR.get_or_init(|| dir)
+}
+
 /// Returns the path to the temp directory used by Zed.
 pub fn temp_dir() -> &'static PathBuf {
     static TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
     TEMP_DIR.get_or_init(|| {
-        if cfg!(target_os = "macos") {
-            return dirs::cache_dir()
-                .expect("failed to determine cachesDirectory directory")
-                .join(APP_NAME);
-        }
-
-        if cfg!(target_os = "windows") {
-            return dirs::cache_dir()
-                .expect("failed to determine LocalAppData directory")
-                .join(APP_NAME);
-        }
-
-        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
-            return if let Ok(flatpak_xdg_cache) = std::env::var("FLATPAK_XDG_CACHE_HOME") {
-                flatpak_xdg_cache.into()
-            } else {
-                dirs::cache_dir().expect("failed to determine XDG_CACHE_HOME directory")
-            }
-            .join(APP_NAME_LOWERCASE);
-        }
-
-        home_dir().join(".cache").join(APP_NAME_LOWERCASE)
+        CUSTOM_TEMP_DIR
+            .get()
+            .cloned()
+            .unwrap_or_else(default_temp_dir)
     })
+}
+
+/// Where [`temp_dir`] is, unless [`set_custom_temp_dir`] changed it.
+pub fn default_temp_dir() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return dirs::cache_dir()
+            .expect("failed to determine cachesDirectory directory")
+            .join(APP_NAME);
+    }
+
+    if cfg!(target_os = "windows") {
+        return dirs::cache_dir()
+            .expect("failed to determine LocalAppData directory")
+            .join(APP_NAME);
+    }
+
+    if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+        return if let Ok(flatpak_xdg_cache) = std::env::var("FLATPAK_XDG_CACHE_HOME") {
+            flatpak_xdg_cache.into()
+        } else {
+            dirs::cache_dir().expect("failed to determine XDG_CACHE_HOME directory")
+        }
+        .join(APP_NAME_LOWERCASE);
+    }
+
+    home_dir().join(".cache").join(APP_NAME_LOWERCASE)
 }
 
 /// Returns the path to the hang traces directory.

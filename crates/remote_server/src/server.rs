@@ -547,7 +547,20 @@ fn start_server(
     RemoteClient::proto_client_from_channels(incoming_rx, outgoing_tx, cx, "server", is_wsl_interop)
 }
 
-fn init_paths() -> anyhow::Result<()> {
+/// Creates the server's folders, and returns a warning to log once logging is set up.
+fn init_paths() -> anyhow::Result<Option<String>> {
+    // In a dev container, a mount into the user's cache folder (a package cache
+    // volume, say) makes the engine create that folder for root, where the server
+    // can't create its own: it uses a folder of its data directory instead.
+    let mut warning = None;
+    let default_temp_dir = paths::default_temp_dir();
+    if let Err(error) = std::fs::create_dir_all(&default_temp_dir) {
+        let fallback = paths::data_dir().join("cache");
+        warning = Some(format!(
+            "can't create {default_temp_dir:?} ({error}), using {fallback:?} instead"
+        ));
+        paths::set_custom_temp_dir(fallback);
+    }
     for path in [
         paths::config_dir(),
         paths::extensions_dir(),
@@ -562,7 +575,7 @@ fn init_paths() -> anyhow::Result<()> {
     {
         std::fs::create_dir_all(path).with_context(|| format!("creating directory {path:?}"))?;
     }
-    Ok(())
+    Ok(warning)
 }
 
 pub fn execute_run(
@@ -572,7 +585,7 @@ pub fn execute_run(
     stdout_socket: PathBuf,
     stderr_socket: PathBuf,
 ) -> Result<()> {
-    init_paths()?;
+    let paths_warning = init_paths()?;
 
     let startup_time = Instant::now();
     let app = gpui_platform::headless();
@@ -606,6 +619,9 @@ pub fn execute_run(
         None
     };
     let log_rx = init_logging_server(&log_file)?;
+    if let Some(warning) = paths_warning {
+        log::warn!("{warning}");
+    }
     log::info!(
         "starting up with PID {}:\npid_file: {:?}, log_file: {:?}, stdin_socket: {:?}, stdout_socket: {:?}, stderr_socket: {:?}",
         pid,
