@@ -130,7 +130,8 @@ rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; auc
 | F1 | `f1-credentials` | `b958d36ee4` | agent SSH partagé (`/tmp/zed-ssh-agent.sock`, hôtes Linux/WSL, Docker Desktop macOS), copie de `~/.gitconfig` ; corrige les tests Unix cassés par `EngineHost` ; Windows et Linux |
 | F2 | `f2-wait-for` | `0b4561a1d4` | `waitFor` : hooks suivants lancés en tâches du terminal après connexion ; note Podman `pids_limit` ; Windows |
 | F3 | `f3-port-detection` | `5d92bd3517` | transfert automatique des ports qui écoutent (`/proc/net/tcp`, sous-commande `tcp-relay` du remote server) ; Windows |
-| F4 | `f4-config-change` | en cours | label `dev.zed.config-hash`, notification « Rebuild Container » quand la configuration a changé |
+| F4 | `f4-config-change` | `68689e09b2` | label `dev.zed.config-hash`, notification « Rebuild Container » quand la configuration a changé  ; Windows |
+| F5–F29 | `f5-port-attributes` … `f29-manage-containers` (`ad41a3b0a3`) | session cloud : `portsAttributes`, `hostRequirements` (+ GPU), rebuild sans cache, `userEnvProbe`, notifications de ports, `shutdownAction`, dotfiles, lockfile et cache des features, tunnels de ports par la connexion du serveur (fin de `tcp-relay`), vue des ports, identifiants Git, secrets, `customizations.zed.settings`, journaux, attache, clone en volume, moteurs distants, gestion des conteneurs ; tests unitaires Linux (205 / 39 / 56), **jamais testé sur un vrai moteur** (guide 09 §7) |
 
 Écarts au plan :
 
