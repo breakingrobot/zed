@@ -1,3 +1,4 @@
+mod attach_container;
 mod dev_container_lifecycle;
 mod dev_container_suggest;
 pub mod disconnected_overlay;
@@ -306,6 +307,7 @@ pub fn init(cx: &mut App) {
     dev_container_lifecycle::announce_forwarded_ports(cx);
     dev_container_lifecycle::shut_down_dev_containers_when_closed(cx);
     forwarded_ports::init(cx);
+    attach_container::init(cx);
 
     #[cfg(target_os = "windows")]
     cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenFolderInWsl, cx| {
