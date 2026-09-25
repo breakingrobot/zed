@@ -22,6 +22,11 @@ use rpc::{
 use crate::transport::docker::{DockerConnectionOptions, ForwardNotice, ForwardedPort};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// How long to wait after a failed `accept`, e.g. when out of file descriptors.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+/// Consecutive `accept` failures after which a port stops being forwarded, so that
+/// it's released and forwarded again once it can be.
+const MAX_ACCEPT_FAILURES: usize = 50;
 
 static NEXT_TUNNEL_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -170,6 +175,7 @@ impl PortForwarder {
         let container_id = self.connection_options.container_id.clone();
         let (command_sender, mut commands) = futures::channel::mpsc::unbounded();
         let _registration = ForwarderRegistration::new(&container_id, command_sender);
+        let (failed_sender, mut failed_ports) = futures::channel::mpsc::unbounded();
         let mut handled = HashSet::new();
         let mut forwards = Forwards {
             container_id: container_id.clone(),
@@ -189,7 +195,7 @@ impl PortForwarder {
                             continue;
                         };
                         handled.insert(port);
-                        if let Some(forward) = self.forward(port, false).await {
+                        if let Some(forward) = self.forward(port, false, &failed_sender).await {
                             forwards.ports.insert(port, (claim, forward));
                         }
                     }
@@ -204,7 +210,7 @@ impl PortForwarder {
                         handled.insert(port);
                         if !forwards.ports.contains_key(&port)
                             && let Some(claim) = ForwardedPortClaim::new(&container_id, port)
-                            && let Some(forward) = self.forward(port, true).await
+                            && let Some(forward) = self.forward(port, true, &failed_sender).await
                         {
                             forwards.ports.insert(port, (claim, forward));
                         }
@@ -215,6 +221,11 @@ impl PortForwarder {
                         forwards.stop(port);
                     }
                     None => {}
+                },
+                // Forwarded again at the next poll, if it can be by then.
+                port = failed_ports.next() => if let Some(port) = port {
+                    handled.remove(&port);
+                    forwards.stop(port);
                 },
                 _ = timer => {}
             }
@@ -237,7 +248,12 @@ impl PortForwarder {
 
     /// Starts forwarding `port`, as its `portsAttributes` ask unless `requested`
     /// by the user.
-    async fn forward(&self, port: u16, requested: bool) -> Option<Task<()>> {
+    async fn forward(
+        &self,
+        port: u16,
+        requested: bool,
+        failed_sender: &UnboundedSender<u16>,
+    ) -> Option<Task<()>> {
         let options = &self.connection_options;
         // Ports the engine publishes already reach this machine.
         if options.forward_ports.contains(&port) && !requested {
@@ -261,6 +277,7 @@ impl PortForwarder {
                     port,
                     self.client.clone(),
                     self.executor.clone(),
+                    failed_sender.clone(),
                 )))
             }
             _ => {
@@ -294,16 +311,33 @@ async fn accept(
     port: u16,
     client: AnyProtoClient,
     executor: BackgroundExecutor,
+    failed_sender: UnboundedSender<u16>,
 ) {
-    while let Ok((stream, _)) = listener.accept().await {
-        let client = client.clone();
-        executor
-            .spawn(async move {
-                if let Err(error) = tunnel(client, stream, port).await {
-                    log::debug!("Port {port} tunnel ended: {error:#}");
+    let mut failures = 0;
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                failures = 0;
+                let client = client.clone();
+                executor
+                    .spawn(async move {
+                        if let Err(error) = tunnel(client, stream, port).await {
+                            log::debug!("Port {port} tunnel ended: {error:#}");
+                        }
+                    })
+                    .detach();
+            }
+            Err(error) => {
+                failures += 1;
+                if failures >= MAX_ACCEPT_FAILURES {
+                    log::warn!("Stopped forwarding dev container port {port}: {error}");
+                    failed_sender.unbounded_send(port).ok();
+                    return;
                 }
-            })
-            .detach();
+                log::debug!("Failed to accept a connection to port {port}: {error}");
+                executor.timer(ACCEPT_RETRY_DELAY).await;
+            }
+        }
     }
 }
 
