@@ -5821,11 +5821,17 @@ mod test {
 
     #[gpui::test]
     async fn doesnt_share_the_ssh_agent_with_an_engine_on_another_machine(cx: &mut TestAppContext) {
+        // A Linux engine host, since an engine running on Windows never gets the agent.
+        let mut docker = FakeDocker::new();
+        docker.engine_host = EngineHost::Wsl(WslConnectionOptions {
+            distro_name: "Ubuntu".to_string(),
+            user: None,
+        });
         let (_, mut devcontainer_manifest) = init_devcontainer_manifest(
             cx,
             FakeFs::new(cx.executor()),
             fake_http_client(),
-            Arc::new(FakeDocker::new()),
+            Arc::new(docker),
             Arc::new(TestCommandRunner::new()),
             HashMap::from([(
                 "SSH_AUTH_SOCK".to_string(),
