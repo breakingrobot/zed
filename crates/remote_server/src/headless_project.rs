@@ -79,6 +79,8 @@ pub struct HeadlessProject {
     git_credential_forwarding: Option<gpui::Task<()>>,
     /// Relays the SSH agent socket once the client forwards its SSH agent.
     ssh_agent_forwarding: Option<gpui::Task<()>>,
+    /// Relays the GnuPG agent socket once the client forwards its GnuPG agent.
+    gpg_agent_forwarding: Option<gpui::Task<()>>,
 }
 
 pub struct HeadlessAppState {
@@ -325,6 +327,7 @@ impl HeadlessProject {
         session.add_entity_message_handler(Self::handle_close_port_tunnel);
         session.add_entity_request_handler(Self::handle_enable_git_credential_forwarding);
         session.add_entity_request_handler(Self::handle_enable_ssh_agent_forwarding);
+        session.add_entity_request_handler(Self::handle_enable_gpg_agent_forwarding);
         session.add_entity_request_handler(BufferStore::handle_update_buffer);
         session.add_entity_message_handler(BufferStore::handle_close_buffer);
 
@@ -376,6 +379,7 @@ impl HeadlessProject {
             port_tunnels: Default::default(),
             git_credential_forwarding: None,
             ssh_agent_forwarding: None,
+            gpg_agent_forwarding: None,
         }
     }
 
@@ -1507,6 +1511,95 @@ impl HeadlessProject {
         Ok(proto::Ack {})
     }
 
+    /// Relays this machine's GnuPG agent socket to the client's GnuPG agent, like VS
+    /// Code, so that git in a dev container signs with the user's keys. Needs GnuPG,
+    /// and leaves alone an agent that already runs here.
+    async fn handle_enable_gpg_agent_forwarding(
+        this: Entity<Self>,
+        _envelope: TypedEnvelope<proto::EnableGpgAgentForwarding>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let already_enabled =
+            this.read_with(&mut cx, |this, _| this.gpg_agent_forwarding.is_some());
+        if already_enabled || cfg!(not(unix)) {
+            return Ok(proto::Ack {});
+        }
+        let session = this.read_with(&mut cx, |this, _| this.session.clone());
+        let listener = cx
+            .background_spawn(async move {
+                let Ok(output) = smol::process::Command::new("gpgconf")
+                    .args(["--list-dirs", "agent-socket"])
+                    .output()
+                    .await
+                else {
+                    return anyhow::Ok(None);
+                };
+                if !output.status.success() {
+                    return anyhow::Ok(None);
+                }
+                let socket_path = PathBuf::from(unescape_gpgconf_path(
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                ));
+                if net::async_net::UnixStream::connect(&socket_path)
+                    .await
+                    .is_ok()
+                {
+                    return anyhow::Ok(None);
+                }
+                if let Some(parent) = socket_path.parent() {
+                    smol::fs::create_dir_all(parent).await?;
+                    // GnuPG refuses sockets in a folder others can read.
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        smol::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                            .await?;
+                    }
+                }
+                smol::fs::remove_file(&socket_path).await.ok();
+                anyhow::Ok(Some(net::async_net::UnixListener::bind(&socket_path)?))
+            })
+            .await?;
+        let Some(listener) = listener else {
+            return Ok(proto::Ack {});
+        };
+        let weak_this = this.downgrade();
+        let task = cx.spawn(async move |cx| {
+            let mut failures = 0;
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        failures = 0;
+                        let session = session.clone();
+                        cx.background_spawn(async move {
+                            if let Err(error) = relay_gpg_agent_connection(stream, session).await {
+                                log::debug!("GnuPG agent connection ended: {error:#}");
+                            }
+                        })
+                        .detach();
+                    }
+                    Err(error) => {
+                        failures += 1;
+                        if failures >= MAX_FORWARDED_SOCKET_ACCEPT_FAILURES {
+                            log::warn!("Stopped forwarding the GnuPG agent: {error}");
+                            break;
+                        }
+                        log::debug!("Failed to accept a GnuPG agent connection: {error}");
+                        cx.background_executor()
+                            .timer(FORWARDED_SOCKET_ACCEPT_RETRY_DELAY)
+                            .await;
+                    }
+                }
+            }
+            // So that the next EnableGpgAgentForwarding, on reconnect, listens again.
+            weak_this
+                .update(cx, |this, _| this.gpg_agent_forwarding = None)
+                .ok();
+        });
+        this.update(&mut cx, |this, _| this.gpg_agent_forwarding = Some(task));
+        Ok(proto::Ack {})
+    }
+
     async fn handle_list_remote_directory(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::ListRemoteDirectory>,
@@ -1745,6 +1838,19 @@ fn parse_listening_ports(proc_net_tcp: &str) -> std::collections::BTreeSet<u16> 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn gpgconf_paths_are_unescaped() {
+        assert_eq!(
+            super::unescape_gpgconf_path("/run/user/1000/gnupg/S.gpg-agent"),
+            "/run/user/1000/gnupg/S.gpg-agent"
+        );
+        assert_eq!(
+            super::unescape_gpgconf_path("C%3a\\Users\\me\\S.gpg-agent.extra"),
+            "C:\\Users\\me\\S.gpg-agent.extra"
+        );
+        assert_eq!(super::unescape_gpgconf_path("100%"), "100%");
+    }
+
+    #[test]
     fn ssh_agent_messages_are_prefixed_by_their_length() {
         assert_eq!(super::ssh_agent_frame(&[11]).unwrap(), [0, 0, 0, 1, 11]);
         assert_eq!(super::SSH_AGENT_FAILURE, [0, 0, 0, 1, 5]);
@@ -1882,6 +1988,88 @@ async fn relay_ssh_agent_connection(
             }
         }
     }
+}
+
+static NEXT_GPG_AGENT_CONNECTION_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Relays one GnuPG client's connection to the client's GnuPG agent. The agent
+/// greets first, then answers the client's commands, which are lines of text: they
+/// are passed on a whole line at a time.
+async fn relay_gpg_agent_connection(
+    mut stream: net::async_net::UnixStream,
+    session: AnyProtoClient,
+) -> Result<()> {
+    use futures::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let connection_id =
+        NEXT_GPG_AGENT_CONNECTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let greeting = session
+        .request(proto::ForwardGpgAgentMessage {
+            connection_id,
+            data: Vec::new(),
+            close: false,
+        })
+        .await?;
+    stream.write_all(&greeting.data).await?;
+
+    let result = async {
+        let mut pending = Vec::new();
+        let mut buffer = vec![0; 4096];
+        loop {
+            let read = stream.read(&mut buffer).await?;
+            if read == 0 {
+                return anyhow::Ok(());
+            }
+            pending.extend_from_slice(&buffer[..read]);
+            let Some(end) = pending.iter().rposition(|byte| *byte == b'\n') else {
+                anyhow::ensure!(
+                    pending.len() <= MAX_SSH_AGENT_MESSAGE_LENGTH,
+                    "GnuPG agent line too long"
+                );
+                continue;
+            };
+            let lines: Vec<u8> = pending.drain(..=end).collect();
+            let response = session
+                .request(proto::ForwardGpgAgentMessage {
+                    connection_id,
+                    data: lines,
+                    close: false,
+                })
+                .await?;
+            stream.write_all(&response.data).await?;
+        }
+    }
+    .await;
+    session
+        .request(proto::ForwardGpgAgentMessage {
+            connection_id,
+            data: Vec::new(),
+            close: true,
+        })
+        .await
+        .ok();
+    result
+}
+
+/// Undoes gpgconf's percent-encoding of special characters in paths.
+fn unescape_gpgconf_path(path: &str) -> String {
+    let mut unescaped = Vec::with_capacity(path.len());
+    let bytes = path.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && let Some(hex) = path.get(index + 1..index + 3)
+            && let Ok(byte) = u8::from_str_radix(hex, 16)
+        {
+            unescaped.push(byte);
+            index += 3;
+        } else {
+            unescaped.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&unescaped).into_owned()
 }
 
 /// `data` with the length prefix of the SSH agent protocol.

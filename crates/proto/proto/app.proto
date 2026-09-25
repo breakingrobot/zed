@@ -140,6 +140,26 @@ message ForwardSshAgentMessageResponse {
   bytes data = 1;
 }
 
+// Makes the remote server relay its machine's GnuPG agent socket to the GnuPG agent
+// of Zed's machine.
+message EnableGpgAgentForwarding {
+  uint64 project_id = 1;
+}
+
+// Complete lines a GnuPG client sent on one of its connections to the agent, which
+// Zed's machine passes to its agent. An empty `data` opens the connection, and
+// `close` ends it.
+message ForwardGpgAgentMessage {
+  uint64 connection_id = 1;
+  bytes data = 2;
+  bool close = 3;
+}
+
+// What the agent answered, up to its final `OK`, `ERR` or `INQUIRE` line.
+message ForwardGpgAgentMessageResponse {
+  bytes data = 1;
+}
+
 message GetRemoteProfilingData {
   uint64 project_id = 1;
   bool foreground_only = 2;

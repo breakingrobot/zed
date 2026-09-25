@@ -26,7 +26,7 @@ use futures::{
 };
 use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, BorrowAppContext, Context, Entity,
-    EventEmitter, FutureExt, Global, Task, TaskExt, WeakEntity,
+    EntityId, EventEmitter, FutureExt, Global, Task, TaskExt, WeakEntity,
 };
 use parking_lot::Mutex;
 
@@ -42,7 +42,7 @@ use std::{
     ops::ControlFlow,
     path::PathBuf,
     sync::{
-        Arc, Weak,
+        Arc, LazyLock, Weak,
         atomic::{AtomicU32, AtomicU64, Ordering::SeqCst},
     },
     time::{Duration, Instant},
@@ -556,6 +556,21 @@ impl RemoteClient {
                         cx.background_spawn(async move {
                             if let Err(error) = enable.await {
                                 log::warn!("Failed to forward the SSH agent: {error:#}");
+                            }
+                        })
+                        .detach();
+
+                        // And GnuPG in it signs with this machine's keys.
+                        proto_client.add_request_handler(
+                            cx.weak_entity(),
+                            Self::handle_forward_gpg_agent_message,
+                        );
+                        let enable = proto_client.request(proto::EnableGpgAgentForwarding {
+                            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+                        });
+                        cx.background_spawn(async move {
+                            if let Err(error) = enable.await {
+                                log::warn!("Failed to forward the GnuPG agent: {error:#}");
                             }
                         })
                         .detach();
@@ -1092,6 +1107,55 @@ impl RemoteClient {
         Ok(proto::ForwardSshAgentMessageResponse { data })
     }
 
+    /// Passes the lines of a GnuPG client in a dev container to this machine's GnuPG
+    /// agent, on a connection of its own, and returns what the agent answered.
+    async fn handle_forward_gpg_agent_message(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::ForwardGpgAgentMessage>,
+        _cx: AsyncApp,
+    ) -> Result<proto::ForwardGpgAgentMessageResponse> {
+        let key = (this.entity_id(), envelope.payload.connection_id);
+        if envelope.payload.close {
+            GPG_AGENT_CONNECTIONS.lock().remove(&key);
+            return Ok(proto::ForwardGpgAgentMessageResponse { data: Vec::new() });
+        }
+        let data = envelope.payload.data;
+        if data.is_empty() {
+            let socket = local_gpg_agent_socket().await?;
+            let (agent, greeting) = smol::unblock(move || {
+                let mut agent = connect_gpg_agent_socket(&socket)?;
+                let greeting = read_assuan_response(&mut agent)?;
+                anyhow::Ok((agent, greeting))
+            })
+            .await?;
+            GPG_AGENT_CONNECTIONS
+                .lock()
+                .insert(key, Arc::new(std::sync::Mutex::new(agent)));
+            return Ok(proto::ForwardGpgAgentMessageResponse { data: greeting });
+        }
+        let agent = GPG_AGENT_CONNECTIONS
+            .lock()
+            .get(&key)
+            .cloned()
+            .context("the GnuPG agent connection isn't open")?;
+        let data = smol::unblock(move || {
+            use std::io::Write as _;
+
+            let mut agent = agent
+                .lock()
+                .map_err(|_| anyhow!("the GnuPG agent connection failed"))?;
+            agent.write_all(&data)?;
+            agent.flush()?;
+            if assuan_lines_expect_response(&data) {
+                read_assuan_response(&mut *agent)
+            } else {
+                Ok(Vec::new())
+            }
+        })
+        .await?;
+        Ok(proto::ForwardGpgAgentMessageResponse { data })
+    }
+
     pub fn proto_client(&self) -> AnyProtoClient {
         self.client.clone().into()
     }
@@ -1480,6 +1544,54 @@ impl RemoteConnectionOptions {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gnupg_agent_answers_commands_but_not_inquired_data() {
+        assert!(super::assuan_lines_expect_response(b"GETINFO version\n"));
+        assert!(super::assuan_lines_expect_response(b"D data\nEND\n"));
+        assert!(!super::assuan_lines_expect_response(b"D data\n"));
+
+        let mut agent: &[u8] = b"S PROGRESS x\nD abc\nOK done\nleftover";
+        assert_eq!(
+            super::read_assuan_response(&mut agent).unwrap(),
+            b"S PROGRESS x\nD abc\nOK done\n"
+        );
+        assert_eq!(agent, b"leftover");
+        assert_eq!(
+            super::unescape_gpgconf_path(r"C%3a\Users\me\S.gpg-agent.extra"),
+            r"C:\Users\me\S.gpg-agent.extra"
+        );
+    }
+
+    #[test]
+    fn ssh_agent_messages_travel_with_their_length() {
+        struct Agent {
+            written: Vec<u8>,
+            response: std::io::Cursor<Vec<u8>>,
+        }
+        impl std::io::Read for Agent {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.response.read(buffer)
+            }
+        }
+        impl std::io::Write for Agent {
+            fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+                self.written.extend_from_slice(buffer);
+                Ok(buffer.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut agent = Agent {
+            written: Vec::new(),
+            response: std::io::Cursor::new(vec![0, 0, 0, 2, 12, 0]),
+        };
+        let response = super::exchange_ssh_agent_message(&mut agent, &[11]).unwrap();
+        assert_eq!(agent.written, [0, 0, 0, 1, 11]);
+        assert_eq!(response, [12, 0]);
+    }
+
     #[test]
     fn git_credential_operations_map_to_git_credential_commands() {
         let args = |operation: &str| {
@@ -2227,6 +2339,109 @@ impl ProtoClient for ChannelClient {
 
 /// The `git credential` command of this machine that answers a credential
 /// helper's `operation`.
+trait AgentConnection: std::io::Read + std::io::Write + Send {}
+
+impl<T: std::io::Read + std::io::Write + Send> AgentConnection for T {}
+
+/// The connections to this machine's GnuPG agent, by client and by the connection of
+/// the GnuPG client in the dev container they serve.
+static GPG_AGENT_CONNECTIONS: LazyLock<
+    Mutex<HashMap<(EntityId, u64), Arc<std::sync::Mutex<Box<dyn AgentConnection>>>>>,
+> = LazyLock::new(Default::default);
+
+/// The GnuPG agent's "extra" socket, meant for remote use, like VS Code forwards.
+async fn local_gpg_agent_socket() -> Result<PathBuf> {
+    let mut command = crate::EngineHost::Local.command("gpgconf");
+    command.args(["--list-dirs", "agent-extra-socket"]);
+    let output = command.output().await.context("running gpgconf")?;
+    anyhow::ensure!(output.status.success(), "gpgconf failed");
+    Ok(PathBuf::from(unescape_gpgconf_path(
+        String::from_utf8_lossy(&output.stdout).trim(),
+    )))
+}
+
+#[cfg(unix)]
+fn connect_gpg_agent_socket(socket: &std::path::Path) -> Result<Box<dyn AgentConnection>> {
+    let stream = std::os::unix::net::UnixStream::connect(socket)
+        .with_context(|| format!("connecting to the GnuPG agent at {}", socket.display()))?;
+    Ok(Box::new(stream))
+}
+
+/// On Windows, GnuPG emulates its sockets: the file holds a local TCP port, then a
+/// nonce to send first.
+#[cfg(windows)]
+fn connect_gpg_agent_socket(socket: &std::path::Path) -> Result<Box<dyn AgentConnection>> {
+    use std::io::Write as _;
+
+    let contents = std::fs::read(socket)
+        .with_context(|| format!("reading the GnuPG agent socket {}", socket.display()))?;
+    let newline = contents
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .context("malformed GnuPG agent socket")?;
+    let port: u16 = std::str::from_utf8(&contents[..newline])?.trim().parse()?;
+    let nonce = &contents[newline + 1..];
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stream.write_all(nonce)?;
+    Ok(Box::new(stream))
+}
+
+/// Undoes gpgconf's percent-encoding of special characters in paths, like `%3a`
+/// for the colon of a Windows drive.
+fn unescape_gpgconf_path(path: &str) -> String {
+    let mut unescaped = Vec::with_capacity(path.len());
+    let bytes = path.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && let Some(hex) = path.get(index + 1..index + 3)
+            && let Ok(byte) = u8::from_str_radix(hex, 16)
+        {
+            unescaped.push(byte);
+            index += 3;
+        } else {
+            unescaped.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&unescaped).into_owned()
+}
+
+/// Whether the agent answers `lines`: it does after a command or an `END`, but not
+/// after the data lines of a client answering its `INQUIRE`.
+fn assuan_lines_expect_response(lines: &[u8]) -> bool {
+    lines
+        .strip_suffix(b"\n")
+        .unwrap_or(lines)
+        .rsplit(|byte| *byte == b'\n')
+        .next()
+        .is_some_and(|last_line| !last_line.starts_with(b"D ") && !last_line.starts_with(b"#"))
+}
+
+/// Reads the agent's lines up to its final `OK`, `ERR` or `INQUIRE` line. Bytes are
+/// read one at a time, so nothing after the response is consumed.
+fn read_assuan_response(agent: &mut dyn std::io::Read) -> Result<Vec<u8>> {
+    let mut response = Vec::new();
+    let mut line_start = 0;
+    let mut byte = [0; 1];
+    loop {
+        agent.read_exact(&mut byte)?;
+        response.push(byte[0]);
+        anyhow::ensure!(
+            response.len() <= MAX_SSH_AGENT_MESSAGE_LENGTH,
+            "GnuPG agent response too long"
+        );
+        if byte[0] != b'\n' {
+            continue;
+        }
+        let line = &response[line_start..];
+        if line.starts_with(b"OK") || line.starts_with(b"ERR ") || line.starts_with(b"INQUIRE ") {
+            return Ok(response);
+        }
+        line_start = response.len();
+    }
+}
+
 /// The largest SSH agent response relayed, like OpenSSH's `AGENT_MAX_LEN`.
 const MAX_SSH_AGENT_MESSAGE_LENGTH: usize = 256 * 1024;
 

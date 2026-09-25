@@ -534,7 +534,10 @@ message Envelope {
     ForwardGitCredentialResponse forward_git_credential_response = 502;
     EnableSshAgentForwarding enable_ssh_agent_forwarding = 503;
     ForwardSshAgentMessage forward_ssh_agent_message = 504;
-    ForwardSshAgentMessageResponse forward_ssh_agent_message_response = 505; // current max
+    ForwardSshAgentMessageResponse forward_ssh_agent_message_response = 505;
+    EnableGpgAgentForwarding enable_gpg_agent_forwarding = 506;
+    ForwardGpgAgentMessage forward_gpg_agent_message = 507;
+    ForwardGpgAgentMessageResponse forward_gpg_agent_message_response = 508; // current max
   }
 
   reserved 87 to 88;
