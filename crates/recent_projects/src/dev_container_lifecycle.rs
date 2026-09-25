@@ -18,7 +18,7 @@ use gpui::{
 use project::TaskSourceKind;
 use remote::{
     DockerConnectionOptions, ForwardNotice, ForwardedPort, ForwardedPortListener,
-    RemoteConnectionOptions, ShutdownAction,
+    PortForwardingEvent, RemoteConnectionOptions, ShutdownAction,
 };
 use task::{TaskContext, TaskTemplate};
 use workspace::notifications::{NotificationId, simple_message_notification::MessageNotification};
@@ -779,13 +779,20 @@ pub(crate) fn announce_forwarded_ports(cx: &mut App) {
     cx.set_global(ForwardedPortListener(sender));
     cx.spawn(async move |cx| {
         let mut opened_in_browser = std::collections::HashSet::new();
-        while let Some(forwarded) = receiver.next().await {
+        while let Some(event) = receiver.next().await {
+            let forwarded = match event {
+                PortForwardingEvent::Forwarded(forwarded) => forwarded,
+                PortForwardingEvent::Stopped { container_id, port } => {
+                    cx.update(|cx| crate::forwarded_ports::remove(&container_id, port, cx));
+                    continue;
+                }
+            };
             let Some(local_port) = forwarded.local_port else {
                 cx.update(|cx| show_forwarded_port(forwarded, None, cx));
                 continue;
             };
-            let scheme = if forwarded.https { "https" } else { "http" };
-            let url = format!("{scheme}://localhost:{local_port}");
+            cx.update(|cx| crate::forwarded_ports::insert(forwarded.clone(), cx));
+            let url = crate::forwarded_ports::url(&forwarded, local_port);
             match forwarded.notice {
                 ForwardNotice::Silent => {}
                 ForwardNotice::OpenBrowser => cx.update(|cx| cx.open_url(&url)),

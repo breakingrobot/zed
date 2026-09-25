@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::{
         LazyLock,
         atomic::{AtomicU64, Ordering},
@@ -9,7 +9,8 @@ use std::{
 
 use anyhow::Result;
 use futures::{
-    AsyncReadExt as _, AsyncWriteExt as _, StreamExt as _, channel::mpsc::UnboundedSender,
+    AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _,
+    channel::mpsc::UnboundedSender,
 };
 use gpui::{BackgroundExecutor, Task};
 use parking_lot::Mutex;
@@ -18,7 +19,7 @@ use rpc::{
     proto::{self, REMOTE_SERVER_PROJECT_ID},
 };
 
-use crate::transport::docker::{DockerConnectionOptions, ForwardedPort};
+use crate::transport::docker::{DockerConnectionOptions, ForwardNotice, ForwardedPort};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
@@ -34,8 +35,45 @@ static FORWARDED_PORTS: LazyLock<Mutex<HashSet<(String, u16)>>> = LazyLock::new(
 pub(crate) struct PortForwarder {
     pub(crate) client: AnyProtoClient,
     pub(crate) connection_options: DockerConnectionOptions,
-    pub(crate) listener: Option<UnboundedSender<ForwardedPort>>,
+    pub(crate) listener: Option<UnboundedSender<PortForwardingEvent>>,
     pub(crate) executor: BackgroundExecutor,
+}
+
+/// What happened to the ports of a dev container's connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PortForwardingEvent {
+    /// A port started being forwarded, or couldn't be.
+    Forwarded(ForwardedPort),
+    /// A port isn't forwarded anymore.
+    Stopped { container_id: String, port: u16 },
+}
+
+enum PortCommand {
+    Forward(u16),
+    Stop(u16),
+}
+
+/// The command channels of the running forwarders, by container.
+static FORWARDER_COMMANDS: LazyLock<Mutex<HashMap<String, Vec<UnboundedSender<PortCommand>>>>> =
+    LazyLock::new(Default::default);
+
+fn send_command(container_id: &str, command: impl Fn() -> PortCommand) {
+    let mut forwarders = FORWARDER_COMMANDS.lock();
+    if let Some(senders) = forwarders.get_mut(container_id) {
+        senders.retain(|sender| sender.unbounded_send(command()).is_ok());
+    }
+}
+
+/// Forwards `port` of the dev container `container_id` to this machine, even if
+/// its `portsAttributes` leave it alone.
+pub fn forward_container_port(container_id: &str, port: u16) {
+    send_command(container_id, || PortCommand::Forward(port));
+}
+
+/// Stops forwarding `port` of the dev container `container_id` until it's
+/// forwarded again with [`forward_container_port`].
+pub fn stop_forwarding_container_port(container_id: &str, port: u16) {
+    send_command(container_id, || PortCommand::Stop(port));
 }
 
 /// Releases a container port for other connections once its forward stops.
@@ -56,10 +94,56 @@ impl ForwardedPortClaim {
     }
 }
 
+/// The ports a forwarder forwards, which it reports as stopped when they are
+/// dropped, e.g. when the window connected to the container closes.
+struct Forwards {
+    container_id: String,
+    listener: Option<UnboundedSender<PortForwardingEvent>>,
+    ports: HashMap<u16, (ForwardedPortClaim, Task<()>)>,
+}
+
+impl Forwards {
+    fn stop(&mut self, port: u16) {
+        if self.ports.remove(&port).is_some() {
+            self.report_stopped(port);
+        }
+    }
+
+    fn report_stopped(&self, port: u16) {
+        if let Some(listener) = &self.listener {
+            listener
+                .unbounded_send(PortForwardingEvent::Stopped {
+                    container_id: self.container_id.clone(),
+                    port,
+                })
+                .ok();
+        }
+    }
+}
+
+impl Drop for Forwards {
+    fn drop(&mut self) {
+        for port in self.ports.keys() {
+            self.report_stopped(*port);
+        }
+    }
+}
+
 impl PortForwarder {
     pub(crate) async fn run(self) {
+        let container_id = self.connection_options.container_id.clone();
+        let (command_sender, mut commands) = futures::channel::mpsc::unbounded();
+        FORWARDER_COMMANDS
+            .lock()
+            .entry(container_id.clone())
+            .or_default()
+            .push(command_sender);
         let mut handled = HashSet::new();
-        let mut forwards: Vec<(ForwardedPortClaim, Task<()>)> = Vec::new();
+        let mut forwards = Forwards {
+            container_id: container_id.clone(),
+            listener: self.listener.clone(),
+            ports: HashMap::new(),
+        };
         loop {
             match self.listening_ports().await {
                 Ok(ports) => {
@@ -69,20 +153,39 @@ impl PortForwarder {
                         }
                         // Another connection to the container forwards it; this one
                         // takes over if that one stops.
-                        let Some(claim) =
-                            ForwardedPortClaim::new(&self.connection_options.container_id, port)
-                        else {
+                        let Some(claim) = ForwardedPortClaim::new(&container_id, port) else {
                             continue;
                         };
                         handled.insert(port);
-                        if let Some(forward) = self.forward(port).await {
-                            forwards.push((claim, forward));
+                        if let Some(forward) = self.forward(port, false).await {
+                            forwards.ports.insert(port, (claim, forward));
                         }
                     }
                 }
                 Err(error) => log::debug!("Failed to list the dev container's ports: {error:#}"),
             }
-            self.executor.timer(POLL_INTERVAL).await;
+
+            let mut timer = self.executor.timer(POLL_INTERVAL).fuse();
+            futures::select_biased! {
+                command = commands.next() => match command {
+                    Some(PortCommand::Forward(port)) => {
+                        handled.insert(port);
+                        if !forwards.ports.contains_key(&port)
+                            && let Some(claim) = ForwardedPortClaim::new(&container_id, port)
+                            && let Some(forward) = self.forward(port, true).await
+                        {
+                            forwards.ports.insert(port, (claim, forward));
+                        }
+                    }
+                    // Stays handled, so it isn't forwarded again automatically.
+                    Some(PortCommand::Stop(port)) => {
+                        handled.insert(port);
+                        forwards.stop(port);
+                    }
+                    None => {}
+                },
+                _ = timer => {}
+            }
         }
     }
 
@@ -100,13 +203,19 @@ impl PortForwarder {
             .collect())
     }
 
-    async fn forward(&self, port: u16) -> Option<Task<()>> {
+    /// Starts forwarding `port`, as its `portsAttributes` ask unless `requested`
+    /// by the user.
+    async fn forward(&self, port: u16, requested: bool) -> Option<Task<()>> {
         let options = &self.connection_options;
         // Ports the engine publishes already reach this machine.
-        if options.forward_ports.contains(&port) {
+        if options.forward_ports.contains(&port) && !requested {
             return None;
         }
-        let (label, notice) = options.auto_forward.forwarding(port)?;
+        let (label, notice) = match options.auto_forward.forwarding(port) {
+            Some((label, notice)) => (label, notice),
+            None if requested => (None, ForwardNotice::Silent),
+            None => return None,
+        };
         let listener = bind_local_port(port, options.auto_forward.requires_local_port(port)).await;
         let local_port = listener
             .as_ref()
@@ -129,14 +238,19 @@ impl PortForwarder {
         };
         if let Some(listener) = &self.listener {
             listener
-                .unbounded_send(ForwardedPort {
+                .unbounded_send(PortForwardingEvent::Forwarded(ForwardedPort {
                     container_id: options.container_id.clone(),
                     port,
                     local_port,
                     label: label.map(str::to_string),
-                    notice,
+                    // The user asked for it, so the notification isn't needed.
+                    notice: if requested {
+                        ForwardNotice::Silent
+                    } else {
+                        notice
+                    },
                     https: options.auto_forward.uses_https(port),
-                })
+                }))
                 .ok();
         }
         forward

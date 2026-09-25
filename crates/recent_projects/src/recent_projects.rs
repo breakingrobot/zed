@@ -1,6 +1,7 @@
 mod dev_container_lifecycle;
 mod dev_container_suggest;
 pub mod disconnected_overlay;
+pub mod forwarded_ports;
 mod remote_connections;
 mod remote_servers;
 pub mod sidebar_recent_projects;
@@ -304,6 +305,7 @@ pub(crate) fn open_dev_container(
 pub fn init(cx: &mut App) {
     dev_container_lifecycle::announce_forwarded_ports(cx);
     dev_container_lifecycle::shut_down_dev_containers_when_closed(cx);
+    forwarded_ports::init(cx);
 
     #[cfg(target_os = "windows")]
     cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenFolderInWsl, cx| {

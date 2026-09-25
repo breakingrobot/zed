@@ -723,6 +723,16 @@ impl TitleBar {
                                     );
                                 },
                             )
+                            .entry(
+                                "Show Forwarded Ports",
+                                Some(Box::new(zed_actions::ShowForwardedPorts)),
+                                |window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(zed_actions::ShowForwardedPorts),
+                                        cx,
+                                    );
+                                },
+                            )
                             .separator()
                             .entry(
                                 "Stop Dev Container",
