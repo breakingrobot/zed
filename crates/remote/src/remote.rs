@@ -20,7 +20,7 @@ pub use remote_identity::{
 };
 pub use transport::docker::{
     AutoForwardPorts, AutoForwardRule, DockerConnectionOptions, ForwardNotice, ForwardedPort,
-    ForwardedPortListener,
+    ForwardedPortListener, ShutdownAction,
 };
 pub use transport::ssh::{SshConnectionOptions, SshPortForwardOption};
 pub use transport::wsl::WslConnectionOptions;

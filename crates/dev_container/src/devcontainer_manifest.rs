@@ -1387,6 +1387,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
             deferred_hooks: Vec::new(),
             config_changed: false,
             warnings: Vec::new(),
+            compose_project: None,
             container_id: running_container.id,
             remote_user,
             remote_workspace_folder: remote_workspace_folder.display().to_string(),
@@ -2725,6 +2726,10 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             self.remove_remote_build_dir().await;
             result?
         };
+        let mut devcontainer_up = devcontainer_up;
+        if self.dev_container().build_type() == DevContainerBuildType::DockerCompose {
+            devcontainer_up.compose_project = self.project_name().await.log_err();
+        }
         self.copy_git_config(&devcontainer_up).await;
         Ok(devcontainer_up)
     }
@@ -3019,6 +3024,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                 created_at: docker_inspect.created.clone(),
                 deferred_hooks: Vec::new(),
                 warnings: Vec::new(),
+                compose_project: None,
                 config_changed: config_changed(
                     docker_inspect.config.labels.config_hash.as_deref(),
                     self.config_hash.as_deref(),
@@ -5166,6 +5172,7 @@ mod test {
             deferred_hooks: Vec::new(),
             config_changed: false,
             warnings: Vec::new(),
+            compose_project: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5244,6 +5251,7 @@ mod test {
             deferred_hooks: Vec::new(),
             config_changed: false,
             warnings: Vec::new(),
+            compose_project: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5319,6 +5327,7 @@ mod test {
             deferred_hooks: Vec::new(),
             config_changed: false,
             warnings: Vec::new(),
+            compose_project: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5376,6 +5385,7 @@ mod test {
             deferred_hooks: Vec::new(),
             config_changed: false,
             warnings: Vec::new(),
+            compose_project: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5437,6 +5447,7 @@ mod test {
             deferred_hooks: Vec::new(),
             config_changed: false,
             warnings: Vec::new(),
+            compose_project: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),
@@ -5477,6 +5488,7 @@ mod test {
             deferred_hooks: Vec::new(),
             config_changed: false,
             warnings: Vec::new(),
+            compose_project: None,
             container_id: "container".to_string(),
             remote_user: "root".to_string(),
             remote_workspace_folder: "/workspaces/project".to_string(),

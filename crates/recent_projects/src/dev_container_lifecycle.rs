@@ -1,5 +1,8 @@
 use project::trusted_worktrees::TrustedWorktrees;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
 use anyhow::Context as _;
@@ -10,11 +13,12 @@ use dev_container::{
 use futures::StreamExt as _;
 use gpui::{
     App, AppContext as _, AsyncApp, AsyncWindowContext, Context, WeakEntity, Window, WindowHandle,
+    WindowId,
 };
 use project::TaskSourceKind;
 use remote::{
     DockerConnectionOptions, ForwardNotice, ForwardedPort, ForwardedPortListener,
-    RemoteConnectionOptions,
+    RemoteConnectionOptions, ShutdownAction,
 };
 use task::{TaskContext, TaskTemplate};
 use workspace::notifications::{NotificationId, simple_message_notification::MessageNotification};
@@ -660,6 +664,112 @@ pub(crate) fn suggest_rebuild(window: WindowHandle<MultiWorkspace>, cx: &mut Asy
             })
         })
         .ok();
+}
+
+/// Carries out the `shutdownAction` of a dev container once the last window
+/// connected to it closes, or when Zed quits, like VS Code.
+pub(crate) fn shut_down_dev_containers_when_closed(cx: &mut App) {
+    let connections_by_window: Rc<RefCell<HashMap<WindowId, Vec<DockerConnectionOptions>>>> =
+        Rc::default();
+
+    cx.observe_new({
+        let connections_by_window = connections_by_window.clone();
+        move |workspace: &mut Workspace,
+              window: Option<&mut Window>,
+              cx: &mut Context<Workspace>| {
+            let Some(window) = window else {
+                return;
+            };
+            if let Some(RemoteConnectionOptions::Docker(options)) =
+                workspace.project().read(cx).remote_connection_options(cx)
+                && options.shutdown_action != ShutdownAction::None
+            {
+                connections_by_window
+                    .borrow_mut()
+                    .entry(window.window_handle().window_id())
+                    .or_default()
+                    .push(options);
+            }
+        }
+    })
+    .detach();
+
+    cx.on_window_closed({
+        let connections_by_window = connections_by_window.clone();
+        move |cx, window_id| {
+            let Some(connections) = connections_by_window.borrow_mut().remove(&window_id) else {
+                return;
+            };
+            let mut connected = connected_container_ids(cx);
+            for options in connections {
+                // Also skips a container listed twice for the closed window.
+                if !connected.insert(options.container_id.clone()) {
+                    continue;
+                }
+                cx.background_spawn(async move {
+                    if let Err(error) = dev_container::shut_down_dev_container(&options).await {
+                        log::error!("Failed to shut down dev container: {error}");
+                    }
+                })
+                .detach();
+            }
+        }
+    })
+    .detach();
+
+    cx.on_app_quit(move |cx| {
+        let connected = connected_container_ids(cx);
+        let mut shut_down = HashSet::new();
+        for options in connections_by_window
+            .borrow_mut()
+            .drain()
+            .flat_map(|(_, list)| list)
+        {
+            if !connected.contains(&options.container_id)
+                || !shut_down.insert(options.container_id.clone())
+            {
+                continue;
+            }
+            // Zed exits before a stop could finish, so the engine is left to do it.
+            // The engine environment of a WSL or SSH host would take too long to
+            // load, so its defaults are used.
+            let Some(command) = dev_container::shutdown_command(&options, &[]) else {
+                continue;
+            };
+            if let Err(error) = command.to_command().spawn() {
+                log::error!("Failed to shut down dev container: {error}");
+            }
+        }
+        async {}
+    })
+    .detach();
+}
+
+/// The dev containers that a window is connected to.
+fn connected_container_ids(cx: &App) -> HashSet<String> {
+    cx.windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<MultiWorkspace>())
+        .filter_map(|window| window.read(cx).ok())
+        .flat_map(|multi_workspace| {
+            multi_workspace
+                .workspaces()
+                .filter_map(|workspace| {
+                    match workspace
+                        .read(cx)
+                        .project()
+                        .read(cx)
+                        .remote_connection_options(cx)
+                    {
+                        Some(RemoteConnectionOptions::Docker(options)) => {
+                            Some(options.container_id)
+                        }
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Tells the user about the ports that dev container connections start

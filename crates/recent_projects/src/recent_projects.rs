@@ -303,6 +303,7 @@ pub(crate) fn open_dev_container(
 
 pub fn init(cx: &mut App) {
     dev_container_lifecycle::announce_forwarded_ports(cx);
+    dev_container_lifecycle::shut_down_dev_containers_when_closed(cx);
 
     #[cfg(target_os = "windows")]
     cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenFolderInWsl, cx| {

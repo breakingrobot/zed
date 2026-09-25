@@ -12,13 +12,13 @@ use gpui::{AppContext, AsyncApp, Entity, PromptLevel, WindowHandle};
 use project::trusted_worktrees;
 use remote::{
     AutoForwardPorts, AutoForwardRule, DockerConnectionOptions, EngineHost, ForwardNotice,
-    Interactive, RemoteConnection, RemoteConnectionOptions, SshConnectionOptions, SshEngineHost,
-    WslConnectionOptions,
+    Interactive, RemoteConnection, RemoteConnectionOptions, ShutdownAction, SshConnectionOptions,
+    SshEngineHost, WslConnectionOptions,
 };
 pub use settings::SshConnection;
 use settings::{
-    DevContainerConnection, DevContainerForwardNotice, ExtendingVec, RegisterSetting, Settings,
-    WslConnection,
+    DevContainerConnection, DevContainerForwardNotice, DevContainerShutdownAction, ExtendingVec,
+    RegisterSetting, Settings, WslConnection,
 };
 use util::paths::PathWithPosition;
 use workspace::{
@@ -143,6 +143,15 @@ impl From<Connection> for RemoteConnectionOptions {
                             .collect(),
                         ignore_other_ports: conn.auto_forward_other_ports == Some(false),
                         other_ports_notice: forward_notice(conn.auto_forward_other_ports_notice),
+                    },
+                    shutdown_action: match (conn.shutdown_action, conn.compose_project) {
+                        (Some(DevContainerShutdownAction::StopContainer), _) => {
+                            ShutdownAction::StopContainer
+                        }
+                        (Some(DevContainerShutdownAction::StopCompose), Some(project)) => {
+                            ShutdownAction::StopCompose { project }
+                        }
+                        _ => ShutdownAction::None,
                     },
                 })
             }
