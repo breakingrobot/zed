@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Display, path::Path, sync::Arc};
 
 use crate::{command_json::CommandRunner, devcontainer_api::DevContainerError};
-use remote::EngineHost;
+use remote::{AutoForwardPorts, AutoForwardRule, EngineHost};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json_lenient::Value;
 use util::command::Command;
@@ -333,6 +333,40 @@ impl DevContainer {
         ports.sort_unstable();
         ports.dedup();
         ports
+    }
+
+    /// The automatic port forwarding the configuration asks for: the `portsAttributes`
+    /// entries that are a port or a `start-end` range, and `otherPortsAttributes`.
+    /// Entries naming a process or a regular expression aren't supported.
+    pub(crate) fn auto_forward_ports(&self) -> AutoForwardPorts {
+        let mut rules: Vec<AutoForwardRule> = self
+            .ports_attributes
+            .iter()
+            .flatten()
+            .filter_map(|(key, attributes)| {
+                let (start, end) = match key.split_once('-') {
+                    Some((start, end)) => (start.trim().parse().ok()?, end.trim().parse().ok()?),
+                    None => {
+                        let port = key.trim().parse().ok()?;
+                        (port, port)
+                    }
+                };
+                (start <= end).then(|| AutoForwardRule {
+                    start,
+                    end,
+                    forward: attributes.on_auto_forward != OnAutoForward::Ignore,
+                })
+            })
+            .collect();
+        // Narrower entries win over the ranges that contain them.
+        rules.sort_by_key(|rule| (rule.end - rule.start, rule.start));
+        AutoForwardPorts {
+            rules,
+            ignore_other_ports: self
+                .other_ports_attributes
+                .as_ref()
+                .is_some_and(|attributes| attributes.on_auto_forward == OnAutoForward::Ignore),
+        }
     }
 
     pub(crate) fn build_type(&self) -> DevContainerBuildType {
@@ -771,6 +805,8 @@ where
 mod test {
     use std::collections::HashMap;
 
+    use remote::AutoForwardPorts;
+
     use crate::{
         devcontainer_api::DevContainerError,
         devcontainer_json::{
@@ -780,6 +816,32 @@ mod test {
             ZedCustomizationsWrapper, deserialize_devcontainer_json,
         },
     };
+
+    #[test]
+    fn auto_forward_ports_come_from_ports_attributes() {
+        let dev_container = deserialize_devcontainer_json(
+            r#"{
+                "image": "debian",
+                "portsAttributes": {
+                    "3000-3010": { "onAutoForward": "ignore" },
+                    "3005": { "onAutoForward": "silent" },
+                    "db:5432": { "onAutoForward": "ignore" },
+                    "9000": {}
+                },
+                "otherPortsAttributes": { "onAutoForward": "ignore" }
+            }"#,
+        )
+        .unwrap();
+        let auto_forward = dev_container.auto_forward_ports();
+        assert!(auto_forward.ignore_other_ports);
+        assert!(auto_forward.forwards(3005));
+        assert!(auto_forward.forwards(9000));
+        assert!(!auto_forward.forwards(3001));
+        assert!(!auto_forward.forwards(5432));
+
+        let defaults = deserialize_devcontainer_json(r#"{ "image": "debian" }"#).unwrap();
+        assert_eq!(defaults.auto_forward_ports(), AutoForwardPorts::default());
+    }
 
     #[test]
     fn published_host_ports_come_from_numeric_forward_ports_and_app_port() {

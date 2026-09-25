@@ -206,6 +206,7 @@ mod tests {
             remote_env: BTreeMap::from([("FOO".to_string(), "BAR".to_string())]),
             host: Default::default(),
             forward_ports: Vec::new(),
+            auto_forward: Default::default(),
         });
         let right = RemoteConnectionOptions::Docker(DockerConnectionOptions {
             name: "zed-dev".to_string(),
@@ -218,6 +219,7 @@ mod tests {
             remote_env: BTreeMap::new(),
             host: Default::default(),
             forward_ports: Vec::new(),
+            auto_forward: Default::default(),
         });
 
         assert!(same_remote_connection_identity(Some(&left), Some(&right),));

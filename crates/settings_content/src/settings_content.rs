@@ -1406,6 +1406,25 @@ pub struct DevContainerConnection {
     /// Ports the container publishes on its engine host, which Zed forwards to
     /// this machine when that host is reached over SSH.
     pub forward_ports: Option<Vec<u16>>,
+    /// Ports given an explicit `onAutoForward` in the configuration's
+    /// `portsAttributes`, and whether Zed forwards them once they listen.
+    pub auto_forward_ports: Option<Vec<DevContainerPortRule>>,
+    /// Whether Zed forwards the listening ports that `auto_forward_ports` doesn't
+    /// cover.
+    ///
+    /// Default: true
+    pub auto_forward_other_ports: Option<bool>,
+}
+
+#[with_fallible_options]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize, JsonSchema, MergeFrom)]
+pub struct DevContainerPortRule {
+    /// The first port of the range.
+    pub start: u16,
+    /// The last port of the range.
+    pub end: u16,
+    /// Whether ports in the range are forwarded.
+    pub forward: bool,
 }
 
 #[with_fallible_options]
