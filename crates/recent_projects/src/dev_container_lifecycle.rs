@@ -1076,6 +1076,25 @@ pub(crate) fn run_deferred_hooks(
     if hooks.is_empty() {
         return;
     }
+    // When connecting failed and the user gave up, `open_remote_project` still returns
+    // the window it started from, which isn't in the container.
+    let connected = window
+        .read_with(cx, |multi_workspace, cx| {
+            matches!(
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .project()
+                    .read(cx)
+                    .remote_connection_options(cx),
+                Some(RemoteConnectionOptions::Docker(_))
+            )
+        })
+        .unwrap_or(false);
+    if !connected {
+        log::warn!("Not running the lifecycle hooks: the window isn't connected to the container");
+        return;
+    }
     cx.spawn(async move |cx| {
         for hook in hooks {
             let mut completions = Vec::new();
