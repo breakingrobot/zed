@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result};
 use askpass::EncryptedPassword;
 use editor::Editor;
 use futures::{FutureExt as _, channel::oneshot, select};
-use gpui::{AppContext, AsyncApp, Entity, PromptLevel, WindowHandle};
+use gpui::{AppContext, AsyncApp, Context, Entity, PromptLevel, Window, WindowHandle};
 
 use project::trusted_worktrees;
 use remote::{
@@ -387,21 +387,40 @@ fn show_connection_status(
     window
         .update(cx, move |_, window, cx| {
             workspace.update(cx, |workspace, cx| {
-                if workspace
-                    .active_modal::<RemoteConnectionModal>(cx)
-                    .is_none()
-                {
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        RemoteConnectionModal::new(&connection_options, Vec::new(), window, cx)
-                    });
-                }
-                if let Some(modal) = workspace.active_modal::<RemoteConnectionModal>(cx) {
-                    let prompt = modal.read(cx).prompt.clone();
-                    prompt.update(cx, |prompt, cx| prompt.set_status(Some(status), cx));
-                }
+                set_connection_modal_status(workspace, &connection_options, status, window, cx)
             });
         })
         .ok();
+}
+
+/// Shows `status` in the connection modal of `workspace`, opening the modal first
+/// if needed.
+pub(crate) fn set_connection_modal_status(
+    workspace: &mut Workspace,
+    connection_options: &RemoteConnectionOptions,
+    status: String,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if workspace
+        .active_modal::<RemoteConnectionModal>(cx)
+        .is_none()
+    {
+        workspace.toggle_modal(window, cx, |window, cx| {
+            RemoteConnectionModal::new(connection_options, Vec::new(), window, cx)
+        });
+    }
+    if let Some(modal) = workspace.active_modal::<RemoteConnectionModal>(cx) {
+        let prompt = modal.read(cx).prompt.clone();
+        prompt.update(cx, |prompt, cx| prompt.set_status(Some(status), cx));
+    }
+}
+
+/// Closes the connection modal of `workspace`, if it's open.
+pub(crate) fn dismiss_connection_modal(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
+    if let Some(modal) = workspace.active_modal::<RemoteConnectionModal>(cx) {
+        modal.update(cx, |modal, cx| modal.finished(cx));
+    }
 }
 
 /// Dismisses the connection modal previously shown by [`show_connection_status`].
@@ -413,11 +432,7 @@ fn dismiss_connection_status(
     let workspace = workspace.clone();
     window
         .update(cx, move |_, _window, cx| {
-            workspace.update(cx, |workspace, cx| {
-                if let Some(modal) = workspace.active_modal::<RemoteConnectionModal>(cx) {
-                    modal.update(cx, |modal, cx| modal.finished(cx));
-                }
-            });
+            workspace.update(cx, dismiss_connection_modal);
         })
         .ok();
 }
