@@ -360,7 +360,28 @@ fn format_byte_size(bytes: u64) -> String {
     format!("{:.1}gb", bytes as f64 / (1u64 << 30) as f64)
 }
 
+impl UserEnvProbe {
+    /// The flags of the user's shell that load the environment to probe, or `None`
+    /// when nothing is probed.
+    pub(crate) fn shell_flags(&self) -> Option<&'static str> {
+        match self {
+            UserEnvProbe::None => None,
+            UserEnvProbe::InteractiveShell => Some("-ic"),
+            UserEnvProbe::LoginShell => Some("-lc"),
+            UserEnvProbe::LoginInteractiveShell => Some("-lic"),
+        }
+    }
+}
+
 impl DevContainer {
+    /// How the environment of the remote user's shell is found, which the spec
+    /// probes with a login interactive shell unless configured otherwise.
+    pub(crate) fn user_env_probe(&self) -> UserEnvProbe {
+        self.user_env_probe
+            .clone()
+            .unwrap_or(UserEnvProbe::LoginInteractiveShell)
+    }
+
     pub(crate) fn host_requirements(&self) -> Option<&HostRequirements> {
         self.host_requirements.as_ref()
     }

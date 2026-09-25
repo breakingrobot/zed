@@ -469,6 +469,31 @@ impl DockerClient for Docker {
         Ok((output.status.success(), std_err))
     }
 
+    async fn run_docker_exec_output(
+        &self,
+        container_id: &str,
+        user: &str,
+        inner_command: Command,
+    ) -> Result<Vec<u8>, DevContainerError> {
+        let mut command = self.docker_command();
+        command.args(&["exec", "-u", user, container_id]);
+        command.arg(inner_command.get_program());
+        command.args(inner_command.get_args());
+
+        let output = command.output().await.map_err(|e| {
+            log::error!("Error running command {e} in container exec");
+            DevContainerError::ContainerNotValid(container_id.to_string())
+        })?;
+        if !output.status.success() {
+            log::error!(
+                "Command in container exec failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Err(DevContainerError::DevContainerScriptsFailed);
+        }
+        Ok(output.stdout)
+    }
+
     async fn start_container(&self, id: &str) -> Result<(), DevContainerError> {
         let mut command = self.docker_command();
 
@@ -682,6 +707,15 @@ pub(crate) trait DockerClient: Send + Sync {
         env: &HashMap<String, String>,
         inner_command: Command,
     ) -> Result<(bool, String), DevContainerError>;
+
+    /// Runs `inner_command` in the container as `user` and returns its standard
+    /// output, or `Err(DevContainerScriptsFailed)` if it fails.
+    async fn run_docker_exec_output(
+        &self,
+        container_id: &str,
+        user: &str,
+        inner_command: Command,
+    ) -> Result<Vec<u8>, DevContainerError>;
 
     async fn start_container(&self, id: &str) -> Result<(), DevContainerError>;
     /// Stops a running container without removing it, so it can later be
