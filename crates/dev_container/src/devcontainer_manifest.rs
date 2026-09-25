@@ -27,8 +27,9 @@ use crate::{
         deserialize_devcontainer_json_from_value, deserialize_devcontainer_json_to_value,
     },
     docker::{
-        Docker, DockerClient, DockerComposeConfig, DockerComposeService, DockerComposeServiceBuild,
-        DockerComposeServicePort, DockerComposeVolume, DockerInspect, DockerPs,
+        Docker, DockerClient, DockerComposeConfig, DockerComposeDeploy, DockerComposeService,
+        DockerComposeServiceBuild, DockerComposeServicePort, DockerComposeVolume, DockerInspect,
+        DockerPs,
     },
     features::{
         DevContainerFeatureJson, FeatureManifest, FeatureOrderNode, FeatureSource,
@@ -80,6 +81,8 @@ struct DevContainerManifest {
     no_cache: bool,
     /// The user's dotfiles, installed in new containers.
     dotfiles: Option<Dotfiles>,
+    /// Whether the container gets the engine's GPUs.
+    uses_gpu: bool,
     /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
     /// has been parsed.
     config_hash: Option<String>,
@@ -135,6 +138,7 @@ impl DevContainerManifest {
             defer_hooks: false,
             no_cache: false,
             dotfiles: context.dotfiles.clone(),
+            uses_gpu: false,
             config_hash: None,
         })
     }
@@ -1832,7 +1836,10 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
         let privileged = resources.privileged.then_some(true);
         let init = resources.init.then_some(true);
 
+        let deploy = self.uses_gpu.then(DockerComposeDeploy::all_gpus);
+
         let mut main_service = DockerComposeService {
+            deploy,
             entrypoint,
             cap_add,
             security_opt,
@@ -2652,6 +2659,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             }
         }
 
+        if self.uses_gpu {
+            command.args(["--gpus", "all"]);
+        }
         for cap in &build_resources.cap_add {
             command.arg("--cap-add");
             command.arg(cap);
@@ -2769,7 +2779,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
     async fn build_and_run(&mut self) -> Result<DevContainerUp, DevContainerError> {
         self.dev_container().validate_devcontainer_contents()?;
 
-        let warnings = self.unmet_host_requirements().await;
+        let warnings = self.check_host_requirements().await;
 
         self.download_feature_and_dockerfile_resources().await?;
 
@@ -2786,13 +2796,16 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         Ok(devcontainer_up)
     }
 
-    /// Like VS Code, a container whose `hostRequirements` exceed what the engine has
-    /// is still created, with a warning for the user.
-    async fn unmet_host_requirements(&self) -> Vec<String> {
-        let Some(requirements) = self.dev_container().host_requirements() else {
+    /// Decides whether the container gets the engine's GPUs. Like VS Code, a
+    /// container whose `hostRequirements` exceed what the engine has is still
+    /// created, with a warning for the user.
+    async fn check_host_requirements(&mut self) -> Vec<String> {
+        let Some(requirements) = self.dev_container().host_requirements().cloned() else {
             return Vec::new();
         };
-        let Some(resources) = self.docker_client.engine_resources().await else {
+        let resources = self.docker_client.engine_resources().await;
+        self.uses_gpu = requirements.uses_gpu(resources.as_ref());
+        let Some(resources) = resources else {
             return Vec::new();
         };
         let unmet = requirements.unmet_by(&resources);
@@ -4345,9 +4358,9 @@ mod test {
             image_from_dockerfile, is_local_feature_ref, resolve_compose_dockerfile,
         },
         docker::{
-            DockerClient, DockerComposeConfig, DockerComposeService, DockerComposeServiceBuild,
-            DockerComposeVolume, DockerConfigLabels, DockerInspectConfig, DockerInspectMount,
-            DockerPs, EngineResources,
+            DockerClient, DockerComposeConfig, DockerComposeDeploy, DockerComposeService,
+            DockerComposeServiceBuild, DockerComposeVolume, DockerConfigLabels,
+            DockerInspectConfig, DockerInspectMount, DockerPs, EngineResources,
         },
         oci::TokenResponse,
     };
@@ -4671,12 +4684,13 @@ mod test {
             .set_engine_resources(EngineResources {
                 cpus: 8,
                 memory_bytes: 16 << 30,
+                gpu: false,
             });
 
         devcontainer_manifest.parse_nonremote_vars().unwrap();
 
         assert_eq!(
-            devcontainer_manifest.unmet_host_requirements().await,
+            devcontainer_manifest.check_host_requirements().await,
             vec![
                 "This dev container needs more than its container engine has: 16 CPUs (the \
                  container engine has 8). It may run slowly or fail."
@@ -4793,6 +4807,75 @@ mod test {
         assert_eq!(
             devcontainer_up.remote_env,
             HashMap::from([("PATH".to_string(), "/initial/path".to_string())])
+        );
+    }
+
+    #[gpui::test]
+    async fn gives_the_container_gpus_as_host_requirements_ask(cx: &mut TestAppContext) {
+        let build_resources = || DockerBuildResources {
+            image: DockerInspect {
+                id: "test_image:latest".to_string(),
+                created: None,
+                config: DockerInspectConfig {
+                    labels: DockerConfigLabels::default(),
+                    image_user: None,
+                    env: Vec::new(),
+                },
+                mounts: None,
+                state: None,
+            },
+            image_tag: "test_image:latest".to_string(),
+            additional_mounts: vec![],
+            container_env: HashMap::new(),
+            privileged: false,
+            init: false,
+            cap_add: vec![],
+            security_opt: vec![],
+            entrypoint_script: None,
+        };
+        for (gpu, engine_has_gpu, expected) in [
+            ("true", false, true),
+            (r#""optional""#, true, true),
+            (r#""optional""#, false, false),
+            ("false", true, false),
+        ] {
+            let (test_dependencies, mut devcontainer_manifest) =
+                init_default_devcontainer_manifest(
+                    cx,
+                    &format!(
+                        r#"{{ "image": "test_image:latest", "hostRequirements": {{ "gpu": {gpu} }} }}"#
+                    ),
+                )
+                .await
+                .unwrap();
+            test_dependencies
+                .docker
+                .set_engine_resources(EngineResources {
+                    cpus: 8,
+                    memory_bytes: 16 << 30,
+                    gpu: engine_has_gpu,
+                });
+            devcontainer_manifest.parse_nonremote_vars().unwrap();
+            devcontainer_manifest.check_host_requirements().await;
+
+            let args: Vec<String> = devcontainer_manifest
+                .create_docker_run_command(build_resources())
+                .unwrap()
+                .to_command()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            let has_gpus = args.windows(2).any(|pair| pair == ["--gpus", "all"]);
+            assert_eq!(
+                has_gpus, expected,
+                "gpu: {gpu}, engine GPU: {engine_has_gpu}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(DockerComposeDeploy::all_gpus()).unwrap(),
+            serde_json::json!({
+                "resources": { "reservations": { "devices": [{ "capabilities": ["gpu"] }] } }
+            })
         );
     }
 

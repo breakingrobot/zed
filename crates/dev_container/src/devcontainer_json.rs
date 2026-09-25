@@ -234,6 +234,32 @@ pub(crate) struct HostRequirements {
     cpus: Option<u16>,
     memory: Option<String>,
     storage: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_gpu_requirement")]
+    gpu: Option<GpuRequirement>,
+}
+
+/// `hostRequirements.gpu`: `true`, `"optional"`, or an object of minimums, which
+/// require a GPU. Zed doesn't check the minimums.
+#[derive(Clone, Copy, Debug, Serialize, Eq, PartialEq)]
+pub(crate) enum GpuRequirement {
+    Required,
+    Optional,
+    NotNeeded,
+}
+
+fn deserialize_gpu_requirement<'de, D>(deserializer: D) -> Result<Option<GpuRequirement>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(match Option::<Value>::deserialize(deserializer)? {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => None,
+        Some(Value::Bool(true)) | Some(Value::Object(_)) => Some(GpuRequirement::Required),
+        Some(Value::String(value)) if value == "optional" => Some(GpuRequirement::Optional),
+        Some(other) => {
+            log::warn!("Ignoring hostRequirements.gpu {other}");
+            None
+        }
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -346,7 +372,20 @@ impl HostRequirements {
                 None => log::warn!("Ignoring hostRequirements.memory {memory:?}, not a size"),
             }
         }
+        if self.gpu == Some(GpuRequirement::Required) && !resources.gpu {
+            unmet.push("a GPU (the container engine has none)".to_string());
+        }
         unmet
+    }
+
+    /// Whether the container gets the engine's GPUs: always when one is required,
+    /// and when one is optional and the engine has some.
+    pub(crate) fn uses_gpu(&self, resources: Option<&EngineResources>) -> bool {
+        match self.gpu.unwrap_or(GpuRequirement::NotNeeded) {
+            GpuRequirement::Required => true,
+            GpuRequirement::Optional => resources.is_some_and(|resources| resources.gpu),
+            GpuRequirement::NotNeeded => false,
+        }
     }
 }
 
@@ -930,9 +969,10 @@ mod test {
         devcontainer_api::DevContainerError,
         devcontainer_json::{
             ContainerBuild, DevContainer, DevContainerBuildType, FeatureOptions, ForwardPort,
-            HostRequirements, LifecycleCommand, LifecycleScript, MountDefinition, OnAutoForward,
-            PortAttributeProtocol, PortAttributes, ShutdownAction, UserEnvProbe, ZedCustomization,
-            ZedCustomizationsWrapper, deserialize_devcontainer_json, parse_byte_size,
+            GpuRequirement, HostRequirements, LifecycleCommand, LifecycleScript, MountDefinition,
+            OnAutoForward, PortAttributeProtocol, PortAttributes, ShutdownAction, UserEnvProbe,
+            ZedCustomization, ZedCustomizationsWrapper, deserialize_devcontainer_json,
+            parse_byte_size,
         },
         docker::EngineResources,
     };
@@ -956,11 +996,13 @@ mod test {
         let resources = EngineResources {
             cpus: 4,
             memory_bytes: 8 << 30,
+            gpu: false,
         };
         let met = HostRequirements {
             cpus: Some(4),
             memory: Some("8gb".to_string()),
             storage: Some("1000tb".to_string()),
+            gpu: None,
         };
         assert!(met.unmet_by(&resources).is_empty());
 
@@ -968,21 +1010,31 @@ mod test {
             cpus: Some(8),
             memory: Some("16gb".to_string()),
             storage: None,
+            gpu: Some(GpuRequirement::Required),
         };
         assert_eq!(
             unmet.unmet_by(&resources),
             vec![
                 "8 CPUs (the container engine has 4)".to_string(),
                 "16gb of memory (the container engine has 8.0gb)".to_string(),
+                "a GPU (the container engine has none)".to_string(),
             ]
         );
+        assert!(unmet.uses_gpu(None));
 
         let unparsable = HostRequirements {
             cpus: None,
             memory: Some("lots".to_string()),
             storage: None,
+            gpu: Some(GpuRequirement::Optional),
         };
         assert!(unparsable.unmet_by(&resources).is_empty());
+        assert!(!unparsable.uses_gpu(Some(&resources)));
+        assert!(unparsable.uses_gpu(Some(&EngineResources {
+            gpu: true,
+            ..resources
+        })));
+        assert!(!met.uses_gpu(Some(&resources)));
     }
 
     #[test]
@@ -1251,7 +1303,6 @@ mod test {
                     "cpus": 2,
                     "memory": "8gb",
                     "storage": "32gb",
-                    // Note that we're not parsing this currently
                     "gpu": true,
                 },
                 "appPort": 8081,
@@ -1399,6 +1450,7 @@ mod test {
                     cpus: Some(2),
                     memory: Some("8gb".to_string()),
                     storage: Some("32gb".to_string()),
+                    gpu: Some(GpuRequirement::Required),
                 }),
                 app_port: vec!["8081:8081".to_string()],
                 container_env: Some(HashMap::from([
@@ -1503,7 +1555,6 @@ mod test {
                     "cpus": 2,
                     "memory": "8gb",
                     "storage": "32gb",
-                    // Note that we're not parsing this currently
                     "gpu": true,
                 },
                 "dockerComposeFile": "docker-compose.yml",
@@ -1627,6 +1678,7 @@ mod test {
                     cpus: Some(2),
                     memory: Some("8gb".to_string()),
                     storage: Some("32gb".to_string()),
+                    gpu: Some(GpuRequirement::Required),
                 }),
                 docker_compose_file: Some(vec!["docker-compose.yml".to_string()]),
                 service: Some("myService".to_string()),
@@ -1713,7 +1765,6 @@ mod test {
                     "cpus": 2,
                     "memory": "8gb",
                     "storage": "32gb",
-                    // Note that we're not parsing this currently
                     "gpu": true,
                 },
                 "appPort": 8081,
@@ -1864,6 +1915,7 @@ mod test {
                     cpus: Some(2),
                     memory: Some("8gb".to_string()),
                     storage: Some("32gb".to_string()),
+                    gpu: Some(GpuRequirement::Required),
                 }),
                 app_port: vec!["8081:8081".to_string()],
                 container_env: Some(HashMap::from([

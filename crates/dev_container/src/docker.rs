@@ -191,6 +191,44 @@ pub(crate) struct DockerComposeService {
         deserialize_with = "deserialize_environment"
     )]
     pub(crate) environment: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) deploy: Option<DockerComposeDeploy>,
+}
+
+/// The part of a Compose service's `deploy` that Zed sets: reserving GPUs.
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq, Default)]
+pub(crate) struct DockerComposeDeploy {
+    pub(crate) resources: DockerComposeDeployResources,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq, Default)]
+pub(crate) struct DockerComposeDeployResources {
+    pub(crate) reservations: DockerComposeReservations,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq, Default)]
+pub(crate) struct DockerComposeReservations {
+    pub(crate) devices: Vec<DockerComposeDevice>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq, Default)]
+pub(crate) struct DockerComposeDevice {
+    pub(crate) capabilities: Vec<String>,
+}
+
+impl DockerComposeDeploy {
+    /// Gives the service every GPU of the engine, like `docker run --gpus all`.
+    pub(crate) fn all_gpus() -> Self {
+        Self {
+            resources: DockerComposeDeployResources {
+                reservations: DockerComposeReservations {
+                    devices: vec![DockerComposeDevice {
+                        capabilities: vec!["gpu".to_string()],
+                    }],
+                },
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq, Default)]
@@ -213,10 +251,13 @@ pub(crate) struct DockerComposeConfig {
 pub(crate) struct EngineResources {
     pub(crate) cpus: u64,
     pub(crate) memory_bytes: u64,
+    /// Whether the engine can give containers a GPU.
+    pub(crate) gpu: bool,
 }
 
 /// Reads the CPUs and memory from `docker info --format '{{json .}}'`, or its
-/// Podman equivalent, which nests them under `host`.
+/// Podman equivalent, which nests them under `host`. Like the reference CLI, a GPU
+/// is available when Docker has the NVIDIA runtime.
 pub(crate) fn parse_engine_resources(info: &str) -> Option<EngineResources> {
     let info: serde_json_lenient::Value = serde_json_lenient::from_str(info.trim()).ok()?;
     let (cpus, memory) = match (info.get("NCPU"), info.get("MemTotal")) {
@@ -229,6 +270,10 @@ pub(crate) fn parse_engine_resources(info: &str) -> Option<EngineResources> {
     Some(EngineResources {
         cpus: cpus.as_u64()?,
         memory_bytes: memory.as_u64()?,
+        gpu: info
+            .get("Runtimes")
+            .and_then(|runtimes| runtimes.get("nvidia"))
+            .is_some(),
     })
 }
 
@@ -1017,17 +1062,28 @@ mod test {
     #[test]
     fn engine_resources_come_from_docker_and_podman_info() {
         assert_eq!(
-            parse_engine_resources(r#"{"ID":"x","NCPU":8,"MemTotal":16663003136}"#),
+            parse_engine_resources(
+                r#"{"ID":"x","NCPU":8,"MemTotal":16663003136,"Runtimes":{"runc":{}}}"#
+            ),
             Some(EngineResources {
                 cpus: 8,
                 memory_bytes: 16663003136,
+                gpu: false,
             })
+        );
+        assert_eq!(
+            parse_engine_resources(
+                r#"{"NCPU":8,"MemTotal":1024,"Runtimes":{"runc":{},"nvidia":{"path":"nvidia-container-runtime"}}}"#
+            )
+            .map(|resources| resources.gpu),
+            Some(true)
         );
         assert_eq!(
             parse_engine_resources(r#"{"host":{"cpus":4,"memTotal":8237195264},"store":{}}"#),
             Some(EngineResources {
                 cpus: 4,
                 memory_bytes: 8237195264,
+                gpu: false,
             })
         );
         assert_eq!(parse_engine_resources(r#"{"NCPU":8}"#), None);
