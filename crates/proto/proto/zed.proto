@@ -522,7 +522,13 @@ message Envelope {
     LanguageServerShowDocumentRequest language_server_show_document_request = 490;
     ExecuteLspCommand execute_lsp_command = 491;
     ExecuteLspCommandResponse execute_lsp_command_response = 492;
-    RefreshDocumentHighlights refresh_document_highlights = 493; // current max
+    RefreshDocumentHighlights refresh_document_highlights = 493;
+    ListListeningPorts list_listening_ports = 494;
+    ListListeningPortsResponse list_listening_ports_response = 495;
+    OpenPortTunnel open_port_tunnel = 496;
+    OpenPortTunnelResponse open_port_tunnel_response = 497;
+    PortTunnelData port_tunnel_data = 498;
+    ClosePortTunnel close_port_tunnel = 499; // current max
   }
 
   reserved 87 to 88;

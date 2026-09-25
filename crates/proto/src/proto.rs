@@ -432,6 +432,12 @@ messages!(
     (KillKernel, Background),
     (GetRemoteProfilingData, Background),
     (GetRemoteProfilingDataResponse, Background),
+    (ListListeningPorts, Background),
+    (ListListeningPortsResponse, Background),
+    (OpenPortTunnel, Background),
+    (OpenPortTunnelResponse, Background),
+    (PortTunnelData, Background),
+    (ClosePortTunnel, Background),
 );
 
 request_messages!(
@@ -671,6 +677,8 @@ request_messages!(
     (SpawnKernel, SpawnKernelResponse),
     (KillKernel, Ack),
     (GetRemoteProfilingData, GetRemoteProfilingDataResponse),
+    (ListListeningPorts, ListListeningPortsResponse),
+    (OpenPortTunnel, OpenPortTunnelResponse),
 );
 
 lsp_messages!(
@@ -904,7 +912,11 @@ entity_messages!(
     FindSearchCandidatesChunk,
     FindSearchCandidatesCancelled,
     DownloadFileByPath,
-    GetRemoteProfilingData
+    GetRemoteProfilingData,
+    ListListeningPorts,
+    OpenPortTunnel,
+    PortTunnelData,
+    ClosePortTunnel
 );
 
 entity_messages!(

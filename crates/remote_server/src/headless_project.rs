@@ -73,6 +73,8 @@ pub struct HeadlessProject {
     // Local variant is used within LSP store, but that's a separate entity.
     pub _toolchain_store: Entity<ToolchainStore>,
     pub kernels: HashMap<String, Child>,
+    /// Where the data the client sends through each open port tunnel goes.
+    port_tunnels: HashMap<u64, futures::channel::mpsc::UnboundedSender<Vec<u8>>>,
 }
 
 pub struct HeadlessAppState {
@@ -313,6 +315,10 @@ impl HeadlessProject {
         session.add_entity_request_handler(Self::handle_download_file_by_path);
 
         session.add_entity_message_handler(Self::handle_find_search_candidates_cancel);
+        session.add_entity_request_handler(Self::handle_list_listening_ports);
+        session.add_entity_stream_request_handler(Self::handle_open_port_tunnel);
+        session.add_entity_message_handler(Self::handle_port_tunnel_data);
+        session.add_entity_message_handler(Self::handle_close_port_tunnel);
         session.add_entity_request_handler(BufferStore::handle_update_buffer);
         session.add_entity_message_handler(BufferStore::handle_close_buffer);
 
@@ -361,6 +367,7 @@ impl HeadlessProject {
             profiling_collector: gpui::ProfilingCollector::new(startup_time),
             _toolchain_store: toolchain_store,
             kernels: Default::default(),
+            port_tunnels: Default::default(),
         }
     }
 
@@ -1220,6 +1227,100 @@ impl HeadlessProject {
         BufferStore::handle_find_search_candidates_cancel(buffer_store, envelope, cx).await
     }
 
+    async fn handle_list_listening_ports(
+        _this: Entity<Self>,
+        _envelope: TypedEnvelope<proto::ListListeningPorts>,
+        cx: AsyncApp,
+    ) -> Result<proto::ListListeningPortsResponse> {
+        let ports = cx
+            .background_spawn(async {
+                let mut proc_net_tcp = String::new();
+                for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+                    if let Ok(contents) = smol::fs::read_to_string(path).await {
+                        proc_net_tcp.push_str(&contents);
+                    }
+                }
+                parse_listening_ports(&proc_net_tcp)
+            })
+            .await;
+        Ok(proto::ListListeningPortsResponse {
+            ports: ports.into_iter().map(u32::from).collect(),
+        })
+    }
+
+    /// Connects to a port of this machine for the client, which forwards it. What
+    /// the port sends streams back as the responses.
+    async fn handle_open_port_tunnel(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::OpenPortTunnel>,
+        mut cx: AsyncApp,
+    ) -> Result<impl futures::Stream<Item = Result<proto::OpenPortTunnelResponse>>> {
+        use futures::{AsyncReadExt as _, AsyncWriteExt as _, StreamExt as _};
+
+        let port = u16::try_from(envelope.payload.port)?;
+        let tunnel_id = envelope.payload.tunnel_id;
+        // Registered before connecting: the client sends the tunnel's data without
+        // waiting, and messages are handled in the order they arrive.
+        let (sender, mut receiver) = futures::channel::mpsc::unbounded::<Vec<u8>>();
+        this.update(&mut cx, |this, _| {
+            this.port_tunnels.insert(tunnel_id, sender)
+        });
+        let socket = match smol::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(socket) => socket,
+            Err(_) => match smol::net::TcpStream::connect(("::1", port)).await {
+                Ok(socket) => socket,
+                Err(error) => {
+                    this.update(&mut cx, |this, _| this.port_tunnels.remove(&tunnel_id));
+                    return Err(error).with_context(|| format!("connecting to port {port}"));
+                }
+            },
+        };
+        let (reader, mut writer) = socket.split();
+        cx.background_spawn(async move {
+            while let Some(data) = receiver.next().await {
+                if writer.write_all(&data).await.is_err() {
+                    break;
+                }
+            }
+            writer.close().await.ok();
+        })
+        .detach();
+        Ok(futures::stream::unfold(reader, |mut reader| async move {
+            let mut buffer = vec![0; 64 * 1024];
+            match reader.read(&mut buffer).await {
+                Ok(0) | Err(_) => None,
+                Ok(length) => {
+                    buffer.truncate(length);
+                    Some((Ok(proto::OpenPortTunnelResponse { data: buffer }), reader))
+                }
+            }
+        }))
+    }
+
+    async fn handle_port_tunnel_data(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::PortTunnelData>,
+        cx: AsyncApp,
+    ) -> Result<()> {
+        cx.read_entity(&this, |this, _| {
+            if let Some(sender) = this.port_tunnels.get(&envelope.payload.tunnel_id) {
+                sender.unbounded_send(envelope.payload.data).ok();
+            }
+        });
+        Ok(())
+    }
+
+    async fn handle_close_port_tunnel(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::ClosePortTunnel>,
+        mut cx: AsyncApp,
+    ) -> Result<()> {
+        this.update(&mut cx, |this, _| {
+            this.port_tunnels.remove(&envelope.payload.tunnel_id)
+        });
+        Ok(())
+    }
+
     async fn handle_list_remote_directory(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::ListRemoteDirectory>,
@@ -1436,4 +1537,41 @@ fn find_venv_python(working_directory: &str) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// The TCP ports listed as listening (state `0A`) in `/proc/net/tcp` and `tcp6`.
+fn parse_listening_ports(proc_net_tcp: &str) -> std::collections::BTreeSet<u16> {
+    proc_net_tcp
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let local_address = fields.nth(1)?;
+            let state = fields.nth(1)?;
+            if state != "0A" {
+                return None;
+            }
+            let (_, port) = local_address.rsplit_once(':')?;
+            u16::from_str_radix(port, 16).ok()
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn finds_listening_ports_in_proc_net_tcp() {
+        let proc_net_tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:0CEA 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2 1 0000000000000000 100 0 0 10 0
+   2: 0100007F:1F90 0100007F:9C40 01 00000000:00000000 00:00000000 00000000     0        0 3 1 0000000000000000 20 4 30 10 -1
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000000000000:2382 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4 1 0000000000000000 100 0 0 10 0
+";
+        assert_eq!(
+            super::parse_listening_ports(proc_net_tcp)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [3306, 8080, 9090]
+        );
+    }
 }
