@@ -81,6 +81,10 @@ To open one, open your project over SSH, then run "Reopen in Dev Container" from
 
 When the project folder is a worktree created with `git worktree add`, such as the worktrees that coding agents create, Zed also mounts the Git folder of the main working tree into the container, at the path the worktree's `.git` file names. Git then works in the container even for a worktree created inside another dev container, whose `.git` file names a container path like `/workspaces/project/.git`: Zed finds that folder in a parent folder of the worktree. Outside containers, such a worktree only works with Git once its links are relative, which Git 2.48 and later can do with `git worktree repair --relative-paths`.
 
+### Containers created by VS Code
+
+Zed and VS Code label dev containers the same way, so Zed reuses a container that VS Code created for the same folder and configuration, and the other way around. This includes a WSL folder that VS Code opened from Windows, whose labels hold its `\\wsl.localhost` path rather than its Linux path.
+
 ## Editing the dev container configuration
 
 Zed validates `devcontainer.json` and `devcontainer-feature.json` against the Dev Container specification's schemas, like VS Code, and completes their properties. The JSON language server downloads the schemas, so this needs a network connection.
