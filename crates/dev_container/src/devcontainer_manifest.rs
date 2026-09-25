@@ -13,7 +13,7 @@ use http_client::HttpClient;
 use remote::{EngineHost, HostCommand};
 
 use crate::host_files::HostFiles;
-use util::{ResultExt, command::Command, normalize_path};
+use util::{ResultExt, command::Command, normalize_path, redact::is_valid_environment_name};
 
 use crate::{
     DevContainerConfig, DevContainerContext,
@@ -408,11 +408,56 @@ impl DevContainerManifest {
         Ok(())
     }
 
+    /// The environment of processes in the container: the container's, then what
+    /// `userEnvProbe` finds in the remote user's shell, then `remoteEnv`.
+    async fn remote_env(
+        &self,
+        container: &DockerInspect,
+        remote_user: &str,
+    ) -> Result<HashMap<String, String>, DevContainerError> {
+        let container_env = container.config.env_as_map()?;
+        let probed_env = self.probe_user_env(&container.id, remote_user).await;
+        self.runtime_remote_env(&container_env, probed_env)
+    }
+
+    /// Runs the user's shell as `userEnvProbe` asks, like the reference CLI, so that
+    /// what its profile scripts set (e.g. version managers adding to `PATH`) is
+    /// available to the editor. A failing probe only loses that environment.
+    async fn probe_user_env(
+        &self,
+        container_id: &str,
+        remote_user: &str,
+    ) -> HashMap<String, String> {
+        let Some(shell_flags) = self.dev_container().user_env_probe().shell_flags() else {
+            return HashMap::new();
+        };
+        match self
+            .docker_client
+            .run_docker_exec_output(
+                container_id,
+                remote_user,
+                user_env_probe_command(remote_user, shell_flags),
+            )
+            .await
+        {
+            Ok(output) => parse_probed_env(&output).unwrap_or_else(|| {
+                log::warn!("The userEnvProbe shell printed no environment");
+                HashMap::new()
+            }),
+            Err(error) => {
+                log::warn!("Failed to probe the user's environment: {error}");
+                HashMap::new()
+            }
+        }
+    }
+
     fn runtime_remote_env(
         &self,
         container_env: &HashMap<String, String>,
+        probed_env: HashMap<String, String>,
     ) -> Result<HashMap<String, String>, DevContainerError> {
         let mut merged_remote_env = container_env.clone();
+        merged_remote_env.extend(probed_env);
         // HOME is user-specific, and we will often not run as the image user
         merged_remote_env.remove("HOME");
         if let Some(mut remote_env) = self.dev_container().remote_env.clone() {
@@ -1331,7 +1376,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
         let remote_user = get_remote_user_from_config(&running_container, self)?;
         let remote_workspace_folder = self.remote_workspace_folder()?;
 
-        let remote_env = self.runtime_remote_env(&running_container.config.env_as_map()?)?;
+        let remote_env = self.remote_env(&running_container, &remote_user).await?;
 
         Ok(DevContainerUp {
             started_at: running_container
@@ -2964,7 +3009,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
             let remote_folder = self.remote_workspace_folder()?;
 
-            let remote_env = self.runtime_remote_env(&docker_inspect.config.env_as_map()?)?;
+            let remote_env = self.remote_env(&docker_inspect, &remote_user).await?;
 
             let dev_container_up = DevContainerUp {
                 started_at: docker_inspect
@@ -3546,6 +3591,44 @@ fn get_ent_passwd_shell_command(user: &str) -> String {
         " (command -v getent >/dev/null 2>&1 && getent passwd '{shell}' || grep -E '^{re}|^[^:]*:[^:]*:{re}:' /etc/passwd || true)",
         shell = escaped_for_shell,
         re = escaped_for_regex,
+    )
+}
+
+const USER_ENV_PROBE_MARKER: &str = "ZED_USER_ENV_PROBE_3c9e1f";
+
+/// Prints the environment of `remote_user`'s shell started with `shell_flags`
+/// between markers, so the output of profile scripts can be told apart. The shell
+/// gets 10 seconds, so a profile waiting for input can't hang the connection.
+fn user_env_probe_command(remote_user: &str, shell_flags: &str) -> Command {
+    let print_env = format!(
+        "printf %s {USER_ENV_PROBE_MARKER}; env -0 || cat /proc/self/environ; printf %s {USER_ENV_PROBE_MARKER}"
+    );
+    let script = format!(
+        r#"shell="$({passwd} | cut -d: -f7)"; shell="${{shell:-/bin/sh}}"; if command -v timeout >/dev/null 2>&1; then exec timeout 10 "$shell" {shell_flags} '{print_env}'; else exec "$shell" {shell_flags} '{print_env}'; fi"#,
+        passwd = get_ent_passwd_shell_command(remote_user),
+    );
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", &script]);
+    command
+}
+
+/// Reads the NUL-separated `NAME=value` entries that [`user_env_probe_command`]
+/// prints between its markers. Variables that only describe the probing shell
+/// itself are left out.
+fn parse_probed_env(output: &[u8]) -> Option<HashMap<String, String>> {
+    let output = String::from_utf8_lossy(output);
+    let (_, rest) = output.split_once(USER_ENV_PROBE_MARKER)?;
+    let (environment, _) = rest.rsplit_once(USER_ENV_PROBE_MARKER)?;
+    Some(
+        environment
+            .split('\0')
+            .filter_map(|entry| {
+                let (name, value) = entry.split_once('=')?;
+                (is_valid_environment_name(name)
+                    && !matches!(name, "PWD" | "OLDPWD" | "SHLVL" | "_"))
+                .then(|| (name.to_string(), value.to_string()))
+            })
+            .collect(),
     )
 }
 
@@ -4474,6 +4557,117 @@ mod test {
                  container engine has 8). It may run slowly or fail."
                     .to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn probed_env_is_read_between_the_markers() {
+        let output = format!(
+            "Welcome to the container!\n{marker}PATH=/home/node/.nvm/bin:/usr/bin\0MULTI=line one\nline two\0EMPTY=\0PWD=/workspaces\0SHLVL=2\0=nameless\0garbage\0{marker}bye\n",
+            marker = super::USER_ENV_PROBE_MARKER
+        );
+        assert_eq!(
+            super::parse_probed_env(output.as_bytes()),
+            Some(HashMap::from([
+                (
+                    "PATH".to_string(),
+                    "/home/node/.nvm/bin:/usr/bin".to_string()
+                ),
+                ("MULTI".to_string(), "line one\nline two".to_string()),
+                ("EMPTY".to_string(), String::new()),
+            ]))
+        );
+        assert_eq!(super::parse_probed_env(b"bash: no job control"), None);
+    }
+
+    #[test]
+    fn user_env_probe_runs_the_users_shell_with_the_configured_flags() {
+        let command = super::user_env_probe_command("node", "-lic");
+        assert_eq!(command.get_program(), "/bin/sh");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "-c");
+        assert!(args[1].contains("getent passwd 'node'"), "{}", args[1]);
+        assert!(
+            args[1].contains(r#"exec timeout 10 "$shell" -lic 'printf %s"#),
+            "{}",
+            args[1]
+        );
+        assert!(args[1].contains("env -0"), "{}", args[1]);
+    }
+
+    #[gpui::test]
+    async fn remote_env_layers_remote_env_over_the_probed_environment(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"
+            {
+              "image": "test_image:latest",
+              "remoteEnv": {
+                "FROM_CONFIG": "config",
+                "SHARED": "config",
+                "EXTENDED_PATH": "${containerEnv:PATH}:/extra"
+              }
+            }
+            "#,
+        )
+        .await
+        .unwrap();
+        test_dependencies.docker.set_exec_output(
+            format!(
+                "{marker}PATH=/probed/bin\0SHARED=probed\0FROM_PROBE=probed\0HOME=/home/node\0{marker}",
+                marker = super::USER_ENV_PROBE_MARKER
+            )
+            .as_bytes(),
+        );
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        let devcontainer_up = devcontainer_manifest
+            .check_for_existing_devcontainer()
+            .await
+            .unwrap()
+            .unwrap();
+
+        let probes = test_dependencies.docker.exec_output_commands();
+        assert_eq!(probes.len(), 1);
+        assert!(probes[0][2].contains("-lic"), "{probes:?}");
+        assert_eq!(
+            devcontainer_up.remote_env,
+            HashMap::from([
+                ("PATH".to_string(), "/probed/bin".to_string()),
+                ("SHARED".to_string(), "config".to_string()),
+                ("FROM_PROBE".to_string(), "probed".to_string()),
+                ("FROM_CONFIG".to_string(), "config".to_string()),
+                (
+                    "EXTENDED_PATH".to_string(),
+                    "/initial/path:/extra".to_string()
+                ),
+            ])
+        );
+    }
+
+    #[gpui::test]
+    async fn user_env_probe_none_skips_the_probe(cx: &mut TestAppContext) {
+        let (test_dependencies, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{ "image": "test_image:latest", "userEnvProbe": "none" }"#,
+        )
+        .await
+        .unwrap();
+
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        let devcontainer_up = devcontainer_manifest
+            .check_for_existing_devcontainer()
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(test_dependencies.docker.exec_output_commands().is_empty());
+        assert_eq!(
+            devcontainer_up.remote_env,
+            HashMap::from([("PATH".to_string(), "/initial/path".to_string())])
         );
     }
 
@@ -8996,6 +9190,9 @@ RUN echo $RUBY_VERSION2
         no_existing_container: Mutex<bool>,
         removed_container_ids: Mutex<Vec<String>>,
         engine_resources: Mutex<Option<EngineResources>>,
+        /// What `run_docker_exec_output` prints, e.g. the `userEnvProbe` shell.
+        exec_output: Mutex<Vec<u8>>,
+        exec_output_commands: Mutex<Vec<Vec<String>>>,
     }
 
     impl FakeDocker {
@@ -9011,7 +9208,20 @@ RUN echo $RUBY_VERSION2
                 no_existing_container: Mutex::new(false),
                 removed_container_ids: Mutex::new(Vec::new()),
                 engine_resources: Mutex::new(None),
+                exec_output: Mutex::new(Vec::new()),
+                exec_output_commands: Mutex::new(Vec::new()),
             }
+        }
+
+        fn set_exec_output(&self, output: &[u8]) {
+            *self.exec_output.lock().expect("should be available") = output.to_vec();
+        }
+
+        fn exec_output_commands(&self) -> Vec<Vec<String>> {
+            self.exec_output_commands
+                .lock()
+                .expect("should be available")
+                .clone()
         }
 
         fn set_engine_resources(&self, resources: EngineResources) {
@@ -9401,6 +9611,27 @@ RUN echo $RUBY_VERSION2
             ))
         }
 
+        async fn run_docker_exec_output(
+            &self,
+            _container_id: &str,
+            _user: &str,
+            inner_command: Command,
+        ) -> Result<Vec<u8>, DevContainerError> {
+            self.exec_output_commands
+                .lock()
+                .expect("should be available")
+                .push(
+                    std::iter::once(inner_command.get_program())
+                        .chain(inner_command.get_args())
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect(),
+                );
+            Ok(self
+                .exec_output
+                .lock()
+                .expect("should be available")
+                .clone())
+        }
         async fn start_container(&self, _id: &str) -> Result<(), DevContainerError> {
             Ok(())
         }

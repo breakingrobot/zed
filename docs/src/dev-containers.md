@@ -82,6 +82,8 @@ These actions work the same for containers running locally, in WSL, or on an SSH
 Once connected, Zed operates inside the container environment for tasks, terminals, and language servers.
 Files are linked from your workspace into the container according to the dev container specification.
 
+Tasks, terminals and language servers get the container's environment, then the variables set by the remote user's shell profile, then `remoteEnv`, each overriding the one before. Zed reads the profile's variables when it connects, by starting the user's login shell as `userEnvProbe` asks: `loginInteractiveShell` (the default) runs it with `-lic`, `interactiveShell` with `-ic`, `loginShell` with `-lc`, and `none` skips it.
+
 If the configuration sets `hostRequirements`, Zed compares its `cpus` and `memory` with what the container engine reports before creating the container. When the engine has less, Zed still creates the container and shows a warning. `storage` isn't checked.
 
 Zed connects once the container is created and the lifecycle command set by `waitFor` has run (`updateContentCommand` by default). The later lifecycle commands, such as `postCreateCommand`, `postStartCommand` and `postAttachCommand`, then run as tasks in the Terminal Panel, where you can follow their output. If one fails, the ones after it don't run.
