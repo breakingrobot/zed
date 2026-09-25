@@ -96,6 +96,9 @@ struct DevContainerManifest {
     /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
     /// has been parsed.
     config_hash: Option<String>,
+    /// The Git folder of the main working tree when the project is a linked worktree,
+    /// once the configuration has been parsed. See [`Self::linked_worktree_git_mount`].
+    main_git_dir: Option<MountDefinition>,
 }
 const DEFAULT_REMOTE_PROJECT_DIR: &str = "/workspaces";
 impl DevContainerManifest {
@@ -155,6 +158,7 @@ impl DevContainerManifest {
             workspace_volume: context.workspace_volume.clone(),
             remote_engine: context.remote_engine,
             config_hash: None,
+            main_git_dir: None,
         })
     }
 
@@ -1409,6 +1413,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 mount_type: Some("volume".to_string()),
             },
         );
+        if let Some(main_git_dir) = &self.main_git_dir {
+            append_mount_with_target_override(&mut mounts, main_git_dir.clone());
+        }
         let ssh_agent_socket = self.ssh_agent_socket();
         if let Some(socket) = &ssh_agent_socket {
             append_mount_with_target_override(
@@ -2916,6 +2923,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         self.parse_nonremote_vars()?;
         self.dev_container().validate_environment_names()?;
         self.config_hash = Some(self.compute_config_hash().await);
+        self.main_git_dir = self.linked_worktree_git_mount().await;
 
         // Per the spec, initializeCommand runs on the host every time the dev container is
         // opened, before any existing container is looked up, not only when one is created.
@@ -2972,6 +2980,56 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             }
         }
         format!("{:x}", hasher.finalize())
+    }
+
+    /// Mounts the Git folder of the main working tree when the project is a worktree
+    /// that `git worktree add` created elsewhere, like the ones agents create. Only the
+    /// project folder is mounted into the container otherwise, so Git can't work there,
+    /// and Zed can't set up the project.
+    ///
+    /// The folder is mounted where the worktree's `.git` file says it is, since Git
+    /// follows that absolute path. It's found on the engine host at that same path, or
+    /// else in a parent folder of the project: a worktree created in a dev container
+    /// names the main working tree by its path in that container, such as
+    /// `/workspaces/project/.git`.
+    async fn linked_worktree_git_mount(&self) -> Option<MountDefinition> {
+        if self.remote_engine {
+            return None;
+        }
+        let host = self.docker_client.engine_host();
+        let host_files = self.host_files();
+        let dot_git = host_files
+            .load(&self.local_project_directory.join(".git"))
+            .await
+            .ok()?;
+        let (main_git_dir, worktree_name) = linked_worktree(&dot_git)?;
+        let is_main_git_dir = |candidate: PathBuf| {
+            let host_files = host_files.clone();
+            let worktree_name = worktree_name.clone();
+            async move {
+                host_files
+                    .is_dir(&candidate.join("worktrees").join(&worktree_name))
+                    .await
+                    .then_some(candidate)
+            }
+        };
+        let mut source = None;
+        if !host.is_windows() {
+            source = is_main_git_dir(host.local_path(&main_git_dir)).await;
+        }
+        if source.is_none() {
+            for ancestor in self.local_project_directory.ancestors().skip(1) {
+                source = is_main_git_dir(ancestor.join(".git")).await;
+                if source.is_some() {
+                    break;
+                }
+            }
+        }
+        Some(MountDefinition {
+            source: Some(host.host_path(&source?)),
+            target: main_git_dir,
+            mount_type: Some("bind".to_string()),
+        })
     }
 
     async fn build_and_run(&mut self) -> Result<DevContainerUp, DevContainerError> {
@@ -4510,6 +4568,24 @@ fn deferred_hook(hook: &str, scripts: Vec<(String, LifecycleScript)>) -> Deferre
     }
 }
 
+/// The Git folder of the main working tree and the worktree's name, from the `.git`
+/// file of a linked worktree: `gitdir: <main>/.git/worktrees/<name>`. Only absolute
+/// POSIX paths need a mount: relative links (Git's `worktree.useRelativePaths`)
+/// already resolve in the container, and a Windows path can't be a mount target.
+fn linked_worktree(dot_git_file: &str) -> Option<(String, String)> {
+    let gitdir = dot_git_file
+        .lines()
+        .find_map(|line| line.strip_prefix("gitdir:"))?
+        .trim()
+        .trim_end_matches('/');
+    if !gitdir.starts_with('/') {
+        return None;
+    }
+    let (main_git_dir, worktree_name) = gitdir.rsplit_once("/worktrees/")?;
+    (!worktree_name.is_empty() && !worktree_name.contains('/'))
+        .then(|| (main_git_dir.to_string(), worktree_name.to_string()))
+}
+
 /// The label holding `DevContainerManifest::compute_config_hash` for the configuration a
 /// container was created from.
 const CONFIG_HASH_LABEL: &str = "dev.zed.config-hash";
@@ -5888,6 +5964,64 @@ mod test {
     }
 
     #[gpui::test]
+    async fn mounts_the_main_git_folder_of_a_worktree_created_in_a_container(
+        cx: &mut TestAppContext,
+    ) {
+        let fs = FakeFs::new(cx.executor());
+        let (_, mut devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            fs.clone(),
+            fake_http_client(),
+            Arc::new(FakeDocker::new()),
+            Arc::new(TestCommandRunner::new()),
+            HashMap::new(),
+            r#"{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }"#,
+        )
+        .await
+        .unwrap();
+        // The project is a worktree that an agent created in the dev container of its
+        // parent folder, where that folder is `/workspaces/main`.
+        let project = PathBuf::from(TEST_PROJECT_PATH);
+        let main_git_dir = project.parent().unwrap().join(".git");
+        fs.create_dir(&main_git_dir.join("worktrees").join("project"))
+            .await
+            .unwrap();
+        fs.write(
+            &project.join(".git"),
+            b"gitdir: /workspaces/main/.git/worktrees/project\n",
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest.main_git_dir =
+            devcontainer_manifest.linked_worktree_git_mount().await;
+
+        let base_image = DockerInspect {
+            id: "mcr.microsoft.com/devcontainers/base:ubuntu".to_string(),
+            created: None,
+            config: DockerInspectConfig {
+                labels: DockerConfigLabels::default(),
+                image_user: None,
+                env: Vec::new(),
+            },
+            mounts: None,
+            state: None,
+        };
+        let resources = devcontainer_manifest
+            .build_merged_resources(base_image, "mcr.microsoft.com/devcontainers/base:ubuntu")
+            .unwrap();
+        assert!(
+            resources.additional_mounts.contains(&MountDefinition {
+                source: Some(EngineHost::Local.host_path(&main_git_dir)),
+                target: "/workspaces/main/.git".to_string(),
+                mount_type: Some("bind".to_string()),
+            }),
+            "{:?}",
+            resources.additional_mounts
+        );
+    }
+
+    #[gpui::test]
     async fn shares_the_engine_hosts_ssh_agent_with_the_container(cx: &mut TestAppContext) {
         let mut docker = FakeDocker::new();
         docker.engine_host = EngineHost::Wsl(WslConnectionOptions {
@@ -6659,6 +6793,30 @@ mod test {
         );
 
         std_fs::remove_dir_all(home_directory).expect("temporary home should be removed");
+    }
+
+    #[test]
+    fn linked_worktrees_name_the_git_folder_of_their_main_working_tree() {
+        assert_eq!(
+            super::linked_worktree("gitdir: /workspaces/project/.git/worktrees/wf_0f39bb93\n"),
+            Some((
+                "/workspaces/project/.git".to_string(),
+                "wf_0f39bb93".to_string()
+            ))
+        );
+        assert_eq!(
+            super::linked_worktree("gitdir: ../.git/worktrees/feature\n"),
+            None
+        );
+        assert_eq!(
+            super::linked_worktree("gitdir: C:/repo/.git/worktrees/feature\n"),
+            None
+        );
+        assert_eq!(
+            super::linked_worktree("gitdir: /repo/.git/modules/vendor\n"),
+            None
+        );
+        assert_eq!(super::linked_worktree("not a git file"), None);
     }
 
     #[test]
