@@ -53,6 +53,7 @@ mod docker;
 mod features;
 mod host_files;
 mod oci;
+mod workspace_volume;
 
 use devcontainer_api::read_default_devcontainer_configuration;
 
@@ -69,6 +70,7 @@ pub use devcontainer_api::{
     shut_down_dev_container, shutdown_command, start_dev_container,
     start_dev_container_with_config, stop_dev_container,
 };
+pub use workspace_volume::clone_repository_in_volume;
 
 /// Converts a string to a safe environment variable name.
 ///
@@ -113,6 +115,9 @@ pub struct DevContainerContext {
     /// A JSON object of secrets that lifecycle commands get as environment
     /// variables.
     pub secrets_file: Option<std::path::PathBuf>,
+    /// The volume that holds the project's sources, when `project_directory` is
+    /// only a copy of them (see [`clone_repository_in_volume`]).
+    pub workspace_volume: Option<String>,
     /// What Zed learned about engines and containers earlier in this session.
     pub session_cache: SessionCache,
     pub fs: Arc<dyn Fs>,
@@ -152,6 +157,10 @@ impl DevContainerContext {
         cx: &App,
     ) -> Self {
         let settings = DevContainerSettings::get_global(cx);
+        let workspace_volume = engine_host
+            .is_local()
+            .then(|| workspace_volume::workspace_volume_of(&project_directory))
+            .flatten();
         Self {
             project_directory,
             engine_host,
@@ -159,6 +168,7 @@ impl DevContainerContext {
             use_buildkit: settings.use_buildkit,
             dotfiles: settings.dotfiles.clone(),
             secrets_file: settings.secrets_file.clone(),
+            workspace_volume,
             session_cache: cx.try_global::<SessionCache>().cloned().unwrap_or_default(),
             fs: workspace.app_state().fs.clone(),
             http_client: cx.http_client().clone(),

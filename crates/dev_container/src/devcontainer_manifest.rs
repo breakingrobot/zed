@@ -89,6 +89,8 @@ struct DevContainerManifest {
     /// Where downloaded features are kept for later builds.
     feature_cache_directory: PathBuf,
     session_cache: SessionCache,
+    /// The volume holding the sources, when the project directory is a copy.
+    workspace_volume: Option<String>,
     /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
     /// has been parsed.
     config_hash: Option<String>,
@@ -148,6 +150,7 @@ impl DevContainerManifest {
             lockfile: None,
             feature_cache_directory: paths::devcontainer_dir().join("features"),
             session_cache: context.session_cache.clone(),
+            workspace_volume: context.workspace_volume.clone(),
             config_hash: None,
         })
     }
@@ -2703,6 +2706,14 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         if let Some(mount) = &self.dev_container().workspace_mount {
             return Ok(mount.clone());
         }
+        // The sources are in the volume; the project directory is only a copy.
+        if let Some(volume) = &self.workspace_volume {
+            return Ok(MountDefinition {
+                source: Some(volume.clone()),
+                target: DEFAULT_REMOTE_PROJECT_DIR.to_string(),
+                mount_type: Some("volume".to_string()),
+            });
+        }
         let Some(project_directory_name) = self.local_project_directory.file_name() else {
             return Err(DevContainerError::DevContainerParseFailed);
         };
@@ -4779,6 +4790,7 @@ mod test {
             use_buildkit: None,
             dotfiles: None,
             secrets_file: None,
+            workspace_volume: None,
             session_cache: Default::default(),
             fs: fs.clone(),
             http_client: http_client.clone(),
@@ -5151,6 +5163,51 @@ mod test {
         assert_eq!(
             devcontainer_up.remote_env,
             HashMap::from([("PATH".to_string(), "/initial/path".to_string())])
+        );
+    }
+
+    #[gpui::test]
+    async fn mounts_the_volume_that_holds_the_sources(cx: &mut TestAppContext) {
+        let (_, mut devcontainer_manifest) =
+            init_default_devcontainer_manifest(cx, r#"{ "image": "test_image:latest" }"#)
+                .await
+                .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest.workspace_volume = Some("zed-project-0123456789ab".to_string());
+
+        let mount = devcontainer_manifest.remote_workspace_mount().unwrap();
+        assert_eq!(
+            mount,
+            MountDefinition {
+                source: Some("zed-project-0123456789ab".to_string()),
+                target: "/workspaces".to_string(),
+                mount_type: Some("volume".to_string()),
+            }
+        );
+        assert_eq!(
+            devcontainer_manifest.remote_workspace_folder().unwrap(),
+            PathBuf::from(format!("/workspaces/{}", test_project_filename()))
+        );
+
+        let (_, mut devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"{
+                "image": "test_image:latest",
+                "workspaceMount": "source=/elsewhere,target=/code,type=bind",
+                "workspaceFolder": "/code"
+            }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        devcontainer_manifest.workspace_volume = Some("zed-project-0123456789ab".to_string());
+        assert_eq!(
+            devcontainer_manifest
+                .remote_workspace_mount()
+                .unwrap()
+                .target,
+            "/code",
+            "the configuration's own workspace mount wins"
         );
     }
 

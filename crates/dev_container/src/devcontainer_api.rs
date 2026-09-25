@@ -376,6 +376,9 @@ pub async fn start_dev_container_with_config(
     defer_hooks: bool,
 ) -> Result<StartedDevContainer, DevContainerError> {
     check_for_docker(&context).await?;
+    if let Some(volume) = &context.workspace_volume {
+        crate::workspace_volume::refresh_volume_copy(volume, context.use_podman).await?;
+    }
 
     let Some(actual_config) = config.clone() else {
         return Err(DevContainerError::NotInValidProject);

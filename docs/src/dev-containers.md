@@ -32,6 +32,12 @@ When you open a project that contains the `.devcontainer/devcontainer.json` dire
 If you dismiss the prompt or want to reopen the project inside a container later, you can use Zed's command palette to run the "Project: Open Remote" command and select the option to open the project in a dev container.
 Alternatively, you can reach for the Remote Projects modal (through the {#kb projects::OpenRemote} binding) and choose the "Connect Dev Container" option.
 
+### Cloning a repository in a container volume
+
+Run {#action projects::CloneRepositoryInContainerVolume} and type a repository's URL to clone it into a volume of the container engine on your machine and open it in its dev container, like VS Code's "Clone Repository in Container Volume". The sources stay in the volume, mounted at `/workspaces`, which is faster than a folder of your machine when the engine runs in a virtual machine, as Docker Desktop does. The repository needs a `.devcontainer/devcontainer.json` or `.devcontainer.json`.
+
+Zed clones with the `alpine/git` image, so the repository must be reachable without credentials, and keeps a copy of it under `devcontainer/volumes` in its data folder to read the configuration and build from. It refreshes that copy from the volume each time it starts or rebuilds the container. Docker Compose configurations mount what their Compose files say, so they use the copy rather than the volume.
+
 ### Attaching to a running container
 
 To work in a container that Zed didn't create, such as one started with `docker run` or Docker Compose, run {#action projects::AttachToRunningContainer} and pick the container. Zed lists the running containers of the engine the current project uses (locally, in WSL, or on an SSH host), connects as the container's user and opens its working directory. Without a dev container configuration, Zed doesn't rebuild, stop or remove attached containers.

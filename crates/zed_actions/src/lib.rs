@@ -745,6 +745,13 @@ pub struct RebuildDevContainer;
 #[serde(deny_unknown_fields)]
 pub struct RebuildDevContainerWithoutCache;
 
+/// Clones a git repository into a volume of this machine's container engine and
+/// opens it in its dev container.
+#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
+#[action(namespace = projects)]
+#[serde(deny_unknown_fields)]
+pub struct CloneRepositoryInContainerVolume;
+
 /// Connects to a running container of the project's container engine, which Zed
 /// didn't need to create.
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
