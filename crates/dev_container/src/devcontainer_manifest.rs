@@ -34,7 +34,7 @@ use crate::{
     },
     features::{
         DevContainerFeatureJson, FeatureLockfile, FeatureManifest, FeatureOrderNode, FeatureSource,
-        LockedFeature, compute_feature_install_order, parse_oci_feature_ref,
+        LockedFeature, compute_feature_install_order, dockerfile_env, parse_oci_feature_ref,
     },
     get_oci_token,
     oci::{TokenResponse, download_oci_tarball, get_oci_manifest_with_digest, validate_oci_digest},
@@ -1318,7 +1318,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
 
             if let Some(env) = &self.dev_container().container_env {
                 for (key, value) in env {
-                    extended_dockerfile = format!("{extended_dockerfile}ENV {key}={value}\n");
+                    extended_dockerfile.push_str(&dockerfile_env(key, value));
                 }
             }
         }
@@ -2403,7 +2403,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
         if let Some(env) = &self.dev_container().container_env {
             for (key, value) in env {
-                dockerfile = format!("{dockerfile}ENV {key}={value}\n");
+                dockerfile.push_str(&dockerfile_env(key, value));
             }
         }
         dockerfile
@@ -7680,12 +7680,12 @@ USER $IMAGE_USER
 # Ensure that /etc/profile does not clobber the existing path
 RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
-ENV DOCKER_BUILDKIT=1
+ENV DOCKER_BUILDKIT="1"
 
-ENV GOPATH=/go
-ENV GOROOT=/usr/local/go
-ENV PATH=/usr/local/go/bin:/go/bin:${PATH}
-ENV VARIABLE_VALUE=value
+ENV GOPATH="/go"
+ENV GOROOT="/usr/local/go"
+ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"
+ENV VARIABLE_VALUE="value"
 "#
         );
 
@@ -8047,7 +8047,7 @@ USER $IMAGE_USER
 RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
 
-ENV DOCKER_BUILDKIT=1
+ENV DOCKER_BUILDKIT="1"
 "#
         );
 
@@ -8731,7 +8731,7 @@ cp -ar /tmp/build-features-src/aws-cli_0 /tmp/dev-container-features \
 && chmod +x ./devcontainer-features-install.sh \
 && ./devcontainer-features-install.sh \
 && rm -rf /tmp/dev-container-features/aws-cli_0
-ENV DOCKER_BUILDKIT=1
+ENV DOCKER_BUILDKIT="1"
 
 RUN --mount=type=bind,from=dev_containers_feature_content_source,source=./docker-in-docker_1,target=/tmp/build-features-src/docker-in-docker_1 \
 cp -ar /tmp/build-features-src/docker-in-docker_1 /tmp/dev-container-features \
@@ -8749,7 +8749,7 @@ USER $_DEV_CONTAINERS_IMAGE_USER
 RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
 
-ENV DOCKER_BUILDKIT=1
+ENV DOCKER_BUILDKIT="1"
 "#
         );
     }
@@ -9149,7 +9149,7 @@ USER $IMAGE_USER
 RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
 
-ENV DOCKER_BUILDKIT=1
+ENV DOCKER_BUILDKIT="1"
 "#
         );
     }
@@ -9334,7 +9334,7 @@ RUN \
 echo "_CONTAINER_USER_HOME=$( (command -v getent >/dev/null 2>&1 && getent passwd 'root' || grep -E '^root|^[^:]*:[^:]*:root:' /etc/passwd || true) | cut -d: -f6)" >> /tmp/dev-container-features/devcontainer-features.builtin.env && \
 echo "_REMOTE_USER_HOME=$( (command -v getent >/dev/null 2>&1 && getent passwd 'node' || grep -E '^node|^[^:]*:[^:]*:node:' /etc/passwd || true) | cut -d: -f6)" >> /tmp/dev-container-features/devcontainer-features.builtin.env
 
-ENV DOCKER_BUILDKIT=1
+ENV DOCKER_BUILDKIT="1"
 
 RUN --mount=type=bind,from=dev_containers_feature_content_source,source=./docker-in-docker_0,target=/tmp/build-features-src/docker-in-docker_0 \
 cp -ar /tmp/build-features-src/docker-in-docker_0 /tmp/dev-container-features \
@@ -9343,9 +9343,9 @@ cp -ar /tmp/build-features-src/docker-in-docker_0 /tmp/dev-container-features \
 && chmod +x ./devcontainer-features-install.sh \
 && ./devcontainer-features-install.sh \
 && rm -rf /tmp/dev-container-features/docker-in-docker_0
-ENV GOPATH=/go
-ENV GOROOT=/usr/local/go
-ENV PATH=/usr/local/go/bin:/go/bin:${PATH}
+ENV GOPATH="/go"
+ENV GOROOT="/usr/local/go"
+ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"
 
 RUN --mount=type=bind,from=dev_containers_feature_content_source,source=./go_1,target=/tmp/build-features-src/go_1 \
 cp -ar /tmp/build-features-src/go_1 /tmp/dev-container-features \
@@ -9362,12 +9362,12 @@ USER $_DEV_CONTAINERS_IMAGE_USER
 # Ensure that /etc/profile does not clobber the existing path
 RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
-ENV DOCKER_BUILDKIT=1
+ENV DOCKER_BUILDKIT="1"
 
-ENV GOPATH=/go
-ENV GOROOT=/usr/local/go
-ENV PATH=/usr/local/go/bin:/go/bin:${PATH}
-ENV VARIABLE_VALUE=value
+ENV GOPATH="/go"
+ENV GOROOT="/usr/local/go"
+ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"
+ENV VARIABLE_VALUE="value"
 "#
         );
 

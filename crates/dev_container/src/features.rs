@@ -131,6 +131,20 @@ pub(crate) struct FeatureManifest {
     feature_json: DevContainerFeatureJson,
 }
 
+/// A Dockerfile `ENV` line, quoted like the reference CLI's `generateContainerEnvs`,
+/// so values with spaces stay one value. `$` isn't escaped: values like
+/// `${PATH}:/opt/bin` are meant to expand.
+pub(crate) fn dockerfile_env(key: &str, value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character == '"' || character == '\\' {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    format!("ENV {key}=\"{escaped}\"\n")
+}
+
 impl FeatureManifest {
     pub(crate) fn new(
         consecutive_id: String,
@@ -189,7 +203,7 @@ RUN chmod -R 0755 {full_dest} \
         env.sort();
 
         for (key, value) in env {
-            layer = format!("{layer}ENV {key}={value}\n")
+            layer.push_str(&dockerfile_env(key, value));
         }
         layer
     }
@@ -754,6 +768,23 @@ pub(crate) fn compute_feature_install_order(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dockerfile_env_values_stay_one_value() {
+        assert_eq!(
+            super::dockerfile_env("NODE_OPTIONS", "--use-system-ca --use-env-proxy"),
+            "ENV NODE_OPTIONS=\"--use-system-ca --use-env-proxy\"\n"
+        );
+        assert_eq!(
+            super::dockerfile_env("PATH", "/usr/local/share/nvm/current/bin:${PATH}"),
+            "ENV PATH=\"/usr/local/share/nvm/current/bin:${PATH}\"\n"
+        );
+        assert_eq!(
+            super::dockerfile_env("QUOTED", r#"say "hi" \o/"#),
+            r#"ENV QUOTED="say \"hi\" \\o/"
+"#
+        );
+    }
+
     #[test]
     fn lockfile_pins_features_to_their_resolved_digest() {
         let lockfile = super::FeatureLockfile {
