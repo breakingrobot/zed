@@ -565,21 +565,6 @@ impl DockerExecConnection {
             "{remote_dir_for_server}/{}",
             dst_path.display(self.path_style())
         );
-        // Development builds all share one name, so a cached one may be stale.
-        let use_cache = release_channel != ReleaseChannel::Dev;
-        if use_cache
-            && self
-                .run_as_root(
-                    RESTORE_CACHED_SERVER_SCRIPT,
-                    &[&cached_binary, &installed_binary],
-                )
-                .await
-                .is_ok()
-        {
-            log::info!("Reused the remote server from the {SERVER_CACHE_VOLUME} volume");
-            return Ok(dst_path.into());
-        }
-
         let wanted_version = cx.update(|cx| match release_channel {
             ReleaseChannel::Nightly => Ok(None),
             ReleaseChannel::Dev => {
@@ -590,6 +575,30 @@ impl DockerExecConnection {
             }
             _ => Ok(Some(AppVersion::global(cx))),
         })?;
+
+        // Development builds all share one name, so a cached one may be stale.
+        let use_cache = release_channel != ReleaseChannel::Dev;
+        if use_cache
+            && let Some(digest) = trusted_server_digest(
+                delegate,
+                remote_platform,
+                release_channel,
+                wanted_version.clone(),
+                cx,
+            )
+            .await
+            .log_err()
+            && self
+                .run_as_root(
+                    RESTORE_CACHED_SERVER_SCRIPT,
+                    &[&cached_binary, &installed_binary, &digest],
+                )
+                .await
+                .is_ok()
+        {
+            log::info!("Reused the remote server from the {SERVER_CACHE_VOLUME} volume");
+            return Ok(dst_path.into());
+        }
 
         let tmp_path_gz = paths::remote_server_dir_relative().join(
             RelPath::from_unix_str(&format!(
@@ -1096,12 +1105,55 @@ const CACHE_SERVER_SCRIPT: &str =
     r#"[ -d "$(dirname "$2")" ] || exit 0; cp "$1" "$2.partial" && mv -f "$2.partial" "$2""#;
 
 /// Installs `$1` from the cache volume as `$2`, owned by the container's user, or
-/// fails when the cache doesn't have it.
+/// fails when the cache doesn't have it or it isn't the server whose SHA-256 is `$3`.
+/// The copy is what gets checked, so the cached file can't change after the check.
 const RESTORE_CACHED_SERVER_SCRIPT: &str = r#"[ -x "$1" ] || exit 1
 owner="$(stat -c %u:%g "$(dirname "$(dirname "$2")")")"
 mkdir -p "$(dirname "$2")"
-cp "$1" "$2.partial" && mv -f "$2.partial" "$2"
+cp "$1" "$2.partial" || exit 1
+if [ "$(sha256sum "$2.partial" | cut -d ' ' -f 1)" != "$3" ]; then
+  rm -f "$2.partial"
+  exit 1
+fi
+mv -f "$2.partial" "$2"
 chown "$owner" "$(dirname "$2")" "$2""#;
+
+/// The SHA-256 of the server for `version`, as Zed downloads it on this machine.
+/// Every container of the engine can write to the cache volume, so a cached server
+/// is only run when it matches this.
+async fn trusted_server_digest(
+    delegate: &Arc<dyn RemoteClientDelegate>,
+    remote_platform: RemotePlatform,
+    release_channel: ReleaseChannel,
+    version: Option<SemanticVersion>,
+    cx: &mut AsyncApp,
+) -> Result<String> {
+    let compressed_server = delegate
+        .download_server_binary_locally(remote_platform, release_channel, version, cx)
+        .await?;
+    gunzipped_sha256(&compressed_server).await
+}
+
+async fn gunzipped_sha256(path: &Path) -> Result<String> {
+    use futures::AsyncReadExt as _;
+    use sha2::{Digest as _, Sha256};
+
+    let file = smol::fs::File::open(path)
+        .await
+        .with_context(|| format!("opening {path:?}"))?;
+    let mut decoder =
+        async_compression::futures::bufread::GzipDecoder::new(futures::io::BufReader::new(file));
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let read = decoder.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
 
 fn engine_command(
     connection_options: &DockerConnectionOptions,
@@ -1474,16 +1526,15 @@ mod tests {
     fn server_binaries_round_trip_through_the_cache_volume() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let run = |script: &str, first: &std::path::Path, second: &std::path::Path| {
+        let run = |script: &str, args: &[&std::ffi::OsStr]| {
             let mut command = util::command::new_command("sh");
-            command
-                .arg("-c")
-                .arg(script)
-                .arg("sh")
-                .arg(first)
-                .arg(second);
+            command.arg("-c").arg(script).arg("sh").args(args);
             smol::block_on(command.output()).unwrap()
         };
+        // `printf '#!/bin/sh\n' | sha256sum`
+        let digest = std::ffi::OsStr::new(
+            "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf",
+        );
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let cache = root.path().join("cache");
@@ -1495,27 +1546,51 @@ mod tests {
 
         // Without the volume, there's nothing to cache into or restore from.
         assert!(
-            run(super::CACHE_SERVER_SCRIPT, &installed, &cached)
+            run(
+                super::CACHE_SERVER_SCRIPT,
+                &[installed.as_os_str(), cached.as_os_str()]
+            )
                 .status
                 .success()
         );
         assert!(!cached.exists());
         assert!(
-            !run(super::RESTORE_CACHED_SERVER_SCRIPT, &cached, &installed)
+            !run(
+                super::RESTORE_CACHED_SERVER_SCRIPT,
+                &[cached.as_os_str(), installed.as_os_str(), digest]
+            )
                 .status
                 .success()
         );
 
         std::fs::create_dir(&cache).unwrap();
         assert!(
-            run(super::CACHE_SERVER_SCRIPT, &installed, &cached)
+            run(
+                super::CACHE_SERVER_SCRIPT,
+                &[installed.as_os_str(), cached.as_os_str()]
+            )
                 .status
                 .success()
         );
         assert!(cached.is_file());
 
         std::fs::remove_dir_all(home.join(".zed_server")).unwrap();
-        let output = run(super::RESTORE_CACHED_SERVER_SCRIPT, &cached, &installed);
+        // A cached server that isn't the one Zed downloaded is never installed.
+        let output = run(
+            super::RESTORE_CACHED_SERVER_SCRIPT,
+            &[
+                cached.as_os_str(),
+                installed.as_os_str(),
+                std::ffi::OsStr::new("0000"),
+            ],
+        );
+        assert!(!output.status.success(), "{output:?}");
+        assert!(!installed.exists());
+
+        let output = run(
+            super::RESTORE_CACHED_SERVER_SCRIPT,
+            &[cached.as_os_str(), installed.as_os_str(), digest],
+        );
         assert!(output.status.success(), "{output:?}");
         assert_eq!(std::fs::read_to_string(&installed).unwrap(), "#!/bin/sh\n");
         assert_ne!(
