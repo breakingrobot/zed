@@ -745,6 +745,13 @@ pub struct RebuildDevContainer;
 #[serde(deny_unknown_fields)]
 pub struct RebuildDevContainerWithoutCache;
 
+/// Lists the ports forwarded from the current dev container, to open, stop, or
+/// forward more of them.
+#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
+#[action(namespace = projects)]
+#[serde(deny_unknown_fields)]
+pub struct ShowForwardedPorts;
+
 /// Reconnects to the current dev container, starting it first if it has stopped.
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
 #[action(namespace = projects)]

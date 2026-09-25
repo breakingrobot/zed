@@ -194,7 +194,7 @@ pub struct ForwardedPort {
 
 /// Where dev container connections report the ports they start forwarding, so the
 /// UI can tell the user about them.
-pub struct ForwardedPortListener(pub UnboundedSender<ForwardedPort>);
+pub struct ForwardedPortListener(pub UnboundedSender<crate::PortForwardingEvent>);
 
 impl gpui::Global for ForwardedPortListener {}
 

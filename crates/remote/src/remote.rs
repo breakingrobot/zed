@@ -1,6 +1,9 @@
 pub mod engine_host;
 pub mod json_log;
 mod port_forwarding;
+pub use port_forwarding::{
+    PortForwardingEvent, forward_container_port, stop_forwarding_container_port,
+};
 pub mod protocol;
 pub mod proxy;
 pub mod remote_client;
