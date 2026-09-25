@@ -1,4 +1,4 @@
-use crate::RemoteConnectionOptions;
+use crate::{EngineHost, RemoteConnectionOptions};
 
 /// A normalized remote identity for matching live remote hosts against
 /// persisted remote metadata.
@@ -20,6 +20,10 @@ pub enum RemoteConnectionIdentity {
     Docker {
         remote_user: String,
         key: DockerIdentityKey,
+        /// Where the container engine runs, as [`engine_host_identity`] gives it:
+        /// the same labels can exist on several engine hosts, e.g. with the
+        /// default `/workspaces/<folder name>` convention.
+        engine_host: Option<String>,
     },
     #[cfg(any(test, feature = "test-support"))]
     Mock { id: u64 },
@@ -66,15 +70,28 @@ impl RemoteConnectionIdentity {
                 user.as_deref().unwrap_or_default(),
                 distro_name
             ),
-            Self::Docker { remote_user, key } => match key {
-                DockerIdentityKey::DevContainer {
-                    local_folder,
-                    config_file,
-                } => format!("docker:{remote_user}@devcontainer:{local_folder}:{config_file}"),
-                DockerIdentityKey::ContainerId(container_id) => {
-                    format!("docker:{remote_user}@container:{container_id}")
+            Self::Docker {
+                remote_user,
+                key,
+                engine_host,
+            } => {
+                let key = match key {
+                    DockerIdentityKey::DevContainer {
+                        local_folder,
+                        config_file,
+                    } => {
+                        format!("docker:{remote_user}@devcontainer:{local_folder}:{config_file}")
+                    }
+                    DockerIdentityKey::ContainerId(container_id) => {
+                        format!("docker:{remote_user}@container:{container_id}")
+                    }
+                };
+                // Local engines keep the keys they had before engine hosts existed.
+                match engine_host {
+                    Some(engine_host) => format!("{key}@{engine_host}"),
+                    None => key,
                 }
-            },
+            }
             #[cfg(any(test, feature = "test-support"))]
             Self::Mock { id } => format!("mock:{id}"),
         }
@@ -102,10 +119,33 @@ impl From<&RemoteConnectionOptions> for RemoteConnectionIdentity {
                     },
                     None => DockerIdentityKey::ContainerId(options.container_id.clone()),
                 },
+                engine_host: engine_host_identity(&options.host),
             },
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(options) => Self::Mock { id: options.id },
         }
+    }
+}
+
+/// What identifies an engine host, like the identities of SSH and WSL remotes: extra
+/// `ssh` arguments don't make it another host. `None` for this machine.
+fn engine_host_identity(host: &EngineHost) -> Option<String> {
+    match host {
+        EngineHost::Local => None,
+        EngineHost::Wsl(options) => Some(format!(
+            "wsl:{}@{}",
+            options.user.as_deref().unwrap_or_default(),
+            options.distro_name
+        )),
+        EngineHost::Ssh(options) => Some(format!(
+            "ssh:{}@{}:{}",
+            options.username.as_deref().unwrap_or_default(),
+            options.host,
+            options
+                .port
+                .map(|port| port.to_string())
+                .unwrap_or_default()
+        )),
     }
 }
 
@@ -298,6 +338,61 @@ mod tests {
         });
 
         assert!(!same_remote_connection_identity(Some(&left), Some(&right)));
+    }
+
+    #[test]
+    fn dev_container_identity_distinguishes_engine_host() {
+        // The default `/workspaces/<folder name>` convention makes the same labels
+        // likely on two machines.
+        let local = DockerConnectionOptions {
+            container_id: "container-123".to_string(),
+            remote_user: "anth".to_string(),
+            local_folder: Some("/home/anth/project".to_string()),
+            config_file: Some("/home/anth/project/.devcontainer/devcontainer.json".to_string()),
+            ..Default::default()
+        };
+        let wsl = DockerConnectionOptions {
+            host: EngineHost::Wsl(WslConnectionOptions {
+                distro_name: "Ubuntu".to_string(),
+                user: None,
+            }),
+            ..local.clone()
+        };
+        let ssh = DockerConnectionOptions {
+            host: EngineHost::Ssh(crate::SshEngineHost {
+                host: "build-box".to_string(),
+                username: Some("anth".to_string()),
+                port: None,
+                args: Vec::new(),
+            }),
+            ..local.clone()
+        };
+        let ssh_with_other_arguments = DockerConnectionOptions {
+            host: EngineHost::Ssh(crate::SshEngineHost {
+                host: "build-box".to_string(),
+                username: Some("anth".to_string()),
+                port: None,
+                args: vec!["-i".to_string(), "~/.ssh/other".to_string()],
+            }),
+            ..local.clone()
+        };
+        let [local, wsl, ssh, ssh_with_other_arguments] =
+            [local, wsl, ssh, ssh_with_other_arguments].map(RemoteConnectionOptions::Docker);
+
+        assert!(!same_remote_connection_identity(Some(&local), Some(&wsl)));
+        assert!(!same_remote_connection_identity(Some(&wsl), Some(&ssh)));
+        assert!(same_remote_connection_identity(
+            Some(&ssh),
+            Some(&ssh_with_other_arguments)
+        ));
+        assert_eq!(
+            remote_connection_identity(&local).persistence_key(),
+            "docker:anth@devcontainer:/home/anth/project:/home/anth/project/.devcontainer/devcontainer.json"
+        );
+        assert_ne!(
+            remote_connection_identity(&local).persistence_key(),
+            remote_connection_identity(&ssh).persistence_key()
+        );
     }
 
     #[test]
