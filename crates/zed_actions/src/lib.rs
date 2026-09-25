@@ -745,6 +745,13 @@ pub struct RebuildDevContainer;
 #[serde(deny_unknown_fields)]
 pub struct RebuildDevContainerWithoutCache;
 
+/// Lists the dev containers of the project's container engine, to open, stop or
+/// remove them.
+#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
+#[action(namespace = projects)]
+#[serde(deny_unknown_fields)]
+pub struct ManageDevContainers;
+
 /// Clones a git repository into a volume of this machine's container engine and
 /// opens it in its dev container.
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]

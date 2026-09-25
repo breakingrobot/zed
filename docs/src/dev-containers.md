@@ -87,6 +87,8 @@ From a dev container window, the command palette and the dev container menu in t
 - {#action projects::StopDevContainer}: stops the container and reopens the project on its host.
 - {#action projects::DeleteDevContainer}: stops and removes the container, then reopens the project on its host. Anything not stored in the project folder or a volume is lost.
 
+Run {#action projects::ManageDevContainers} from any window to list the dev containers of the project's container engine, running or stopped, with their project folders, like VS Code's Remote Explorer. Confirm one to open its project in it, starting it if it stopped; the secondary confirm stops a running container, or removes a stopped one after asking.
+
 These actions work the same for containers running locally, in WSL, or on an SSH host.
 
 When you close the last window connected to a dev container, or quit Zed, Zed carries out the configuration's `shutdownAction`: `stopContainer` (the default for image and Dockerfile configurations) stops the container, `stopCompose` (the default for Docker Compose configurations) stops every container of the Compose project, and `none` keeps them running. `stopCompose` runs `docker compose --project-name <project> stop`, which needs Docker Compose v2, or a Podman compose provider that can stop a project by name.

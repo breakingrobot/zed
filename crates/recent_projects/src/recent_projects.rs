@@ -4,6 +4,7 @@ mod dev_container_lifecycle;
 mod dev_container_suggest;
 pub mod disconnected_overlay;
 pub mod forwarded_ports;
+mod manage_dev_containers;
 mod remote_connections;
 mod remote_servers;
 pub mod sidebar_recent_projects;
@@ -310,6 +311,7 @@ pub fn init(cx: &mut App) {
     forwarded_ports::init(cx);
     attach_container::init(cx);
     clone_in_volume::init(cx);
+    manage_dev_containers::init(cx);
 
     #[cfg(target_os = "windows")]
     cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenFolderInWsl, cx| {
