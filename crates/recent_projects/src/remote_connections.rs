@@ -139,6 +139,8 @@ impl From<Connection> for RemoteConnectionOptions {
                                 forward: rule.forward,
                                 label: rule.label,
                                 notice: forward_notice(rule.notice),
+                                require_local_port: rule.require_local_port.unwrap_or(false),
+                                https: rule.https.unwrap_or(false),
                             })
                             .collect(),
                         ignore_other_ports: conn.auto_forward_other_ports == Some(false),

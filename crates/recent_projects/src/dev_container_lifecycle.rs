@@ -780,7 +780,12 @@ pub(crate) fn announce_forwarded_ports(cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut opened_in_browser = std::collections::HashSet::new();
         while let Some(forwarded) = receiver.next().await {
-            let url = format!("http://localhost:{}", forwarded.port);
+            let Some(local_port) = forwarded.local_port else {
+                cx.update(|cx| show_forwarded_port(forwarded, None, cx));
+                continue;
+            };
+            let scheme = if forwarded.https { "https" } else { "http" };
+            let url = format!("{scheme}://localhost:{local_port}");
             match forwarded.notice {
                 ForwardNotice::Silent => {}
                 ForwardNotice::OpenBrowser => cx.update(|cx| cx.open_url(&url)),
@@ -789,15 +794,18 @@ pub(crate) fn announce_forwarded_ports(cx: &mut App) {
                         cx.update(|cx| cx.open_url(&url));
                     }
                 }
-                ForwardNotice::Notify => cx.update(|cx| show_forwarded_port(forwarded, url, cx)),
+                ForwardNotice::Notify => {
+                    cx.update(|cx| show_forwarded_port(forwarded, Some(url), cx))
+                }
             }
         }
     })
     .detach();
 }
 
-/// Shows the notification in the window connected to the port's container.
-fn show_forwarded_port(forwarded: ForwardedPort, url: String, cx: &mut App) {
+/// Shows the notification in the window connected to the port's container, with
+/// the `url` that reaches the port, or `None` when it couldn't be forwarded.
+fn show_forwarded_port(forwarded: ForwardedPort, url: Option<String>, cx: &mut App) {
     struct ForwardedPortNotification;
 
     let workspace = cx.windows().into_iter().find_map(|window| {
@@ -816,9 +824,16 @@ fn show_forwarded_port(forwarded: ForwardedPort, url: String, cx: &mut App) {
         return;
     };
     let port = forwarded.port;
-    let message = match &forwarded.label {
-        Some(label) => format!("Port {port} ({label}) is forwarded to localhost:{port}."),
-        None => format!("Port {port} is forwarded to localhost:{port}."),
+    let name = match &forwarded.label {
+        Some(label) => format!("Port {port} ({label})"),
+        None => format!("Port {port}"),
+    };
+    let message = match forwarded.local_port {
+        Some(local_port) => format!("{name} is forwarded to localhost:{local_port}."),
+        None => format!(
+            "{name} isn't forwarded: port {port} is in use on this machine, and its \
+             requireLocalPort forbids using another one."
+        ),
     };
     workspace.update(cx, |workspace, cx| {
         workspace.show_notification(
@@ -829,9 +844,13 @@ fn show_forwarded_port(forwarded: ForwardedPort, url: String, cx: &mut App) {
             cx,
             |cx| {
                 cx.new(|cx| {
-                    MessageNotification::new(message, cx)
-                        .primary_message("Open in Browser")
-                        .primary_on_click(move |_window, cx| cx.open_url(&url))
+                    let notification = MessageNotification::new(message, cx);
+                    match url {
+                        Some(url) => notification
+                            .primary_message("Open in Browser")
+                            .primary_on_click(move |_window, cx| cx.open_url(&url)),
+                        None => notification,
+                    }
                 })
             },
         );
