@@ -179,7 +179,7 @@ fn clone_and_open(
             }
             Err(error) => {
                 log::error!("Failed to clone {url} in a container volume: {error:#}");
-                prompt_start_error(cx, error_title, format!("{error:#}")).await;
+                prompt_start_error(cx, error_title, format!("{error:#}"), None).await;
             }
         }
         workspace

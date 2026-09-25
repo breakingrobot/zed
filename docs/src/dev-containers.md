@@ -201,7 +201,7 @@ Zed settings under `customizations.zed.settings` apply to the remote server in t
 
 ## Troubleshooting {#troubleshooting}
 
-- **Seeing what went wrong:** Zed records the commands it runs to create or start a dev container, such as the image build and the lifecycle commands before it connects, with their output. When starting fails, choose "Show Log" in the error, or run {#action projects::ShowDevContainerLog} at any time; in a dev container window, the container's own log (`docker logs`) follows. The file is `dev_container.log` in Zed's logs folder, and values of environment variables are left out.
+- **Seeing what went wrong:** Zed records the commands it runs to create or start a dev container, such as the image build and the lifecycle commands before it connects, with their output. When starting fails, choose "Show Log" in the error, or run {#action projects::ShowDevContainerLog} at any time; in a dev container window, the container's own log (`docker logs`) follows. Each dev container has its own `dev_container-<id>.log` file in Zed's logs folder, and values of environment variables are left out.
 
 - **Podman on Windows fails with "controller `pids` is not available":** WSL 2.9 doesn't enable the `pids` cgroup controller, which Podman's default process limit needs. Add this to `%APPDATA%\containers\containers.conf`, then retry:
 
