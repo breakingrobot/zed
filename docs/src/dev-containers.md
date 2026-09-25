@@ -158,6 +158,10 @@ Lifecycle commands, terminals, tasks and the remote server in the container get 
 
 Like VS Code, `ssh` and `git` in a dev container use the keys of your SSH agent, through `SSH_AUTH_SOCK` (`/tmp/zed-ssh-agent.sock`). When the container engine runs on your Linux machine, in WSL, or in Docker Desktop for macOS, Zed mounts the agent into the container. Otherwise, such as on an SSH host, on another machine's engine or with Docker Desktop for Windows, the remote server relays the agent's requests to your machine through Zed's connection. On Windows, Zed uses the agent of Windows' OpenSSH (the "OpenSSH Authentication Agent" service), unless `SSH_AUTH_SOCK` names another pipe.
 
+## GnuPG agent
+
+To sign commits in a dev container with your GnuPG keys, like VS Code, install GnuPG in the container (for example with the `ghcr.io/devcontainers/features/common-utils` feature, or `gnupg2` in your image). When the container's GnuPG has no agent of its own, the remote server relays its agent socket to the agent on your machine, through its restricted "extra" socket (`gpgconf --list-dirs agent-extra-socket`). On Windows, this is the agent of Gpg4win. Your private keys stay on your machine; import your public key in the container for `gpg --list-keys` to show it.
+
 ## Git credentials
 
 Like VS Code, Zed lets git in a dev container use the git credentials of your machine: when git in the container needs a password or token, for example to push over HTTPS, your machine's `git credential fill` answers it through Zed's connection. Zed sets this up by making its helper git's `credential.helper` in the container, unless one is already configured there. Git on your machine doesn't prompt in a terminal for this, but a credential manager that shows a window, such as Git Credential Manager, can.
