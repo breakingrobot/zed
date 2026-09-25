@@ -1229,13 +1229,20 @@ impl DevContainerManifest {
     ) -> String {
         let update_remote_user_uid = !self.docker_client.engine_host().is_windows()
             && self.dev_container().update_remote_user_uid.unwrap_or(true);
+        // Like the reference CLI, each feature's `containerEnv` comes before its install,
+        // so the features after it see it: the Node feature puts `node` on the `PATH`
+        // for features installed with `npm`.
         let feature_layers: String = self
             .features
             .iter()
             .map(|manifest| {
-                manifest.generate_dockerfile_feature_layer(
-                    use_buildkit,
-                    FEATURES_CONTAINER_TEMP_DEST_FOLDER,
+                format!(
+                    "{}{}",
+                    manifest.generate_dockerfile_env(),
+                    manifest.generate_dockerfile_feature_layer(
+                        use_buildkit,
+                        FEATURES_CONTAINER_TEMP_DEST_FOLDER,
+                    )
                 )
             })
             .collect();
@@ -7259,6 +7266,7 @@ RUN \
 echo "_CONTAINER_USER_HOME=$( (command -v getent >/dev/null 2>&1 && getent passwd 'root' || grep -E '^root|^[^:]*:[^:]*:root:' /etc/passwd || true) | cut -d: -f6)" >> /tmp/dev-container-features/devcontainer-features.builtin.env && \
 echo "_REMOTE_USER_HOME=$( (command -v getent >/dev/null 2>&1 && getent passwd 'node' || grep -E '^node|^[^:]*:[^:]*:node:' /etc/passwd || true) | cut -d: -f6)" >> /tmp/dev-container-features/devcontainer-features.builtin.env
 
+ENV DOCKER_BUILDKIT=1
 
 RUN --mount=type=bind,from=dev_containers_feature_content_source,source=./docker-in-docker_0,target=/tmp/build-features-src/docker-in-docker_0 \
 cp -ar /tmp/build-features-src/docker-in-docker_0 /tmp/dev-container-features \
@@ -7267,6 +7275,9 @@ cp -ar /tmp/build-features-src/docker-in-docker_0 /tmp/dev-container-features \
 && chmod +x ./devcontainer-features-install.sh \
 && ./devcontainer-features-install.sh \
 && rm -rf /tmp/dev-container-features/docker-in-docker_0
+ENV GOPATH=/go
+ENV GOROOT=/usr/local/go
+ENV PATH=/usr/local/go/bin:/go/bin:${PATH}
 
 RUN --mount=type=bind,from=dev_containers_feature_content_source,source=./go_1,target=/tmp/build-features-src/go_1 \
 cp -ar /tmp/build-features-src/go_1 /tmp/dev-container-features \
@@ -7633,6 +7644,7 @@ cp -ar /tmp/build-features-src/aws-cli_0 /tmp/dev-container-features \
 && chmod +x ./devcontainer-features-install.sh \
 && ./devcontainer-features-install.sh \
 && rm -rf /tmp/dev-container-features/aws-cli_0
+ENV DOCKER_BUILDKIT=1
 
 RUN --mount=type=bind,from=dev_containers_feature_content_source,source=./docker-in-docker_1,target=/tmp/build-features-src/docker-in-docker_1 \
 cp -ar /tmp/build-features-src/docker-in-docker_1 /tmp/dev-container-features \
@@ -8383,6 +8395,7 @@ cp -ar /tmp/build-features-src/aws-cli_0 /tmp/dev-container-features \
 && chmod +x ./devcontainer-features-install.sh \
 && ./devcontainer-features-install.sh \
 && rm -rf /tmp/dev-container-features/aws-cli_0
+ENV DOCKER_BUILDKIT=1
 
 RUN --mount=type=bind,from=dev_containers_feature_content_source,source=./docker-in-docker_1,target=/tmp/build-features-src/docker-in-docker_1 \
 cp -ar /tmp/build-features-src/docker-in-docker_1 /tmp/dev-container-features \
@@ -8736,6 +8749,7 @@ RUN chmod -R 0755 /tmp/dev-container-features/aws-cli_0 \
 && cd /tmp/dev-container-features/aws-cli_0 \
 && chmod +x ./devcontainer-features-install.sh \
 && ./devcontainer-features-install.sh
+ENV DOCKER_BUILDKIT=1
 
 COPY --chown=root:root --from=dev_containers_feature_content_source /tmp/build-features/docker-in-docker_1 /tmp/dev-container-features/docker-in-docker_1
 RUN chmod -R 0755 /tmp/dev-container-features/docker-in-docker_1 \
@@ -8985,6 +8999,7 @@ RUN \
 echo "_CONTAINER_USER_HOME=$( (command -v getent >/dev/null 2>&1 && getent passwd 'root' || grep -E '^root|^[^:]*:[^:]*:root:' /etc/passwd || true) | cut -d: -f6)" >> /tmp/dev-container-features/devcontainer-features.builtin.env && \
 echo "_REMOTE_USER_HOME=$( (command -v getent >/dev/null 2>&1 && getent passwd 'node' || grep -E '^node|^[^:]*:[^:]*:node:' /etc/passwd || true) | cut -d: -f6)" >> /tmp/dev-container-features/devcontainer-features.builtin.env
 
+ENV DOCKER_BUILDKIT=1
 
 RUN --mount=type=bind,from=dev_containers_feature_content_source,source=./docker-in-docker_0,target=/tmp/build-features-src/docker-in-docker_0 \
 cp -ar /tmp/build-features-src/docker-in-docker_0 /tmp/dev-container-features \
@@ -8993,6 +9008,9 @@ cp -ar /tmp/build-features-src/docker-in-docker_0 /tmp/dev-container-features \
 && chmod +x ./devcontainer-features-install.sh \
 && ./devcontainer-features-install.sh \
 && rm -rf /tmp/dev-container-features/docker-in-docker_0
+ENV GOPATH=/go
+ENV GOROOT=/usr/local/go
+ENV PATH=/usr/local/go/bin:/go/bin:${PATH}
 
 RUN --mount=type=bind,from=dev_containers_feature_content_source,source=./go_1,target=/tmp/build-features-src/go_1 \
 cp -ar /tmp/build-features-src/go_1 /tmp/dev-container-features \
