@@ -175,6 +175,20 @@ et le test `requireLocalPort` rendu stable.
 | 12 | `12-agent-relays-and-ssh-sharing` | 5 | 12 f, +825 −72 | relais agent SSH et GnuPG, `ControlMaster`, helpers de statut, doc des templates |
 | 13 | `13-real-world-fixes` | 8 | 10 f, +757 −122 | worktrees liés, conteneurs VS Code (autres chemins, labels mixtes), hooks sans connexion, cache non inscriptible, quoting `containerEnv` et tâches, environnement non persisté (A8b) |
 | 14 | `14-ssh-over-connection-wslc-timings` | 4 | 20 f, +720 −135 | commandes de l'hôte SSH par la connexion Zed (Windows), `wslc` expérimental, durées dans le journal, banc de mesure |
+| 15 | `15-vs-code-parity` | 3 | — | `dockerFile`/`context` à la racine, socket Wayland (WSLg) monté comme VS Code, « Reopen Folder Locally » sans arrêt ; Stop/Delete rouvrent les projets WSL et SSH dans leur connexion |
+
+Audit de parité VS Code (2026-09-27, sur les propriétés du schéma officiel `devContainer.base.schema.json` et les
+commandes de l'extension) : toutes les propriétés du spec sont lues, sauf les écarts ci-dessous.
+
+| Écart restant | Pourquoi |
+|---|---|
+| `hostRequirements.storage`, minimums de `gpu` | non vérifiés (avertissement seulement dans VS Code) |
+| `portsAttributes.elevateIfNeeded` | lu, sans effet : les ports < 1024 locaux ne sont pas élevés |
+| `onAutoForward: openPreview` | ouvre le navigateur (Zed n'a pas de navigateur intégré) |
+| `secrets` (déclaration du spec) | propre à Codespaces ; Zed prend `dev_container_secrets_file` |
+| réglages `dockerPath` / `dockerComposePath` | Zed choisit `docker`, `podman` ou `wslc`, pas un chemin libre |
+| `docker-compose` v1 | seul `docker compose` v2 (ou le fournisseur de Podman) est utilisé |
+| configurations d'attache (`imageConfigs`/`nameConfigs`), attache Kubernetes, exploration d'un volume | non repris |
 
 Correctifs fusionnés dans leur commit : tests `multi_workspace` (B1), imports après les actions (E1), API sidebar (E1b),
 test agent SSH Windows (F28), accept des identifiants Git (F22), quoting SSH vs `ControlMaster` (F34), `is_file` inutilisé

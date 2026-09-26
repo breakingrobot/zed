@@ -57,10 +57,10 @@ Plan rédigé sur `main` = `16c9aa7ea6` (2026-09-22) ; pile de revue rebasée su
 
 ## Implémentation
 
-La pile de revue (`06-pr-stack.md` §3ter) remplace les branches de travail A…F : 14 branches empilées
-`devcontainers/01-…` à `devcontainers/14-…`, chacune relisible comme une PR contre la précédente, historique linéaire,
+La pile de revue (`06-pr-stack.md` §3ter) remplace les branches de travail A…F : 15 branches empilées
+`devcontainers/01-…` à `devcontainers/15-…`, chacune relisible comme une PR contre la précédente, historique linéaire,
 correctifs de revue fusionnés dans leurs commits, messages réduits au titre. La dernière,
-**`devcontainers/14-ssh-over-connection-wslc-timings`**, contient tout. Historique de travail (état ancien §3bis) :
+**`devcontainers/15-vs-code-parity`**, contient tout. Historique de travail (état ancien §3bis) :
 refs locales `refs/backup/pre-cleanup-20260926/*` et tag `backup/devcontainers-work-20260926` sur le fork.
 
 Résultats de tests : `07-test-strategy.md` §7. Guide de test manuel : `09-manual-test-guide.md`.
