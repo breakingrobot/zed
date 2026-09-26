@@ -339,6 +339,12 @@ pub(crate) struct DevContainer {
     pub(crate) post_attach_command: Option<LifecycleScript>,
     pub(crate) wait_for: Option<LifecycleCommand>,
     host_requirements: Option<HostRequirements>,
+    /// The older form of `build.dockerfile`, which VS Code still reads.
+    #[serde(rename = "dockerFile", default, skip_serializing)]
+    legacy_dockerfile: Option<String>,
+    /// The older form of `build.context`, used with `dockerFile`.
+    #[serde(rename = "context", default, skip_serializing)]
+    legacy_context: Option<String>,
 }
 
 pub(crate) fn deserialize_devcontainer_json_to_value(
@@ -353,10 +359,23 @@ pub(crate) fn deserialize_devcontainer_json_to_value(
 pub(crate) fn deserialize_devcontainer_json_from_value(
     json: serde_json_lenient::Value,
 ) -> Result<DevContainer, DevContainerError> {
-    serde_json_lenient::from_value(json).map_err(|e| {
+    let mut dev_container: DevContainer = serde_json_lenient::from_value(json).map_err(|e| {
         log::error!("Unable to deserialize devcontainer from json values: {e}");
         DevContainerError::DevContainerParseFailed
-    })
+    })?;
+    if dev_container.build.is_none()
+        && let Some(dockerfile) = dev_container.legacy_dockerfile.take()
+    {
+        dev_container.build = Some(ContainerBuild {
+            dockerfile,
+            context: dev_container.legacy_context.take(),
+            args: None,
+            options: None,
+            target: None,
+            cache_from: None,
+        });
+    }
+    Ok(dev_container)
 }
 
 pub(crate) fn deserialize_devcontainer_json(json: &str) -> Result<DevContainer, DevContainerError> {
@@ -1030,6 +1049,28 @@ mod test {
         },
         docker::EngineResources,
     };
+
+    #[test]
+    fn top_level_dockerfile_and_context_are_read_like_build() {
+        let dev_container =
+            deserialize_devcontainer_json(r#"{ "dockerFile": "Dockerfile.dev", "context": ".." }"#)
+                .unwrap();
+        let DevContainerBuildType::Dockerfile(build) = dev_container.build_type() else {
+            panic!("expected a Dockerfile build");
+        };
+        assert_eq!(build.dockerfile, "Dockerfile.dev");
+        assert_eq!(build.context.as_deref(), Some(".."));
+
+        // `build` wins over the older form.
+        let dev_container = deserialize_devcontainer_json(
+            r#"{ "dockerFile": "Old", "build": { "dockerfile": "New" } }"#,
+        )
+        .unwrap();
+        let DevContainerBuildType::Dockerfile(build) = dev_container.build_type() else {
+            panic!("expected a Dockerfile build");
+        };
+        assert_eq!(build.dockerfile, "New");
+    }
 
     #[test]
     fn host_requirement_sizes_are_parsed_in_binary_units() {
