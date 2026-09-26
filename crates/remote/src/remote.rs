@@ -25,8 +25,8 @@ pub use remote_identity::{
 pub use transport::docker::{
     AutoForwardPorts, AutoForwardRule, CONTAINER_SSH_AGENT_SOCKET, DevContainerSecretsFile,
     DockerConnectionOptions, ForwardNotice, ForwardedPort, ForwardedPortListener,
-    SERVER_CACHE_PATH, SERVER_CACHE_VOLUME, ShutdownAction, load_dev_container_secrets,
-    push_secrets,
+    SERVER_CACHE_PATH, SERVER_CACHE_VOLUME, ShutdownAction, container_cli, is_wslc,
+    load_dev_container_secrets, push_secrets, set_use_wslc,
 };
 pub use transport::ssh::{SshConnectionOptions, SshPortForwardOption};
 pub use transport::wsl::WslConnectionOptions;

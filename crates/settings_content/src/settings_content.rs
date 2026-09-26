@@ -1360,6 +1360,13 @@ pub struct RemoteSettingsContent {
     pub dev_container_connections: Option<Vec<DevContainerConnection>>,
     pub read_ssh_config: Option<bool>,
     pub use_podman: Option<bool>,
+    /// Whether dev containers use WSL's own container engine, through `wslc`
+    /// (WSL 2.9.3 or later), instead of Docker or Podman. Experimental: `wslc` is
+    /// in preview, and supports neither Docker Compose nor features, and only
+    /// projects in a Windows folder.
+    ///
+    /// Default: false
+    pub dev_container_use_wslc: Option<bool>,
     /// Whether to build dev container images with BuildKit.
     ///
     /// When unset, Zed auto-detects BuildKit by probing for the `buildx` CLI

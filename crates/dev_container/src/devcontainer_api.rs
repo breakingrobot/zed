@@ -536,11 +536,7 @@ async fn check_for_docker(context: &DevContainerContext) -> Result<bool, DevCont
     ) {
         return Err(error);
     }
-    let cli = if context.use_podman {
-        "podman"
-    } else {
-        "docker"
-    };
+    let cli = remote::container_cli(context.use_podman);
     let mut command = context.engine_host.command(cli);
     command.arg("--version");
 
@@ -630,11 +626,8 @@ pub async fn dev_container_origin(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<DevContainerOrigin, DevContainerError> {
-    let docker = Docker::without_builds(
-        if use_podman { "podman" } else { "docker" },
-        engine_host.clone(),
-    )
-    .await;
+    let docker =
+        Docker::without_builds(remote::container_cli(use_podman), engine_host.clone()).await;
 
     let inspect = docker.inspect(&container_id.to_string()).await?;
     let labels = &inspect.config.labels;
@@ -669,11 +662,8 @@ pub async fn stop_dev_container(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<(), DevContainerError> {
-    let docker = Docker::without_builds(
-        if use_podman { "podman" } else { "docker" },
-        engine_host.clone(),
-    )
-    .await;
+    let docker =
+        Docker::without_builds(remote::container_cli(use_podman), engine_host.clone()).await;
 
     docker.stop_container(container_id).await
 }
@@ -684,11 +674,7 @@ pub fn shutdown_command(
     options: &DockerConnectionOptions,
     engine_environment: &[(String, String)],
 ) -> Option<HostCommand> {
-    let cli = if options.use_podman {
-        "podman"
-    } else {
-        "docker"
-    };
+    let cli = remote::container_cli(options.use_podman);
     let mut command = options.host.command(cli);
     for (key, value) in engine_environment {
         command.env(key, value);
@@ -759,19 +745,18 @@ pub async fn list_dev_containers(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<Vec<DevContainerSummary>, DevContainerError> {
-    let docker = Docker::without_builds(
-        if use_podman { "podman" } else { "docker" },
-        engine_host.clone(),
-    )
-    .await;
+    let docker =
+        Docker::without_builds(remote::container_cli(use_podman), engine_host.clone()).await;
     let mut command = docker.docker_command();
+    let wslc = remote::is_wslc(&docker.docker_cli());
+    // `wslc` calls it `list`, and has no Go templates but prints the same JSON.
     command.args([
-        "ps",
+        if wslc { "list" } else { "ps" },
         "--all",
         "--filter",
         "label=devcontainer.local_folder",
         "--format",
-        "{{json .}}",
+        if wslc { "json" } else { "{{json .}}" },
     ]);
     let output = command.output().await.map_err(|e| {
         log::error!("Error running docker ps: {e}");
@@ -839,13 +824,14 @@ pub async fn running_containers(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<Vec<RunningContainer>, DevContainerError> {
-    let docker = Docker::without_builds(
-        if use_podman { "podman" } else { "docker" },
-        engine_host.clone(),
-    )
-    .await;
+    let docker =
+        Docker::without_builds(remote::container_cli(use_podman), engine_host.clone()).await;
     let mut command = docker.docker_command();
-    command.args(["ps", "--format", "{{json .}}"]);
+    if remote::is_wslc(&docker.docker_cli()) {
+        command.args(["list", "--format", "json"]);
+    } else {
+        command.args(["ps", "--format", "{{json .}}"]);
+    }
     let output = command.output().await.map_err(|e| {
         log::error!("Error running docker ps: {e}");
         DevContainerError::CommandFailed(command.get_program().to_string())
@@ -906,13 +892,14 @@ pub async fn attach_target(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<AttachTarget, DevContainerError> {
-    let docker = Docker::without_builds(
-        if use_podman { "podman" } else { "docker" },
-        engine_host.clone(),
-    )
-    .await;
+    let docker =
+        Docker::without_builds(remote::container_cli(use_podman), engine_host.clone()).await;
     let mut command = docker.docker_command();
-    command.args(["inspect", "--format", "{{json .Config}}", container_id]);
+    if remote::is_wslc(&docker.docker_cli()) {
+        command.args(["inspect", "--format", "json", container_id]);
+    } else {
+        command.args(["inspect", "--format", "{{json .Config}}", container_id]);
+    }
     let output = command.output().await.map_err(|e| {
         log::error!("Error running docker inspect: {e}");
         DevContainerError::CommandFailed(command.get_program().to_string())
@@ -926,8 +913,15 @@ pub async fn attach_target(
         .ok_or_else(|| DevContainerError::ContainerNotValid(container_id.to_string()))
 }
 
+/// Reads a container's `Config`, or `wslc inspect`'s array of containers.
 fn parse_attach_target(config: &str) -> Option<AttachTarget> {
     let config: serde_json::Value = serde_json::from_str(config.trim()).ok()?;
+    let config = match config {
+        serde_json::Value::Array(containers) => {
+            containers.into_iter().next()?.get("Config")?.clone()
+        }
+        config => config,
+    };
     let non_empty = |key: &str| {
         config
             .get(key)
@@ -947,11 +941,8 @@ pub async fn container_logs(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<String, DevContainerError> {
-    let docker = Docker::without_builds(
-        if use_podman { "podman" } else { "docker" },
-        engine_host.clone(),
-    )
-    .await;
+    let docker =
+        Docker::without_builds(remote::container_cli(use_podman), engine_host.clone()).await;
     let mut command = docker.docker_command();
     command.args(["logs", "--tail", "1000", container_id]);
     let output = command.output().await.map_err(|e| {
@@ -985,11 +976,8 @@ pub async fn start_dev_container(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<(), DevContainerError> {
-    let docker = Docker::without_builds(
-        if use_podman { "podman" } else { "docker" },
-        engine_host.clone(),
-    )
-    .await;
+    let docker =
+        Docker::without_builds(remote::container_cli(use_podman), engine_host.clone()).await;
 
     docker.start_container(container_id).await
 }
@@ -1005,11 +993,8 @@ pub async fn restart_dev_container(
     use_podman: bool,
     engine_host: &EngineHost,
 ) -> Result<(), DevContainerError> {
-    let docker = Docker::without_builds(
-        if use_podman { "podman" } else { "docker" },
-        engine_host.clone(),
-    )
-    .await;
+    let docker =
+        Docker::without_builds(remote::container_cli(use_podman), engine_host.clone()).await;
 
     docker.stop_container(container_id).await?;
     docker.start_container(container_id).await
@@ -1026,11 +1011,8 @@ pub async fn remove_dev_container(
     engine_host: &EngineHost,
     session_cache: &SessionCache,
 ) -> Result<(), DevContainerError> {
-    let docker = Docker::without_builds(
-        if use_podman { "podman" } else { "docker" },
-        engine_host.clone(),
-    )
-    .await;
+    let docker =
+        Docker::without_builds(remote::container_cli(use_podman), engine_host.clone()).await;
 
     docker.remove_container(container_id).await?;
     session_cache.forget_container(container_id);
@@ -1308,6 +1290,16 @@ not json
             })
         );
         assert_eq!(super::parse_attach_target("Error: no such object"), None);
+        // `wslc inspect --format json` prints an array of containers.
+        assert_eq!(
+            super::parse_attach_target(
+                r#"[{"Config":{"User":"node","WorkingDir":"/app"},"Id":"abc"}]"#
+            ),
+            Some(super::AttachTarget {
+                remote_user: "node".to_string(),
+                working_directory: "/app".to_string(),
+            })
+        );
     }
 
     use remote::{DockerConnectionOptions, ShutdownAction};

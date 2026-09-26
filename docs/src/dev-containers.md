@@ -224,6 +224,18 @@ Zed settings under `customizations.zed.settings` apply to the remote server in t
 }
 ```
 
+## WSL containers (experimental) {#wslc}
+
+On Windows, Zed can run dev containers with WSL's own container engine through `wslc`, instead of Docker or Podman. `wslc` is in preview, so this is experimental. Turn it on in your settings:
+
+```json [settings]
+{
+  "dev_container_use_wslc": true
+}
+```
+
+With `wslc`, Zed supports image and Dockerfile configurations of local projects. Docker Compose configurations, features, and projects in a WSL distribution or on an SSH host are refused with an error. `wslc` has no `--privileged`, `--init`, `--cap-add`, or `--security-opt`, so Zed leaves those out and logs a warning.
+
 ## Troubleshooting {#troubleshooting}
 
 - **Seeing what went wrong:** Zed records the commands it runs to create or start a dev container, such as the image build and the lifecycle commands before it connects, with their output. When starting fails, choose "Show Log" in the error, or run {#action projects::ShowDevContainerLog} at any time; in a dev container window, the container's own log (`docker logs`) follows. Each dev container has its own `dev_container-<id>.log` file in Zed's logs folder, and values of environment variables are left out.
