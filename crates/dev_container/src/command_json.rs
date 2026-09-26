@@ -1,4 +1,9 @@
-use std::{path::PathBuf, process::Output, sync::Arc};
+use std::{
+    path::PathBuf,
+    process::Output,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -51,30 +56,46 @@ impl DevContainerLog {
         }
     }
 
-    /// Appends `command` and its output, with the values of `secrets` redacted from
-    /// the command line.
+    /// Appends `command`, its output and how long it took, with the values of
+    /// `secrets` redacted from the command line.
     pub(crate) async fn record(
         &self,
         command: &Command,
         secrets: &[String],
         output: &Result<Output, std::io::Error>,
+        elapsed: Duration,
     ) {
-        use futures::AsyncWriteExt as _;
-
         let mut entry = format!("$ {}\n", describe_command(command, secrets));
         match output {
             Ok(output) => {
                 entry.push_str(&String::from_utf8_lossy(&output.stdout));
                 entry.push_str(&String::from_utf8_lossy(&output.stderr));
-                if !output.status.success() {
-                    entry.push_str(&format!("[{}]\n", output.status));
+                if !entry.ends_with('\n') {
+                    entry.push('\n');
+                }
+                if output.status.success() {
+                    entry.push_str(&format!("[{}]\n", format_duration(elapsed)));
+                } else {
+                    entry.push_str(&format!(
+                        "[{}, {}]\n",
+                        output.status,
+                        format_duration(elapsed)
+                    ));
                 }
             }
             Err(error) => entry.push_str(&format!("[failed to run: {error}]\n")),
         }
-        if !entry.ends_with('\n') {
-            entry.push('\n');
-        }
+        self.append(&entry).await;
+    }
+
+    /// Appends a line of Zed's own, such as how long starting took.
+    pub(crate) async fn note(&self, line: &str) {
+        self.append(&format!("# {line}\n")).await;
+    }
+
+    async fn append(&self, entry: &str) {
+        use futures::AsyncWriteExt as _;
+
         let result = async {
             let mut file = smol::fs::OpenOptions::new()
                 .append(true)
@@ -88,6 +109,11 @@ impl DevContainerLog {
             log::warn!("Failed to write the dev container log: {error}");
         }
     }
+}
+
+/// `elapsed` in seconds, to the tenth.
+pub(crate) fn format_duration(elapsed: Duration) -> String {
+    format!("{:.1}s", elapsed.as_secs_f64())
 }
 
 /// The command line, without the values of the environment variables that
@@ -131,8 +157,11 @@ pub(crate) struct LoggingCommandRunner {
 #[async_trait]
 impl CommandRunner for LoggingCommandRunner {
     async fn run_command(&self, command: &mut Command) -> Result<Output, std::io::Error> {
+        let started = Instant::now();
         let output = self.inner.run_command(command).await;
-        self.log.record(command, &[], &output).await;
+        self.log
+            .record(command, &[], &output, started.elapsed())
+            .await;
         output
     }
 }
@@ -234,11 +263,18 @@ mod tests {
                 stdout: b"built\n".to_vec(),
                 stderr: b"warning".to_vec(),
             });
-            log.record(&command, &[], &output).await;
+            log.record(
+                &command,
+                &[],
+                &output,
+                std::time::Duration::from_millis(1300),
+            )
+            .await;
             log.record(
                 &util::command::new_command("missing"),
                 &[],
                 &Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+                std::time::Duration::ZERO,
             )
             .await;
 
@@ -246,7 +282,7 @@ mod tests {
             assert!(!contents.contains("s3cret"), "{contents}");
             assert!(
                 contents.starts_with(
-                    "$ docker exec -e TOKEN=<redacted> -e API_KEY container true\nbuilt\nwarning\n"
+                    "$ docker exec -e TOKEN=<redacted> -e API_KEY container true\nbuilt\nwarning\n[1.3s]\n"
                 ),
                 "{contents}"
             );
