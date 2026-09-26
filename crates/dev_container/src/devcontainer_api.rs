@@ -618,6 +618,9 @@ fn is_remote_engine_endpoint(docker_host: &str) -> bool {
 /// in-container paths, not host paths).
 pub struct DevContainerOrigin {
     pub local_folder: PathBuf,
+    /// The folder as the engine host sees it: a path in the WSL distribution or on
+    /// the SSH host, or the same as `local_folder` on this machine.
+    pub host_folder: String,
     pub config: DevContainerConfig,
 }
 
@@ -632,11 +635,11 @@ pub async fn dev_container_origin(
     let inspect = docker.inspect(&container_id.to_string()).await?;
     let labels = &inspect.config.labels;
 
-    let local_folder = labels
+    let host_folder = labels
         .local_folder
-        .as_ref()
-        .map(|local_folder| engine_host.local_path(local_folder))
+        .clone()
         .ok_or_else(|| DevContainerError::ContainerNotValid(container_id.to_string()))?;
+    let local_folder = engine_host.local_path(&host_folder);
 
     let config = labels
         .config_file
@@ -651,6 +654,7 @@ pub async fn dev_container_origin(
 
     Ok(DevContainerOrigin {
         local_folder,
+        host_folder,
         config,
     })
 }

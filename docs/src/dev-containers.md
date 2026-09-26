@@ -99,6 +99,7 @@ From a dev container window, the command palette and the dev container menu in t
 - {#action projects::RestartDevContainer}: stops and starts the container, which ends every process in it, then reconnects.
 - {#action projects::RebuildDevContainer}: removes the container, builds it again and reconnects.
 - {#action projects::RebuildDevContainerWithoutCache}: like rebuilding, but builds every image layer again instead of reusing the container engine's build cache, and pulls newer base images when building with BuildKit.
+- {#action projects::ReopenDevContainerFolderLocally}: reopens the project on its host (this machine, the WSL distribution, or the SSH host) and leaves the container running, like VS Code's "Reopen Folder Locally". The configuration's `shutdownAction` still applies once no window uses the container.
 - {#action projects::StopDevContainer}: stops the container and reopens the project on its host.
 - {#action projects::DeleteDevContainer}: stops and removes the container, then reopens the project on its host. Anything not stored in the project folder or a volume is lost.
 

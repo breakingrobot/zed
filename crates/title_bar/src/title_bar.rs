@@ -745,6 +745,16 @@ impl TitleBar {
                             )
                             .separator()
                             .entry(
+                                "Reopen Folder Locally",
+                                Some(Box::new(zed_actions::ReopenDevContainerFolderLocally)),
+                                |window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(zed_actions::ReopenDevContainerFolderLocally),
+                                        cx,
+                                    );
+                                },
+                            )
+                            .entry(
                                 "Stop Dev Container",
                                 Some(Box::new(zed_actions::StopDevContainer)),
                                 |window, cx| {

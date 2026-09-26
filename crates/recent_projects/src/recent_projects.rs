@@ -536,6 +536,10 @@ pub fn init(cx: &mut App) {
         with_active_or_new_workspace(cx, open_dev_container);
     });
 
+    cx.on_action(|_: &zed_actions::ReopenDevContainerFolderLocally, cx| {
+        with_active_or_new_workspace(cx, dev_container_lifecycle::reopen_folder_locally);
+    });
+
     cx.on_action(|_: &StopDevContainer, cx| {
         with_active_or_new_workspace(cx, dev_container_lifecycle::stop_dev_container);
     });

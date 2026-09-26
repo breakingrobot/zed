@@ -17,8 +17,8 @@ use gpui::{
 };
 use project::TaskSourceKind;
 use remote::{
-    DockerConnectionOptions, ForwardNotice, ForwardedPort, ForwardedPortListener,
-    PortForwardingEvent, RemoteConnectionOptions, ShutdownAction,
+    DockerConnectionOptions, EngineHost, ForwardNotice, ForwardedPort, ForwardedPortListener,
+    PortForwardingEvent, RemoteConnectionOptions, ShutdownAction, SshConnectionOptions,
 };
 use task::{TaskContext, TaskTemplate};
 use workspace::notifications::{NotificationId, simple_message_notification::MessageNotification};
@@ -241,33 +241,111 @@ pub(crate) fn stop_dev_container(
         let Some(app_state) = app_state.upgrade() else {
             return;
         };
-
-        let open_task = cx.update(|_, cx| {
-            workspace::open_paths(
-                &[origin.local_folder],
-                app_state,
-                OpenOptions {
-                    requesting_window: replace_window,
-                    ..Default::default()
-                },
-                cx,
-            )
-        });
-
-        match open_task {
-            Ok(task) => {
-                if let Err(e) = task.await {
-                    log::error!(
-                        "Failed to reopen project locally after stopping dev container: {e:#}"
-                    );
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to reopen project locally after stopping dev container: {e:#}");
-            }
+        if let Err(e) =
+            reopen_on_engine_host(&origin, &options.host, replace_window, app_state, cx).await
+        {
+            log::error!("Failed to reopen project locally after stopping dev container: {e:#}");
         }
     })
     .detach();
+}
+
+/// Reopens the dev container's folder where it lives, leaving the container
+/// running, like VS Code's "Reopen Folder Locally" (or "in WSL", "in SSH").
+pub(crate) fn reopen_folder_locally(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(RemoteConnectionOptions::Docker(options)) =
+        workspace.project().read(cx).remote_connection_options(cx)
+    else {
+        cx.propagate();
+        return;
+    };
+
+    let app_state = workspace.app_state().clone();
+    let replace_window = window.window_handle().downcast::<MultiWorkspace>();
+    let workspace_handle = cx.entity().downgrade();
+
+    cx.spawn_in(window, async move |_, cx| {
+        let origin = match dev_container::dev_container_origin(
+            &options.container_id,
+            options.use_podman,
+            &options.host,
+        )
+        .await
+        {
+            Ok(origin) => origin,
+            Err(e) => {
+                log::error!("Failed to determine dev container's local folder: {e}");
+                prompt_error(cx, "Failed to reopen the folder", &e).await;
+                return;
+            }
+        };
+        shutdown_remote_connection(&workspace_handle, cx).await;
+        if let Err(e) =
+            reopen_on_engine_host(&origin, &options.host, replace_window, app_state, cx).await
+        {
+            log::error!("Failed to reopen the dev container's folder: {e:#}");
+            prompt_error(cx, "Failed to reopen the folder", format!("{e:#}")).await;
+        }
+    })
+    .detach();
+}
+
+/// Opens `origin`'s folder where it lives: on this machine, or as a WSL or SSH
+/// project when the container's engine runs there.
+async fn reopen_on_engine_host(
+    origin: &dev_container::DevContainerOrigin,
+    engine_host: &EngineHost,
+    replace_window: Option<WindowHandle<MultiWorkspace>>,
+    app_state: Arc<AppState>,
+    cx: &mut AsyncWindowContext,
+) -> anyhow::Result<()> {
+    let open_options = OpenOptions {
+        requesting_window: replace_window,
+        ..Default::default()
+    };
+    let connection = match engine_host {
+        // Containers created by VS Code from Windows may label a WSL folder with
+        // its Windows path, which opens on this machine.
+        EngineHost::Wsl(options) if origin.host_folder.starts_with('/') => {
+            Some(RemoteConnectionOptions::Wsl(options.clone()))
+        }
+        EngineHost::Ssh(host) => Some(RemoteConnectionOptions::Ssh(SshConnectionOptions {
+            host: host.host.clone().into(),
+            username: host.username.clone(),
+            port: host.port,
+            args: Some(host.args.clone()),
+            ..Default::default()
+        })),
+        _ => None,
+    };
+    match connection {
+        Some(connection) => {
+            open_remote_project(
+                connection,
+                vec![PathBuf::from(&origin.host_folder)],
+                app_state,
+                open_options,
+                cx,
+            )
+            .await?;
+        }
+        None => {
+            cx.update(|_, cx| {
+                workspace::open_paths(
+                    std::slice::from_ref(&origin.local_folder),
+                    app_state,
+                    open_options,
+                    cx,
+                )
+            })?
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Stops and removes the dev container backing the current project (a
@@ -340,7 +418,7 @@ pub async fn delete_dev_container_with_options(
     // Only resolve the local folder when we intend to reopen it. Read it from
     // the container's labels *before* removing it; afterwards it can no longer
     // be inspected.
-    let local_folder = if reopen.is_some() {
+    let origin = if reopen.is_some() {
         match dev_container::dev_container_origin(
             &options.container_id,
             options.use_podman,
@@ -348,7 +426,7 @@ pub async fn delete_dev_container_with_options(
         )
         .await
         {
-            Ok(origin) => Some(origin.local_folder),
+            Ok(origin) => Some(origin),
             Err(e) => {
                 log::error!("Failed to determine dev container's local folder: {e}");
                 prompt_error(cx, "Failed to delete Dev Container", &e).await;
@@ -381,34 +459,16 @@ pub async fn delete_dev_container_with_options(
         return;
     }
 
-    let (Some(local_folder), Some((replace_window, app_state))) = (local_folder, reopen) else {
+    let (Some(origin), Some((replace_window, app_state))) = (origin, reopen) else {
         return;
     };
     let Some(app_state) = app_state.upgrade() else {
         return;
     };
-
-    let open_task = cx.update(|_, cx| {
-        workspace::open_paths(
-            &[local_folder],
-            app_state,
-            OpenOptions {
-                requesting_window: Some(replace_window),
-                ..Default::default()
-            },
-            cx,
-        )
-    });
-
-    match open_task {
-        Ok(task) => {
-            if let Err(e) = task.await {
-                log::error!("Failed to reopen project locally after deleting dev container: {e:#}");
-            }
-        }
-        Err(e) => {
-            log::error!("Failed to reopen project locally after deleting dev container: {e:#}");
-        }
+    if let Err(e) =
+        reopen_on_engine_host(&origin, &options.host, Some(replace_window), app_state, cx).await
+    {
+        log::error!("Failed to reopen project locally after deleting dev container: {e:#}");
     }
 }
 

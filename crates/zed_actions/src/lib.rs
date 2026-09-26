@@ -719,6 +719,13 @@ pub struct OpenRemote {
 #[serde(deny_unknown_fields)]
 pub struct OpenDevContainer;
 
+/// Reopens the current dev container's folder where it lives: on this machine,
+/// in WSL or on the SSH host. The container keeps running.
+#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
+#[action(namespace = projects)]
+#[serde(deny_unknown_fields)]
+pub struct ReopenDevContainerFolderLocally;
+
 /// Stops the current dev container and reopens the project locally.
 #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
 #[action(namespace = projects)]
