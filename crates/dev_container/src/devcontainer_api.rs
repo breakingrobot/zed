@@ -116,6 +116,10 @@ pub(crate) struct DevContainerUp {
     pub(crate) extension_ids: Vec<String>,
     #[serde(default)]
     pub(crate) remote_env: HashMap<String, String>,
+    /// What a connection keeps of `remote_env`: the configuration's `remoteEnv`, with
+    /// the references to environments left for it to resolve when connecting.
+    #[serde(skip)]
+    pub(crate) connection_remote_env: HashMap<String, String>,
     #[serde(default)]
     pub(crate) started_at: Option<String>,
     /// When the container was created, which the create-time lifecycle markers hold.
@@ -400,7 +404,7 @@ pub async fn start_dev_container_with_config(
             remote_workspace_folder,
             remote_user,
             extension_ids,
-            remote_env,
+            connection_remote_env,
             deferred_hooks,
             config_changed,
             warnings,
@@ -459,7 +463,7 @@ pub async fn start_dev_container_with_config(
                 use_podman: context.use_podman,
                 remote_user,
                 extension_ids,
-                remote_env: remote_env.into_iter().collect(),
+                remote_env: connection_remote_env.into_iter().collect(),
                 wsl_distro_name,
                 wsl_user,
                 ssh_host: ssh.as_ref().map(|ssh| ssh.host.clone()),

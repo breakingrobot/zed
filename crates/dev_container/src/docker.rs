@@ -534,14 +534,16 @@ impl DockerClient for Docker {
 
         command.args(&["exec", "-w", remote_folder, "-u", user]);
 
-        for (k, v) in env.iter() {
-            command.arg("-e");
-            let env_declaration = format!("{}={}", k, v);
-            command.arg(&env_declaration);
-        }
-        let mut secret_args = Vec::new();
-        remote::push_secrets(&mut secret_args, &mut command, &self.secrets);
-        command.args(secret_args);
+        // Like secrets, the environment travels in the docker process's environment,
+        // which `-e NAME` reads, so its values don't show in the arguments.
+        let environment: std::collections::BTreeMap<String, String> = env
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        let mut environment_args = Vec::new();
+        remote::push_secrets(&mut environment_args, &mut command, &environment);
+        remote::push_secrets(&mut environment_args, &mut command, &self.secrets);
+        command.args(environment_args);
 
         command.arg(container_id);
 

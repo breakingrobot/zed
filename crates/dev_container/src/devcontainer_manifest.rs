@@ -387,33 +387,7 @@ impl DevContainerManifest {
 
             match value {
                 Value::String(string) => {
-                    *string = string
-                        .replace("${devcontainerId}", &self.devcontainer_id())
-                        .replace(
-                            "${containerWorkspaceFolderBasename}",
-                            &self.remote_workspace_base_name().unwrap_or_default(),
-                        )
-                        .replace(
-                            "${localWorkspaceFolderBasename}",
-                            &self.local_workspace_base_name()?,
-                        )
-                        .replace(
-                            "${containerWorkspaceFolder}",
-                            &self
-                                .remote_workspace_folder()
-                                .map(|path| path.display().to_string())
-                                .unwrap_or_default()
-                                .replace('\\', "/"),
-                        )
-                        .replace(
-                            "${localWorkspaceFolder}",
-                            &self.local_workspace_folder().replace('\\', "/"),
-                        );
-                    *string = Self::replace_environment_variables(
-                        string,
-                        "localEnv",
-                        &self.local_environment,
-                    );
+                    *string = self.substitute_nonremote_vars_in_string(string, true)?;
                 }
 
                 Value::Array(array) => to_visit.extend(array.iter_mut()),
@@ -424,6 +398,64 @@ impl DevContainerManifest {
         }
 
         Ok(())
+    }
+
+    /// Replaces the variables of `string` that don't depend on the container, and the
+    /// `${localEnv:…}` references only when `resolve_local_env`.
+    fn substitute_nonremote_vars_in_string(
+        &self,
+        string: &str,
+        resolve_local_env: bool,
+    ) -> Result<String, DevContainerError> {
+        let string = string
+            .replace("${devcontainerId}", &self.devcontainer_id())
+            .replace(
+                "${containerWorkspaceFolderBasename}",
+                &self.remote_workspace_base_name().unwrap_or_default(),
+            )
+            .replace(
+                "${localWorkspaceFolderBasename}",
+                &self.local_workspace_base_name()?,
+            )
+            .replace(
+                "${containerWorkspaceFolder}",
+                &self
+                    .remote_workspace_folder()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default()
+                    .replace('\\', "/"),
+            )
+            .replace(
+                "${localWorkspaceFolder}",
+                &self.local_workspace_folder().replace('\\', "/"),
+            );
+        Ok(if resolve_local_env {
+            Self::replace_environment_variables(&string, "localEnv", &self.local_environment)
+        } else {
+            string
+        })
+    }
+
+    /// The `remoteEnv` a connection to the container keeps: the configuration's
+    /// templates, whose `${localEnv:…}` and `${containerEnv:…}` references the
+    /// connection resolves when it connects, so that their values, often secrets, are
+    /// never stored. The container's own environment isn't needed: `docker exec`
+    /// gives it to every process.
+    fn connection_remote_env(&self) -> Result<HashMap<String, String>, DevContainerError> {
+        let raw = deserialize_devcontainer_json_to_value(&self.raw_config)?;
+        let Some(serde_json_lenient::Value::Object(remote_env)) = raw.get("remoteEnv") else {
+            return Ok(HashMap::default());
+        };
+        remote_env
+            .iter()
+            .filter_map(|(name, value)| Some((name, value.as_str()?)))
+            .map(|(name, value)| {
+                Ok((
+                    name.clone(),
+                    self.substitute_nonremote_vars_in_string(value, false)?,
+                ))
+            })
+            .collect()
     }
 
     fn parse_nonremote_vars(&mut self) -> Result<(), DevContainerError> {
@@ -1589,6 +1621,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 .and_then(|state| state.started_at.clone()),
             created_at: running_container.created.clone(),
             deferred_hooks: Vec::new(),
+            connection_remote_env: self.connection_remote_env()?,
             config_changed: false,
             warnings: Vec::new(),
             compose_project: None,
@@ -3419,6 +3452,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                 deferred_hooks: Vec::new(),
                 warnings: Vec::new(),
                 compose_project: None,
+                connection_remote_env: self.connection_remote_env()?,
                 config_changed: config_changed(
                     docker_inspect.config.labels.config_hash.as_deref(),
                     self.config_hash.as_deref(),
@@ -6320,6 +6354,7 @@ mod test {
             started_at: Some("2026-06-23T10:00:00Z".to_string()),
             created_at: None,
             deferred_hooks: Vec::new(),
+            connection_remote_env: HashMap::new(),
             config_changed: false,
             warnings: Vec::new(),
             compose_project: None,
@@ -6399,6 +6434,7 @@ mod test {
             started_at: Some("2026-06-23T10:00:00Z".to_string()),
             created_at: None,
             deferred_hooks: Vec::new(),
+            connection_remote_env: HashMap::new(),
             config_changed: false,
             warnings: Vec::new(),
             compose_project: None,
@@ -6475,6 +6511,7 @@ mod test {
             started_at: None,
             created_at: None,
             deferred_hooks: Vec::new(),
+            connection_remote_env: HashMap::new(),
             config_changed: false,
             warnings: Vec::new(),
             compose_project: None,
@@ -6533,6 +6570,7 @@ mod test {
             started_at: None,
             created_at: None,
             deferred_hooks: Vec::new(),
+            connection_remote_env: HashMap::new(),
             config_changed: false,
             warnings: Vec::new(),
             compose_project: None,
@@ -6595,6 +6633,7 @@ mod test {
             started_at: None,
             created_at: None,
             deferred_hooks: Vec::new(),
+            connection_remote_env: HashMap::new(),
             config_changed: false,
             warnings: Vec::new(),
             compose_project: None,
@@ -6640,6 +6679,7 @@ mod test {
             started_at: None,
             created_at: None,
             deferred_hooks: Vec::new(),
+            connection_remote_env: HashMap::new(),
             config_changed: false,
             warnings: Vec::new(),
             compose_project: None,
@@ -6719,6 +6759,7 @@ mod test {
             started_at: None,
             created_at: None,
             deferred_hooks: Vec::new(),
+            connection_remote_env: HashMap::new(),
             config_changed: false,
             warnings: Vec::new(),
             compose_project: None,
@@ -6805,6 +6846,7 @@ mod test {
             started_at: None,
             created_at: None,
             deferred_hooks: Vec::new(),
+            connection_remote_env: HashMap::new(),
             config_changed: false,
             warnings: Vec::new(),
             compose_project: None,
@@ -6891,6 +6933,45 @@ mod test {
         assert!(
             super::equivalent_label_paths("/home/me/app", &EngineHost::Ssh(Default::default()))
                 .is_empty()
+        );
+    }
+
+    #[gpui::test]
+    async fn connections_keep_remote_env_templates_rather_than_secrets(cx: &mut TestAppContext) {
+        let (_, mut devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            FakeFs::new(cx.executor()),
+            fake_http_client(),
+            Arc::new(FakeDocker::new()),
+            Arc::new(TestCommandRunner::new()),
+            HashMap::from([("GITHUB_TOKEN".to_string(), "ghp_secret".to_string())]),
+            r#"{
+                "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+                "containerEnv": { "FIXTURE_TOKEN": "${localEnv:GITHUB_TOKEN}" },
+                "remoteEnv": {
+                    "TOKEN": "${localEnv:GITHUB_TOKEN}",
+                    "PATH": "${containerEnv:PATH}:${containerWorkspaceFolder}/bin"
+                }
+            }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+
+        let connection_env = devcontainer_manifest.connection_remote_env().unwrap();
+        assert_eq!(
+            connection_env.get("TOKEN").map(String::as_str),
+            Some("${localEnv:GITHUB_TOKEN}")
+        );
+        assert_eq!(
+            connection_env.get("PATH").map(String::as_str),
+            Some("${containerEnv:PATH}:/workspaces/project/bin")
+        );
+        assert!(!connection_env.contains_key("FIXTURE_TOKEN"));
+        assert!(
+            !connection_env
+                .values()
+                .any(|value| value.contains("ghp_secret"))
         );
     }
 

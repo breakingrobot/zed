@@ -157,6 +157,8 @@ After creating a container and running its `onCreateCommand`, `updateContentComm
 
 ## Secrets
 
+Zed doesn't store the environment of your dev containers. With a connection, it keeps the configuration's `remoteEnv` as written, and resolves its `${localEnv:…}` and `${containerEnv:…}` references each time it connects, so values like `"TOKEN": "${localEnv:GITHUB_TOKEN}"` never reach its database or settings. It passes environment values to `docker exec` through its environment rather than its arguments, so they don't show in process lists. When the container engine runs on an SSH host, the values are part of the command Zed runs there.
+
 To give dev containers tokens or passwords without writing them into the configuration, put them in a JSON file of variable names and values, like the Dev Container CLI's `--secrets-file`, and point Zed to it:
 
 ```json [settings]
