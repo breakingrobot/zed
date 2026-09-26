@@ -770,8 +770,23 @@ mod tests {
             .current_dir("/home/dev/my project");
         let command = command.to_command();
         assert_eq!(command.get_program(), "ssh");
+        // Connection sharing options, on Unix, are checked on their own.
+        let mut args = Vec::new();
+        let mut words = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned());
+        while let Some(word) = words.next() {
+            if word == "-o" {
+                let option = words.next().unwrap();
+                if !option.starts_with("Control") {
+                    args.extend([word, option]);
+                }
+            } else {
+                args.push(word);
+            }
+        }
         assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
+            args,
             [
                 "-p",
                 "2222",
