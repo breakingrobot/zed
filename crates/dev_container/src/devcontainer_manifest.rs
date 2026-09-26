@@ -3829,11 +3829,12 @@ pub(crate) async fn spawn_dev_container(
     build_mode: BuildMode,
     defer_hooks: bool,
 ) -> Result<DevContainerUp, DevContainerError> {
+    let started = std::time::Instant::now();
     let log_path = crate::start_log_path(context, &config);
     crate::set_last_start_log_path(log_path.clone());
     let log = DevContainerLog::start(log_path).await;
     let docker = engine_client(context).await.with_log(log.clone());
-    let command_runner: Arc<dyn CommandRunner> = match log {
+    let command_runner: Arc<dyn CommandRunner> = match log.clone() {
         Some(log) => Arc::new(LoggingCommandRunner {
             inner: Arc::new(DefaultCommandRunner::new()),
             log,
@@ -3851,7 +3852,14 @@ pub(crate) async fn spawn_dev_container(
     .await?;
 
     devcontainer_manifest.defer_hooks = defer_hooks;
-    devcontainer_manifest.open(build_mode).await
+    let result = devcontainer_manifest.open(build_mode).await;
+    if let Some(log) = log {
+        let elapsed = crate::command_json::format_duration(started.elapsed());
+        let outcome = if result.is_ok() { "ready" } else { "failed" };
+        log.note(&format!("Dev container {outcome} after {elapsed}"))
+            .await;
+    }
+    result
 }
 
 #[derive(Debug)]
