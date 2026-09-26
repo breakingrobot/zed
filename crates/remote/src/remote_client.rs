@@ -337,6 +337,8 @@ pub struct RemoteClient {
     /// Forwards the ports that start listening in a dev container while this
     /// client lives.
     _port_forwarding: Option<Task<()>>,
+    /// Lets engine commands for this SSH host run through this connection.
+    _host_command_channel: Option<crate::engine_host::HostCommandChannel>,
 }
 
 #[derive(Debug)]
@@ -448,6 +450,7 @@ impl RemoteClient {
                     os_version: os_version.clone(),
                     state: Some(State::Connecting),
                     _port_forwarding: None,
+                    _host_command_channel: None,
                 });
 
                 let io_task = remote_connection.start_proxy(
@@ -574,6 +577,14 @@ impl RemoteClient {
                             }
                         })
                         .detach();
+                    } else if let RemoteConnectionOptions::Ssh(options) = &this.connection_options {
+                        this._host_command_channel =
+                            Some(crate::engine_host::HostCommandChannel::register(
+                                options.host.to_string(),
+                                options.username.clone(),
+                                options.port,
+                                this.client.clone().into(),
+                            ));
                     }
                 });
 

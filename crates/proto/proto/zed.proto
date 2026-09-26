@@ -537,7 +537,9 @@ message Envelope {
     ForwardSshAgentMessageResponse forward_ssh_agent_message_response = 505;
     EnableGpgAgentForwarding enable_gpg_agent_forwarding = 506;
     ForwardGpgAgentMessage forward_gpg_agent_message = 507;
-    ForwardGpgAgentMessageResponse forward_gpg_agent_message_response = 508; // current max
+    ForwardGpgAgentMessageResponse forward_gpg_agent_message_response = 508;
+    RunHostCommand run_host_command = 509;
+    RunHostCommandResponse run_host_command_response = 510; // current max
   }
 
   reserved 87 to 88;

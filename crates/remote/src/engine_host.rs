@@ -470,6 +470,9 @@ impl HostCommand {
     }
 
     pub async fn output(&self) -> std::io::Result<Output> {
+        if let Some(output) = self.output_over_connection(&[]).await {
+            return Ok(output);
+        }
         self.to_command().output().await
     }
 
@@ -477,6 +480,9 @@ impl HostCommand {
     pub async fn output_with_stdin(&self, input: &[u8]) -> std::io::Result<Output> {
         use futures::AsyncWriteExt as _;
 
+        if let Some(output) = self.output_over_connection(input).await {
+            return Ok(output);
+        }
         let mut command = self.to_command();
         command
             .stdin(Stdio::piped())
@@ -488,6 +494,104 @@ impl HostCommand {
             stdin.close().await?;
         }
         child.output().await
+    }
+}
+
+impl HostCommand {
+    /// Runs an SSH host's command through Zed's connection to that host, when a
+    /// project of that host is open. Windows' OpenSSH can't share connections, so
+    /// each `ssh` would open a new one: Zed runs dozens of commands to build and
+    /// start a dev container. Falls back to `ssh` when that fails, e.g. with an
+    /// older remote server.
+    async fn output_over_connection(&self, input: &[u8]) -> Option<Output> {
+        if !cfg!(windows) || self.interactive || !self.forwarded_ports.is_empty() {
+            return None;
+        }
+        let EngineHost::Ssh(options) = &self.host else {
+            return None;
+        };
+        let client = HostCommandChannel::client_for(options)?;
+        let request = rpc::proto::RunHostCommand {
+            project_id: rpc::proto::REMOTE_SERVER_PROJECT_ID,
+            program: self.program.clone(),
+            args: self.args.clone(),
+            env: self.env.iter().chain(&self.secret_env).cloned().collect(),
+            cwd: self.current_dir.clone(),
+            stdin: input.to_vec(),
+        };
+        match client.request(request).await {
+            Ok(response) => Some(Output {
+                status: exit_status(response.exit_code.unwrap_or(255)),
+                stdout: response.stdout,
+                stderr: response.stderr,
+            }),
+            Err(error) => {
+                log::debug!(
+                    "Running {} through Zed's SSH connection failed, using ssh: {error:#}",
+                    self.program
+                );
+                None
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn exit_status(code: i32) -> std::process::ExitStatus {
+    use std::os::windows::process::ExitStatusExt as _;
+    std::process::ExitStatus::from_raw(code as u32)
+}
+
+#[cfg(unix)]
+fn exit_status(code: i32) -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt as _;
+    std::process::ExitStatus::from_raw(code << 8)
+}
+
+type SshHostKey = (String, Option<String>, Option<u16>);
+
+static HOST_COMMAND_CHANNELS: std::sync::LazyLock<
+    parking_lot::Mutex<Vec<(u64, SshHostKey, rpc::AnyProtoClient)>>,
+> = std::sync::LazyLock::new(Default::default);
+static NEXT_HOST_COMMAND_CHANNEL_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Zed's connection to an SSH host, available to run that host's engine commands
+/// for as long as it lives.
+pub struct HostCommandChannel {
+    id: u64,
+}
+
+impl HostCommandChannel {
+    pub fn register(
+        host: String,
+        username: Option<String>,
+        port: Option<u16>,
+        client: rpc::AnyProtoClient,
+    ) -> Self {
+        let id = NEXT_HOST_COMMAND_CHANNEL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        HOST_COMMAND_CHANNELS
+            .lock()
+            .push((id, (host, username, port), client));
+        Self { id }
+    }
+
+    fn client_for(options: &SshEngineHost) -> Option<rpc::AnyProtoClient> {
+        let key = (options.host.clone(), options.username.clone(), options.port);
+        HOST_COMMAND_CHANNELS
+            .lock()
+            .iter()
+            .rev()
+            .find(|(_, channel_key, _)| *channel_key == key)
+            .map(|(_, _, client)| client.clone())
+    }
+}
+
+impl Drop for HostCommandChannel {
+    fn drop(&mut self) {
+        HOST_COMMAND_CHANNELS
+            .lock()
+            .retain(|(id, _, _)| *id != self.id);
     }
 }
 

@@ -328,6 +328,7 @@ impl HeadlessProject {
         session.add_entity_request_handler(Self::handle_enable_git_credential_forwarding);
         session.add_entity_request_handler(Self::handle_enable_ssh_agent_forwarding);
         session.add_entity_request_handler(Self::handle_enable_gpg_agent_forwarding);
+        session.add_entity_request_handler(Self::handle_run_host_command);
         session.add_entity_request_handler(BufferStore::handle_update_buffer);
         session.add_entity_message_handler(BufferStore::handle_close_buffer);
 
@@ -1598,6 +1599,41 @@ impl HeadlessProject {
         });
         this.update(&mut cx, |this, _| this.gpg_agent_forwarding = Some(task));
         Ok(proto::Ack {})
+    }
+
+    /// Runs a program for the client, which saves it a new SSH connection per command
+    /// where OpenSSH can't share one, as on Windows.
+    async fn handle_run_host_command(
+        _this: Entity<Self>,
+        envelope: TypedEnvelope<proto::RunHostCommand>,
+        _cx: AsyncApp,
+    ) -> Result<proto::RunHostCommandResponse> {
+        use futures::AsyncWriteExt as _;
+
+        let payload = envelope.payload;
+        let mut command = util::command::new_command(&payload.program);
+        command
+            .args(&payload.args)
+            .envs(&payload.env)
+            .stdin(util::command::Stdio::piped())
+            .stdout(util::command::Stdio::piped())
+            .stderr(util::command::Stdio::piped());
+        if let Some(cwd) = &payload.cwd {
+            command.current_dir(cwd);
+        }
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("running {}", payload.program))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(&payload.stdin).await?;
+            stdin.close().await?;
+        }
+        let output = child.output().await?;
+        Ok(proto::RunHostCommandResponse {
+            exit_code: output.status.code(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
     }
 
     async fn handle_list_remote_directory(
