@@ -45,6 +45,8 @@ use workspace::{ModalView, Workspace, with_active_or_new_workspace};
 
 use http_client::HttpClient;
 
+#[cfg(test)]
+mod bench;
 mod command_json;
 mod devcontainer_api;
 mod devcontainer_json;

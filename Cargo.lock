@@ -5049,6 +5049,7 @@ dependencies = [
  "project",
  "regex",
  "remote",
+ "reqwest_client",
  "serde",
  "serde_json",
  "serde_json_lenient",
