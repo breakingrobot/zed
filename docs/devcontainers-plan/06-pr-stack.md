@@ -154,9 +154,10 @@ rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; auc
 Les ~70 branches de travail (A…F47, `integration`, `base`) sont remplacées par 14 branches empilées sur `main` =
 `bda9c0bd43`. Chaque branche se relit comme une PR contre la précédente (`01` contre `main`). Historique linéaire (les
 fusions d'`integration` et les fusions de `main` des PRs reprises ont disparu), messages réduits au titre, auteurs
-d'origine conservés (Alex Berger, Pablo Fernandez, Shrirajh). Arbre final identique à l'ancienne tête F47, à trois
+d'origine conservés (Alex Berger, Pablo Fernandez, Shrirajh). Arbre final identique à l'ancienne tête F47, à quatre
 exceptions voulues : l'assert du test instable `test_open_remote_project_with_mock_connection` (hors sujet), le test des
-tunnels de ports réservé à Linux (l'attribut avait glissé sur le test de F45), et les attentes de 3 tests Unix mises à jour.
+tunnels de ports réservé à Linux (l'attribut avait glissé sur le test de F45), les attentes de 3 tests Unix mises à jour,
+et le test `requireLocalPort` rendu stable.
 
 | # | Branche `devcontainers/…` | Commits | Taille | Contenu |
 |---|---|---|---|---|
