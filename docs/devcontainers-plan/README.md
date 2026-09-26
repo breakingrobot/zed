@@ -1,8 +1,8 @@
 # Plan d'ingénierie — support Dev Containers robuste (Zed)
 
 Dossier de travail local (branche `plan/devcontainers`), **hors de l'arbre mdBook publié** (`docs/book.toml` → `src = "src"`).
-Plan rédigé sur `main` = `16c9aa7ea6` (2026-09-22) ; branches rebasées sur `a405fb91d5` et poussées sur le fork
-personnel `breakingrobot/zed` (aucune PR ouverte, rien posté sur `zed-industries/zed`).
+Plan rédigé sur `main` = `16c9aa7ea6` (2026-09-22) ; pile de revue rebasée sur `bda9c0bd43` (2026-09-26, `06-pr-stack.md`
+§3ter) et poussée sur le fork personnel `breakingrobot/zed` (aucune PR ouverte, rien posté sur `zed-industries/zed`).
 
 ## Résumé exécutif
 
@@ -57,24 +57,19 @@ personnel `breakingrobot/zed` (aucune PR ouverte, rien posté sur `zed-industrie
 
 ## Implémentation
 
-État branche par branche : `06-pr-stack.md` §3bis. Résultats de tests : `07-test-strategy.md` §7. Guide de test manuel :
-`09-manual-test-guide.md`.
+La pile de revue (`06-pr-stack.md` §3ter) remplace les branches de travail A…F : 14 branches empilées
+`devcontainers/01-…` à `devcontainers/14-…`, chacune relisible comme une PR contre la précédente, historique linéaire,
+correctifs de revue fusionnés dans leurs commits, messages réduits au titre. La dernière,
+**`devcontainers/14-ssh-over-connection-wslc-timings`**, contient tout. Historique de travail (état ancien §3bis) :
+refs locales `refs/backup/pre-cleanup-20260926/*` et tag `backup/devcontainers-work-20260926` sur le fork.
 
-Toutes les branches sont empilées ; la dernière, **`devcontainers/e1-lifecycle-actions`**, contient tout :
+Résultats de tests : `07-test-strategy.md` §7. Guide de test manuel : `09-manual-test-guide.md`.
 
-| Étape | Branches | Apport |
-|---|---|---|
-| Correctifs | `integration` (A2–A8a, B1) | `initializeCommand`, hooks des features, `devcontainerId`, build sans BuildKit, Podman, arrêt du proxy, ordre des features, dossier de build privé, identité stable |
-| WSL | `c1-engine-host` → `c4-connection-host` → `c7-wsl-projects` → `c7b-wsl-followups` | moteur dans la distro via `wsl.exe --exec`, fichiers via `\\wsl.localhost`, hôte persisté, suggestion, environnement de login, correctif `zed --dev-container` |
-| SSH | `c6-ssh-projects` → `e2-ssh-port-forwarding` | moteur sur l'hôte via `ssh` (`BatchMode`), fichiers lus par commandes, dossier de build copié par tar, envoi par `docker exec -i`, tunnels `-L` pour les ports |
-| Robustesse | `t1-workspace-trust` → `c2b-host-environment` → `c8-unsupported-setups` | porte de confiance, `PATH`/`DOCKER_HOST` de login, refus explicites |
-| Cycle de vie | `e1-lifecycle-actions` | reconnect / restart / rebuild / stop / delete (commits d'Alex Berger), passage par l'hôte |
+Installeurs locaux (Zed Dev, non signés) : `H:\Sources\zed-wt\artifacts\Zed-x86_64-final.exe`, publiés avec le remote
+server dans la release brouillon `devcontainers-f29` du fork.
 
-Installeurs locaux (Zed Dev, non signés) : `H:\Sources\zed-wt\artifacts\` (`…-c7.exe` WSL, `…-c6.exe` WSL + SSH,
-`…-final.exe` tout).
-
-Reste : e2e réels WSL / SSH / Podman (guide `09`), A8b (gelé par décision), D1/D2 (WSLc), reprise de la barre latérale et
-de la vue agent de #60975, SSH sans ControlMaster sous Windows (une connexion par commande).
+Reste : reprise de la barre latérale et de la vue agent de #60975 au-delà de E1b ; `wslc` sans features ni Compose
+(limites de `wslc` 2.9) ; mesures de performance sur un projet réel de l'utilisateur.
 
 ## Documents
 

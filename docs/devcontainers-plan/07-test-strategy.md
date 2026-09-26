@@ -104,3 +104,16 @@ CLI de référence `@devcontainers/cli` 0.89.0.
 Leçons de build : une seule grosse compilation à la fois (plusieurs échecs par manque de mémoire, `rustc` terminé par
 `0xc0000409`) ; un dossier `target` partagé a été corrompu (`E0786`) après un arrêt brutal ; l'empaquetage local sous
 Windows PowerShell 5.1 demande d'extraire ConPTY sous un nom `.zip`.
+
+### 7bis. Pile de revue (2026-09-26)
+
+| Vérification | Résultat |
+|---|---|
+| `cargo check --tests` de chaque branche `01`…`14` sous Windows (`dev_container`, `remote`, `remote_server`, `recent_projects`, `workspace`, `sidebar`, `title_bar`, `agent_ui`, `zed`) | 14/14 OK |
+| `cargo test` de chaque branche sous Linux (`dev_container`, `remote`, `remote_server`, `recent_projects`) | 14/14 OK (tête : 222 / 40 / 62 / 63) |
+| Tests Windows de la tête (`dev_container`, `remote`, `recent_projects`, `remote_server`, `workspace`) | OK ; clippy propre |
+| `remote` répété 20 fois sous Linux (branches 07 et 14) | 0 échec |
+
+Trouvés pendant le nettoyage et corrigés dans leur commit : test des tunnels de ports non réservé à Linux (échouait sous
+Windows), 3 tests Unix de `containerEnv` aux attentes obsolètes, test `requireLocalPort` instable (port libéré repris par
+un autre test en parallèle).

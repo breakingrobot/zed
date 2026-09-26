@@ -99,6 +99,8 @@ avec une note de version.
 
 ## 3bis. État d'implémentation (fork `breakingrobot/zed`, 2026-09-24)
 
+> Historique : ces branches de travail sont remplacées par la pile de revue du §3ter (2026-09-26).
+
 Décision utilisateur : le fork est personnel, la pile n'attend plus de réponse du staff (C0 non posté). Branches
 rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; aucune PR ouverte.
 
@@ -146,6 +148,51 @@ rebasées sur `main` = `a405fb91d5` ; messages de commit réduits au titre ; auc
 - Parité VS Code restante : `portsAttributes`, `shutdownAction`, `userEnvProbe`, `hostRequirements`, attache à un
   conteneur existant, clone dans un volume, dotfiles, rebuild sans cache, journaux de création visibles, identifiants
   Git HTTPS, agent SSH pour les hôtes SSH.
+
+## 3ter. Pile de revue (2026-09-26)
+
+Les ~70 branches de travail (A…F47, `integration`, `base`) sont remplacées par 14 branches empilées sur `main` =
+`bda9c0bd43`. Chaque branche se relit comme une PR contre la précédente (`01` contre `main`). Historique linéaire (les
+fusions d'`integration` et les fusions de `main` des PRs reprises ont disparu), messages réduits au titre, auteurs
+d'origine conservés (Alex Berger, Pablo Fernandez, Shrirajh). Arbre final identique à l'ancienne tête F47, à trois
+exceptions voulues : l'assert du test instable `test_open_remote_project_with_mock_connection` (hors sujet), le test des
+tunnels de ports réservé à Linux (l'attribut avait glissé sur le test de F45), et les attentes de 3 tests Unix mises à jour.
+
+| # | Branche `devcontainers/…` | Commits | Taille | Contenu |
+|---|---|---|---|---|
+| 01 | `01-spec-fixes` | 12 | 10 f, +2338 −452 | rappel de relecture (`.rules`), dossier de build privé, `devcontainerId`, build sans BuildKit, Podman Linux, arrêt du proxy, ordre des features, `initializeCommand` (Windows, chaque ouverture), arguments de `docker exec`, marqueurs post-start, hooks des features |
+| 02 | `02-stable-identity` | 2 | 10 f, +467 −27 | identité stable (Alex Berger), labels vides ignorés |
+| 03 | `03-wsl-projects` | 7 | 19 f, +960 −233 | `EngineHost`, connexions par l'hôte, projets WSL, environnement de login, suggestion, `zed --dev-container`, doc |
+| 04 | `04-ssh-projects` | 9 | 20 f, +921 −152 | moteur par SSH, envoi par `docker exec -i`, projets SSH, confiance, ports SSH, environnement de login, refus explicites |
+| 05 | `05-lifecycle-actions` | 9 | 19 f, +2163 −191 | actions de cycle de vie (Alex Berger), menu, passage par l'hôte, sidebar et vue agent |
+| 06 | `06-lifecycle-hooks-and-ports` | 11 | 21 f, +2343 −159 | marqueurs de création, stop/rm par l'hôte, agent SSH et gitconfig, `waitFor`, détection de ports, rebuild sur changement, `portsAttributes`, `hostRequirements`, rebuild sans cache, `userEnvProbe`, `onAutoForward` |
+| 07 | `07-host-options-and-caches` | 9 | 21 f, +1797 −148 | `shutdownAction`, dotfiles, GPU, `hostRequirements` fusionnés, `requireLocalPort`, ports Compose SSH, lockfile, cache des features, cache de session |
+| 08 | `08-server-volume-and-port-tunnels` | 3 | 17 f, +1173 −285 | volume du remote server, tunnels par la connexion, vue des ports |
+| 09 | `09-credentials-secrets-settings-logs` | 4 | 24 f, +1207 −42 | identifiants Git, secrets, `customizations.zed.settings`, journal de création |
+| 10 | `10-attach-clone-and-manage` | 4 | 11 f, +1590 −18 | attache, clone en volume, moteurs distants, gestion des conteneurs |
+| 11 | `11-hardening-and-schemas` | 10 | 22 f, +1117 −143 | durcissement (digests OCI, redaction, tunnels), cache du serveur vérifié, accept réessayé, journal par conteneur, identité avec l'hôte, recovery ciblée, `containerEnv` par feature, intégrité du lockfile façon VS Code, schémas JSON |
+| 12 | `12-agent-relays-and-ssh-sharing` | 5 | 12 f, +825 −72 | relais agent SSH et GnuPG, `ControlMaster`, helpers de statut, doc des templates |
+| 13 | `13-real-world-fixes` | 8 | 10 f, +757 −122 | worktrees liés, conteneurs VS Code (autres chemins, labels mixtes), hooks sans connexion, cache non inscriptible, quoting `containerEnv` et tâches, environnement non persisté (A8b) |
+| 14 | `14-ssh-over-connection-wslc-timings` | 4 | 20 f, +720 −135 | commandes de l'hôte SSH par la connexion Zed (Windows), `wslc` expérimental, durées dans le journal, banc de mesure |
+
+Correctifs fusionnés dans leur commit : tests `multi_workspace` (B1), imports après les actions (E1), API sidebar (E1b),
+test agent SSH Windows (F28), accept des identifiants Git (F22), quoting SSH vs `ControlMaster` (F34), `is_file` inutilisé
+retiré de C6, attentes Unix de `containerEnv` (F-review, F41). Commit « locally built Zed » abandonné : déjà dans `main`.
+
+Vérifications : chaque branche compile avec ses tests sous Windows (`dev_container`, `remote`, `remote_server`,
+`recent_projects`, `workspace`, `sidebar`, `title_bar`, `agent_ui`, `zed`) ; suites Linux par branche : §7 de `07`.
+
+Performance (WSL Ubuntu, Docker 29.1.3, image `devcontainers/base:bookworm` en cache, banc
+`bench::time_dev_container_starts` contre `devcontainer up` de la CLI de référence 0.89.0, 3 tours alternés) :
+
+| Cas | CLI de référence | Zed |
+|---|---|---|
+| image seule, création | 2,0–2,4 s | 1,7–2,7 s |
+| image + feature `node:1`, création (cache de build chaud) | 4,6–7,9 s | 3,4–3,5 s |
+| image + feature, premier build (cache froid) | 34,4 s | 33,1 s |
+| réouverture d'un conteneur démarré | 0,4–0,5 s | 0,0–0,1 s |
+
+Hors mesure : envoi et démarrage du remote server (sans équivalent dans `devcontainer up`).
 
 ## 4. Brouillon de proposition (C0) — NON POSTÉ
 
