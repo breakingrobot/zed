@@ -1367,6 +1367,12 @@ pub struct RemoteSettingsContent {
     ///
     /// Default: false
     pub dev_container_use_wslc: Option<bool>,
+    /// Whether new dev containers get the Wayland socket of a Linux or WSL engine
+    /// host (WSLg's in WSL), so that graphical apps in them show on your screen,
+    /// like VS Code's `dev.containers.mountWaylandSocket`.
+    ///
+    /// Default: true
+    pub dev_container_mount_wayland_socket: Option<bool>,
     /// Whether to build dev container images with BuildKit.
     ///
     /// When unset, Zed auto-detects BuildKit by probing for the `buildx` CLI

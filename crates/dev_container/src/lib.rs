@@ -123,6 +123,8 @@ pub struct DevContainerContext {
     /// Whether the engine runs on another machine than the engine host, which
     /// then can't share its files and sockets with containers.
     pub remote_engine: bool,
+    /// Whether new containers get the engine host's Wayland socket.
+    pub mount_wayland_socket: bool,
     /// What Zed learned about engines and containers earlier in this session.
     pub session_cache: SessionCache,
     pub fs: Arc<dyn Fs>,
@@ -175,6 +177,7 @@ impl DevContainerContext {
             secrets_file: settings.secrets_file.clone(),
             workspace_volume,
             remote_engine: false,
+            mount_wayland_socket: settings.mount_wayland_socket,
             session_cache: SessionCache::global(cx),
             fs: workspace.app_state().fs.clone(),
             http_client: cx.http_client().clone(),
@@ -365,6 +368,7 @@ pub struct Dotfiles {
 struct DevContainerSettings {
     use_podman: bool,
     use_wslc: bool,
+    mount_wayland_socket: bool,
     use_buildkit: Option<bool>,
     dotfiles: Option<Dotfiles>,
     secrets_file: Option<std::path::PathBuf>,
@@ -422,6 +426,10 @@ impl Settings for DevContainerSettings {
         Self {
             use_podman: content.remote.use_podman.unwrap_or(false),
             use_wslc: content.remote.dev_container_use_wslc.unwrap_or(false),
+            mount_wayland_socket: content
+                .remote
+                .dev_container_mount_wayland_socket
+                .unwrap_or(true),
             use_buildkit: content.remote.dev_container_use_buildkit,
             secrets_file: content
                 .remote

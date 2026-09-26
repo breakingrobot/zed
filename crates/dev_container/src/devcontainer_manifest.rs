@@ -93,6 +93,8 @@ struct DevContainerManifest {
     workspace_volume: Option<String>,
     /// Whether the engine runs on another machine than the engine host.
     remote_engine: bool,
+    /// Whether to mount the engine host's Wayland socket, like VS Code.
+    mount_wayland_socket: bool,
     /// The digest stamped on containers as `CONFIG_HASH_LABEL`, once the configuration
     /// has been parsed.
     config_hash: Option<String>,
@@ -101,6 +103,9 @@ struct DevContainerManifest {
     main_git_dir: Option<MountDefinition>,
 }
 const DEFAULT_REMOTE_PROJECT_DIR: &str = "/workspaces";
+/// Where the engine host's Wayland socket is mounted in dev containers.
+const CONTAINER_WAYLAND_SOCKET: &str = "/tmp/zed-wayland.sock";
+
 impl DevContainerManifest {
     async fn new(
         context: &DevContainerContext,
@@ -157,6 +162,7 @@ impl DevContainerManifest {
             session_cache: context.session_cache.clone(),
             workspace_volume: context.workspace_volume.clone(),
             remote_engine: context.remote_engine,
+            mount_wayland_socket: context.mount_wayland_socket,
             config_hash: None,
             main_git_dir: None,
         })
@@ -279,6 +285,33 @@ impl DevContainerManifest {
             return Some(DOCKER_DESKTOP_SSH_AGENT_SOCKET.to_string());
         }
         Some(socket.clone())
+    }
+
+    /// The Wayland socket of a Linux engine host (WSLg's in WSL) to mount into the
+    /// container, so that graphical apps in it show on the user's screen, like VS
+    /// Code's `dev.containers.mountWaylandSocket`.
+    fn wayland_socket(&self) -> Option<String> {
+        let host = self.docker_client.engine_host();
+        if !self.mount_wayland_socket
+            || matches!(host, EngineHost::Ssh(_))
+            || host.is_windows()
+            || self.remote_engine
+            || (cfg!(target_os = "macos") && host.is_local())
+        {
+            return None;
+        }
+        let display = self
+            .local_environment
+            .get("WAYLAND_DISPLAY")
+            .filter(|display| !display.is_empty())?;
+        if display.starts_with('/') {
+            return Some(display.clone());
+        }
+        let runtime_dir = self
+            .local_environment
+            .get("XDG_RUNTIME_DIR")
+            .filter(|dir| dir.starts_with('/'))?;
+        Some(format!("{}/{display}", runtime_dir.trim_end_matches('/')))
     }
 
     /// Reads the engine host user's `~/.gitconfig`, if any.
@@ -1459,6 +1492,17 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 },
             );
         }
+        let wayland_socket = self.wayland_socket();
+        if let Some(socket) = &wayland_socket {
+            append_mount_with_target_override(
+                &mut mounts,
+                MountDefinition {
+                    source: Some(socket.clone()),
+                    target: CONTAINER_WAYLAND_SOCKET.to_string(),
+                    mount_type: Some("bind".to_string()),
+                },
+            );
+        }
         privileged |= dev_container.privileged.unwrap_or(false);
         init |= dev_container.init.unwrap_or(false);
         for cap in dev_container.cap_add.clone().unwrap_or_default() {
@@ -1502,6 +1546,12 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
             "SSH_AUTH_SOCK".to_string(),
             CONTAINER_SSH_AGENT_SOCKET.to_string(),
         );
+        if wayland_socket.is_some() {
+            container_env.insert(
+                "WAYLAND_DISPLAY".to_string(),
+                CONTAINER_WAYLAND_SOCKET.to_string(),
+            );
+        }
         if let Some(config_env) = &dev_container.container_env {
             for (k, v) in config_env {
                 container_env.insert(k.clone(), v.clone());
@@ -5054,6 +5104,7 @@ mod test {
             secrets_file: None,
             workspace_volume: None,
             remote_engine: false,
+            mount_wayland_socket: true,
             session_cache: Default::default(),
             fs: fs.clone(),
             http_client: http_client.clone(),
@@ -6223,6 +6274,71 @@ mod test {
                 .map(String::as_str),
             Some("/tmp/zed-ssh-agent.sock")
         );
+    }
+
+    #[gpui::test]
+    async fn mounts_the_wayland_socket_of_a_wsl_engine_host(cx: &mut TestAppContext) {
+        let mut docker = FakeDocker::new();
+        docker.engine_host = EngineHost::Wsl(WslConnectionOptions {
+            distro_name: "Ubuntu".to_string(),
+            user: None,
+        });
+        let (_, mut devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            FakeFs::new(cx.executor()),
+            fake_http_client(),
+            Arc::new(docker),
+            Arc::new(TestCommandRunner::new()),
+            HashMap::from([
+                ("WAYLAND_DISPLAY".to_string(), "wayland-0".to_string()),
+                (
+                    "XDG_RUNTIME_DIR".to_string(),
+                    "/mnt/wslg/runtime-dir".to_string(),
+                ),
+            ]),
+            r#"{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        let base_image = || DockerInspect {
+            id: "mcr.microsoft.com/devcontainers/base:ubuntu".to_string(),
+            created: None,
+            config: DockerInspectConfig {
+                labels: DockerConfigLabels::default(),
+                image_user: None,
+                env: Vec::new(),
+            },
+            mounts: None,
+            state: None,
+        };
+        let resources = devcontainer_manifest
+            .build_merged_resources(base_image(), "mcr.microsoft.com/devcontainers/base:ubuntu")
+            .unwrap();
+        assert!(resources.additional_mounts.contains(&MountDefinition {
+            source: Some("/mnt/wslg/runtime-dir/wayland-0".to_string()),
+            target: "/tmp/zed-wayland.sock".to_string(),
+            mount_type: Some("bind".to_string()),
+        }));
+        assert_eq!(
+            resources
+                .container_env
+                .get("WAYLAND_DISPLAY")
+                .map(String::as_str),
+            Some("/tmp/zed-wayland.sock")
+        );
+
+        devcontainer_manifest.mount_wayland_socket = false;
+        let resources = devcontainer_manifest
+            .build_merged_resources(base_image(), "mcr.microsoft.com/devcontainers/base:ubuntu")
+            .unwrap();
+        assert!(
+            !resources
+                .additional_mounts
+                .iter()
+                .any(|mount| mount.target == "/tmp/zed-wayland.sock")
+        );
+        assert!(!resources.container_env.contains_key("WAYLAND_DISPLAY"));
     }
 
     #[gpui::test]

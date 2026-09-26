@@ -35,6 +35,7 @@ async fn time_dev_container_starts(cx: &mut TestAppContext) {
         secrets_file: None,
         workspace_volume: None,
         remote_engine: false,
+        mount_wayland_socket: false,
         session_cache: SessionCache::default(),
         fs: fs::RealFs::new(None, cx.executor()),
         http_client: Arc::new(reqwest_client::ReqwestClient::new()),

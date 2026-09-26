@@ -173,6 +173,16 @@ Lifecycle commands, terminals, tasks and the remote server in the container get 
 
 Like VS Code, `ssh` and `git` in a dev container use the keys of your SSH agent, through `SSH_AUTH_SOCK` (`/tmp/zed-ssh-agent.sock`). When the container engine runs on your Linux machine, in WSL, or in Docker Desktop for macOS, Zed mounts the agent into the container. Otherwise, such as on an SSH host, on another machine's engine or with Docker Desktop for Windows, the remote server relays the agent's requests to your machine through Zed's connection. On Windows, Zed uses the agent of Windows' OpenSSH (the "OpenSSH Authentication Agent" service), unless `SSH_AUTH_SOCK` names another pipe.
 
+## Graphical apps {#wayland}
+
+When the container engine runs on Linux or in WSL, Zed mounts the Wayland socket of the engine host (WSLg's in WSL) into new containers and sets `WAYLAND_DISPLAY`, like VS Code. Graphical apps in the container, such as a headed browser for tests, then show on your screen. To turn this off, add this to your settings:
+
+```json [settings]
+{
+  "dev_container_mount_wayland_socket": false
+}
+```
+
 ## GnuPG agent
 
 To sign commits in a dev container with your GnuPG keys, like VS Code, install GnuPG in the container (for example with the `ghcr.io/devcontainers/features/common-utils` feature, or `gnupg2` in your image). When the container's GnuPG has no agent of its own, the remote server relays its agent socket to the agent on your machine, through its restricted "extra" socket (`gpgconf --list-dirs agent-extra-socket`). On Windows, this is the agent of Gpg4win. Your private keys stay on your machine; import your public key in the container for `gpg --list-keys` to show it.
