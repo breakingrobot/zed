@@ -21,7 +21,7 @@ use workspace::Workspace;
 use worktree::Snapshot;
 
 use crate::{
-    DevContainerContext, DevContainerFeature, DevContainerTemplate,
+    DevContainerContext, DevContainerFeature, DevContainerTemplate, SessionCache,
     devcontainer_json::DevContainer,
     devcontainer_manifest::{
         normalize_label_path, read_devcontainer_configuration, spawn_dev_container,
@@ -1020,6 +1020,7 @@ pub async fn remove_dev_container(
     container_id: &str,
     use_podman: bool,
     engine_host: &EngineHost,
+    session_cache: &SessionCache,
 ) -> Result<(), DevContainerError> {
     let docker = Docker::without_builds(
         if use_podman { "podman" } else { "docker" },
@@ -1027,7 +1028,9 @@ pub async fn remove_dev_container(
     )
     .await;
 
-    docker.remove_container(container_id).await
+    docker.remove_container(container_id).await?;
+    session_cache.forget_container(container_id);
+    Ok(())
 }
 
 /// Removes any existing container matching this project/config (so a

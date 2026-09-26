@@ -288,6 +288,24 @@ impl HostCommand {
         self
     }
 
+    /// The non-empty values of the secret variables, in each form they may take in
+    /// the arguments of [`Self::to_command`], so that logs of it can redact them.
+    pub fn secret_values(&self) -> Vec<String> {
+        let mut values = Vec::new();
+        for (_, value) in &self.secret_env {
+            if value.is_empty() {
+                continue;
+            }
+            // How `posix_quote` writes the value into the SSH command line.
+            let quoted = value.replace('\'', r"'\''");
+            if quoted != *value {
+                values.push(quoted);
+            }
+            values.push(value.clone());
+        }
+        values
+    }
+
     /// The environment of the process started here, for callers that start it
     /// from [`Self::to_command`]'s program and arguments alone.
     pub fn process_env(&self) -> Vec<(String, String)> {

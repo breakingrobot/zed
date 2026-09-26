@@ -297,6 +297,53 @@ async fn test_port_tunnels_reach_ports_of_the_remote_machine(
     echo_thread.join().unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn test_port_tunnels_are_forgotten_when_the_port_closes(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    use std::io::Write as _;
+
+    cx.executor().allow_parking();
+    server_cx.executor().allow_parking();
+    let greeter = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = greeter.local_addr().unwrap().port();
+    let greeter_thread = std::thread::spawn(move || {
+        let (mut socket, _) = greeter.accept().unwrap();
+        socket.write_all(b"bye").unwrap();
+    });
+
+    let fs = FakeFs::new(server_cx.executor());
+    let (project, headless) = init_test(&fs, cx, server_cx).await;
+    let proto_client = project
+        .read_with(cx, |project, _| project.remote_client())
+        .expect("project should have a remote client")
+        .read_with(cx, |remote_client, _| remote_client.proto_client());
+
+    let mut responses = proto_client
+        .request_stream(proto::OpenPortTunnel {
+            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+            tunnel_id: 8,
+            port: u32::from(port),
+        })
+        .await
+        .unwrap();
+
+    // The client never closes the tunnel; the port closing it is enough.
+    let mut received = Vec::new();
+    while let Some(response) = futures::StreamExt::next(&mut responses).await {
+        received.extend(response.unwrap().data);
+    }
+    assert_eq!(received, b"bye");
+    greeter_thread.join().unwrap();
+
+    server_cx.executor().run_until_parked();
+    headless.read_with(server_cx, |headless, _| {
+        assert!(headless.port_tunnels.is_empty());
+    });
+}
+
 #[gpui::test]
 async fn test_remote_buffer_path_swap(cx: &mut TestAppContext, server_cx: &mut TestAppContext) {
     let fs = FakeFs::new(server_cx.executor());

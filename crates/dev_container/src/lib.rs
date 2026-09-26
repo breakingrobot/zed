@@ -173,7 +173,7 @@ impl DevContainerContext {
             secrets_file: settings.secrets_file.clone(),
             workspace_volume,
             remote_engine: false,
-            session_cache: cx.try_global::<SessionCache>().cloned().unwrap_or_default(),
+            session_cache: SessionCache::global(cx),
             fs: workspace.app_state().fs.clone(),
             http_client: cx.http_client().clone(),
             environment: workspace.project().read(cx).environment().downgrade(),
@@ -236,6 +236,12 @@ pub(crate) struct UserEnvironmentKey {
 impl gpui::Global for SessionCache {}
 
 impl SessionCache {
+    /// The cache of this session, or an empty one if the dev container crate
+    /// wasn't initialized.
+    pub fn global(cx: &App) -> Self {
+        cx.try_global::<SessionCache>().cloned().unwrap_or_default()
+    }
+
     fn with_state<R>(&self, f: impl FnOnce(&mut SessionCacheState) -> R) -> Option<R> {
         match self.0.lock() {
             Ok(mut state) => Some(f(&mut state)),
@@ -277,7 +283,23 @@ impl SessionCache {
         key: UserEnvironmentKey,
         environment: HashMap<String, String>,
     ) {
-        self.with_state(|state| state.user_environments.insert(key, environment));
+        self.with_state(|state| {
+            // Environments of the container before it restarted are stale.
+            state.user_environments.retain(|cached, _| {
+                cached.container_id != key.container_id || cached.started_at == key.started_at
+            });
+            state.user_environments.insert(key, environment)
+        });
+    }
+
+    /// Forgets what was learned about a container that was removed, e.g. to be
+    /// rebuilt.
+    pub fn forget_container(&self, container_id: &str) {
+        self.with_state(|state| {
+            state
+                .user_environments
+                .retain(|cached, _| cached.container_id != container_id)
+        });
     }
 }
 
@@ -2009,5 +2031,54 @@ mod tests {
         let response = response.unwrap();
         assert_eq!(response.templates.len(), 1);
         assert_eq!(response.templates[0].name, "Alpine");
+    }
+
+    #[test]
+    fn session_cache_drops_environments_of_restarted_or_removed_containers() {
+        let cache = crate::SessionCache::default();
+        let key =
+            |container_id: &str, started_at: &str, remote_user: &str| crate::UserEnvironmentKey {
+                container_id: container_id.to_string(),
+                started_at: Some(started_at.to_string()),
+                remote_user: remote_user.to_string(),
+            };
+        let environment = std::collections::HashMap::from([("A".to_string(), "1".to_string())]);
+
+        cache.set_user_environment(key("first", "t1", "root"), environment.clone());
+        cache.set_user_environment(key("first", "t1", "vscode"), environment.clone());
+        cache.set_user_environment(key("second", "t1", "root"), environment.clone());
+        cache.set_user_environment(key("first", "t2", "root"), environment);
+        assert!(
+            cache
+                .user_environment(&key("first", "t1", "root"))
+                .is_none()
+        );
+        assert!(
+            cache
+                .user_environment(&key("first", "t1", "vscode"))
+                .is_none()
+        );
+        assert!(
+            cache
+                .user_environment(&key("first", "t2", "root"))
+                .is_some()
+        );
+        assert!(
+            cache
+                .user_environment(&key("second", "t1", "root"))
+                .is_some()
+        );
+
+        cache.forget_container("first");
+        assert!(
+            cache
+                .user_environment(&key("first", "t2", "root"))
+                .is_none()
+        );
+        assert!(
+            cache
+                .user_environment(&key("second", "t1", "root"))
+                .is_some()
+        );
     }
 }

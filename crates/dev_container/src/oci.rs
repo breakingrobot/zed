@@ -5,6 +5,7 @@ use futures::{AsyncRead, AsyncReadExt, io::BufReader};
 use http::Request;
 use http_client::{AsyncBody, HttpClient};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256, Sha512};
 
 use crate::devcontainer_api::DevContainerError;
 
@@ -24,6 +25,39 @@ pub(crate) struct DockerManifestsResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ManifestLayer {
     pub(crate) digest: String,
+}
+
+/// Checks that a registry-supplied content digest is `sha256:` or `sha512:`
+/// followed by its lowercase hex hash. Digests name cache folders and URLs, so
+/// anything else (such as `../x` or an absolute path) is refused before it's used.
+pub(crate) fn validate_oci_digest(digest: &str) -> Result<(), DevContainerError> {
+    let valid = match digest.split_once(':') {
+        Some(("sha256", hex)) => is_lowercase_hex(hex, 64),
+        Some(("sha512", hex)) => is_lowercase_hex(hex, 128),
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(DevContainerError::DevContainerValidationFailed(format!(
+            "The registry returned an invalid content digest: {digest:?}"
+        )))
+    }
+}
+
+fn is_lowercase_hex(hex: &str, length: usize) -> bool {
+    hex.len() == length
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn content_matches_digest(content: &[u8], digest: &str) -> bool {
+    match digest.split_once(':') {
+        Some(("sha256", hex)) => format!("{:x}", Sha256::digest(content)) == hex,
+        Some(("sha512", hex)) => format!("{:x}", Sha512::digest(content)) == hex,
+        _ => false,
+    }
 }
 
 /// Gets a bearer token for pulling from a container registry repository.
@@ -83,8 +117,6 @@ pub(crate) async fn get_oci_manifest_with_digest(
     client: &Arc<dyn HttpClient>,
     reference: &str,
 ) -> Result<(DockerManifestsResponse, String), String> {
-    use sha2::{Digest, Sha256};
-
     let url = format!("https://{registry}/v2/{repository_path}/manifests/{reference}");
     let body = get_response_text(token, &url, client).await?;
     let manifest = serde_json_lenient::from_str(&body)
@@ -118,6 +150,7 @@ pub(crate) async fn download_oci_tarball(
     fs: &Arc<dyn Fs>,
     id: Option<&str>,
 ) -> Result<(), DevContainerError> {
+    validate_oci_digest(blob_digest)?;
     let url = match id {
         Some(id) => format!("https://{registry}/v2/{repository_path}/{id}/blobs/{blob_digest}"),
         None => format!("https://{registry}/v2/{repository_path}/blobs/{blob_digest}"),
@@ -138,7 +171,7 @@ pub(crate) async fn download_oci_tarball(
     })?;
     let status = response.status();
 
-    let body = BufReader::new(response.body_mut());
+    let mut body = BufReader::new(response.body_mut());
 
     if !status.is_success() {
         let body_text = String::from_utf8_lossy(body.buffer());
@@ -150,6 +183,19 @@ pub(crate) async fn download_oci_tarball(
         return Err(DevContainerError::ResourceFetchFailed);
     }
 
+    // Read in full so that the content is verified before any of it is extracted.
+    let mut content = Vec::new();
+    body.read_to_end(&mut content).await.map_err(|e| {
+        log::error!("Failed to download feature blob: {e}");
+        DevContainerError::ResourceFetchFailed
+    })?;
+    if !content_matches_digest(&content, blob_digest) {
+        return Err(DevContainerError::DevContainerValidationFailed(format!(
+            "The content downloaded from {url} doesn't match its digest {blob_digest}"
+        )));
+    }
+
+    let body = futures::io::Cursor::new(content);
     futures::pin_mut!(body);
     let body: Pin<&mut (dyn AsyncRead + Send)> = body;
     let archive = async_tar::Archive::new(body);
@@ -227,10 +273,11 @@ mod test {
     use gpui::TestAppContext;
     use http_client::{FakeHttpClient, anyhow};
     use serde::Deserialize;
+    use sha2::{Digest, Sha256};
 
     use crate::oci::{
         TokenResponse, download_oci_tarball, get_deserializable_oci_blob,
-        get_deserialized_response, get_latest_oci_manifest, get_oci_token,
+        get_deserialized_response, get_latest_oci_manifest, get_oci_token, validate_oci_digest,
     };
 
     async fn build_test_tarball() -> Vec<u8> {
@@ -442,17 +489,20 @@ mod test {
         fs.create_dir(&destination_dir).await.unwrap();
 
         let tarball_bytes = build_test_tarball().await;
+        let digest = format!("sha256:{:x}", Sha256::digest(&tarball_bytes));
         let tarball = std::sync::Arc::new(tarball_bytes);
+        let expected_path = format!("/v2/{}/blobs/{digest}", test_oci_repository());
 
         let client = FakeHttpClient::create(move |request| {
             let tarball = tarball.clone();
+            let expected_path = expected_path.clone();
             async move {
                 let host = request.uri().host();
                 if host.is_none() || host.unwrap() != test_oci_registry() {
                     return Err(anyhow!("Unexpected host: {}", host.unwrap_or_default()));
                 }
                 let path = request.uri().path();
-                if path != format!("/v2/{}/blobs/blobdigest", test_oci_repository()) {
+                if path != expected_path {
                     return Err(anyhow!("Unexpected path: {}", path));
                 }
                 Ok(http_client::Response::builder()
@@ -466,7 +516,7 @@ mod test {
             "",
             test_oci_registry(),
             test_oci_repository(),
-            "blobdigest",
+            &digest,
             "header",
             &destination_dir,
             &client,
@@ -492,5 +542,65 @@ mod test {
                 .unwrap(),
             expected_devcontainer_json
         )
+    }
+
+    #[test]
+    fn test_validate_oci_digest() {
+        assert!(validate_oci_digest(&format!("sha256:{}", "a".repeat(64))).is_ok());
+        assert!(validate_oci_digest(&format!("sha512:{}", "0".repeat(128))).is_ok());
+        for invalid in [
+            "/etc/passwd".to_string(),
+            "../../x".to_string(),
+            "sha256:../../x".to_string(),
+            format!("sha256:{}", "a".repeat(63)),
+            format!("sha256:{}", "A".repeat(64)),
+            format!("sha256:{}/", "a".repeat(63)),
+            format!("sha512:{}", "a".repeat(64)),
+            format!("md5:{}", "a".repeat(32)),
+        ] {
+            assert!(validate_oci_digest(&invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[gpui::test]
+    async fn test_download_oci_tarball_rejects_bad_digests(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let fs: Arc<dyn Fs> = FakeFs::new(cx.executor());
+        let destination_dir = PathBuf::from("/tmp/extracted");
+        fs.create_dir(&destination_dir).await.unwrap();
+
+        let tarball = std::sync::Arc::new(build_test_tarball().await);
+        let client = FakeHttpClient::create(move |_request| {
+            let tarball = tarball.clone();
+            async move {
+                Ok(http_client::Response::builder()
+                    .status(200)
+                    .body(tarball.to_vec().into())
+                    .unwrap())
+            }
+        });
+
+        for digest in [
+            "/tmp/elsewhere".to_string(),
+            format!("sha256:{}", "0".repeat(64)),
+        ] {
+            let response = download_oci_tarball(
+                "",
+                test_oci_registry(),
+                test_oci_repository(),
+                &digest,
+                "header",
+                &destination_dir,
+                &client,
+                &fs,
+                None,
+            )
+            .await;
+            assert!(response.is_err(), "{digest}");
+        }
+        assert!(
+            !fs.is_file(&destination_dir.join(".devcontainer/devcontainer.json"))
+                .await
+        );
     }
 }
