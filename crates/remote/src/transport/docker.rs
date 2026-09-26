@@ -62,6 +62,9 @@ pub struct DockerConnectionOptions {
     pub config_file: Option<String>,
     pub upload_binary_over_docker_exec: bool,
     pub use_podman: bool,
+    /// The configuration's `remoteEnv`, as persisted: `${localEnv:…}` and
+    /// `${containerEnv:…}` references are left for the connection to resolve, so
+    /// that their values, often secrets, are never stored.
     pub remote_env: BTreeMap<String, String>,
     /// The machine where the container engine runs. Connections saved before
     /// this existed ran the engine locally.
@@ -318,6 +321,8 @@ pub(crate) struct DockerExecConnection {
     proxy_process: Mutex<Option<u32>>,
     /// Environment variables the container's processes get without storing them.
     secrets: BTreeMap<String, String>,
+    /// [`DockerConnectionOptions::remote_env`], resolved when connecting.
+    remote_env: BTreeMap<String, String>,
     remote_dir_for_server: String,
     remote_binary_relpath: Option<Arc<RelPath>>,
     connection_options: DockerConnectionOptions,
@@ -338,6 +343,7 @@ impl DockerExecConnection {
         let mut this = Self {
             proxy_process: Mutex::new(None),
             secrets: BTreeMap::new(),
+            remote_env: BTreeMap::new(),
             remote_dir_for_server: "/".to_string(),
             remote_binary_relpath: None,
             connection_options,
@@ -353,6 +359,7 @@ impl DockerExecConnection {
                 .and_then(|secrets_file| secrets_file.0.clone())
         });
         this.secrets = load_dev_container_secrets(secrets_file.as_deref()).await;
+        this.remote_env = this.resolve_remote_env().await;
         let (release_channel, version, commit) = cx.update(|cx| {
             (
                 ReleaseChannel::global(cx),
@@ -401,14 +408,83 @@ impl DockerExecConnection {
         }
     }
 
-    /// Builds a docker CLI command that runs on the engine host.
+    /// Builds a docker CLI command that runs on the engine host. `remote_env` travels
+    /// in its environment, which `-e NAME` reads, so no value shows in its arguments.
     fn docker_command(&self, args: &[impl AsRef<str>]) -> util::command::Command {
-        docker_command(
+        let mut command = engine_command(
             &self.connection_options,
             self.docker_cli(),
             &self.engine_environment,
-            args,
-        )
+        );
+        for (name, value) in &self.remote_env {
+            command.secret_env(name, value);
+        }
+        command.args(args.iter().map(|arg| arg.as_ref()));
+        command.to_command()
+    }
+
+    /// Resolves the `${localEnv:…}` and `${containerEnv:…}` references of
+    /// `remote_env`, from the engine host's and the container's environments.
+    async fn resolve_remote_env(&self) -> BTreeMap<String, String> {
+        let templates = &self.connection_options.remote_env;
+        let mentions = |source: &str| {
+            let prefix = format!("${{{source}:");
+            templates.values().any(|value| value.contains(&prefix))
+        };
+        let local_environment: HashMap<String, String> = if !mentions("localEnv") {
+            HashMap::default()
+        } else if self.connection_options.host.is_local() {
+            std::env::vars().collect()
+        } else {
+            match self.connection_options.host.login_environment().await {
+                Ok(environment) => environment.into_iter().collect(),
+                Err(error) => {
+                    log::warn!("Failed to read the engine host's environment: {error:#}");
+                    HashMap::default()
+                }
+            }
+        };
+        let container_environment: HashMap<String, String> = if mentions("containerEnv") {
+            self.container_environment().await.unwrap_or_else(|error| {
+                log::warn!("Failed to read the container's environment: {error:#}");
+                HashMap::default()
+            })
+        } else {
+            HashMap::default()
+        };
+        templates
+            .iter()
+            .filter(|(name, _)| is_valid_environment_name(name))
+            .map(|(name, template)| {
+                let value =
+                    resolve_environment_references(template, "localEnv", &local_environment);
+                let value =
+                    resolve_environment_references(&value, "containerEnv", &container_environment);
+                (name.clone(), value)
+            })
+            .collect()
+    }
+
+    /// The environment the container was created with.
+    async fn container_environment(&self) -> Result<HashMap<String, String>> {
+        let output = self
+            .run_docker_command(
+                "inspect",
+                &[
+                    "--format",
+                    "{{json .Config.Env}}",
+                    self.connection_options.container_id.as_str(),
+                ],
+            )
+            .await?;
+        let entries: Vec<String> = serde_json::from_str(output.trim())?;
+        Ok(entries
+            .into_iter()
+            .filter_map(|entry| {
+                let (name, value) = entry.split_once('=')?;
+                Some((name.to_string(), value.to_string()))
+            })
+            .collect())
     }
 
     /// Run a shell command inside the container and reliably extract its output
@@ -984,7 +1060,7 @@ impl DockerExecConnection {
         args.push("-u".to_string());
         args.push(self.connection_options.remote_user.clone());
 
-        push_environment(&mut args, &self.connection_options.remote_env);
+        push_environment_names(&mut args, &self.remote_env);
         push_environment(&mut args, env);
 
         args.push(self.connection_options.container_id.clone());
@@ -1225,7 +1301,6 @@ impl RemoteConnection for DockerExecConnection {
 
         let mut docker_args = vec!["exec".to_string()];
 
-        push_environment(&mut docker_args, &self.connection_options.remote_env);
         for env_var in ["RUST_LOG", "RUST_BACKTRACE", "ZED_GENERATE_MINIDUMPS"] {
             if let Some(value) = std::env::var(env_var).ok() {
                 docker_args.push("-e".to_string());
@@ -1260,6 +1335,7 @@ impl RemoteConnection for DockerExecConnection {
         );
         // Right after `exec`, among its options.
         let mut secret_args = Vec::new();
+        push_secrets(&mut secret_args, &mut host_command, &self.remote_env);
         push_secrets(&mut secret_args, &mut host_command, &self.secrets);
         docker_args.splice(1..1, secret_args);
         host_command.args(&docker_args);
@@ -1377,13 +1453,13 @@ impl RemoteConnection for DockerExecConnection {
             docker_args.push(parsed_working_dir);
         }
 
-        push_environment(&mut docker_args, &self.connection_options.remote_env);
         push_environment(&mut docker_args, env);
         let mut command = engine_command(
             &self.connection_options,
             self.docker_cli(),
             &self.engine_environment,
         );
+        push_secrets(&mut docker_args, &mut command, &self.remote_env);
         push_secrets(&mut docker_args, &mut command, &self.secrets);
 
         match interactive {
@@ -1446,6 +1522,47 @@ impl RemoteConnection for DockerExecConnection {
     fn default_system_shell(&self) -> String {
         String::from("/bin/sh")
     }
+}
+
+/// `-e NAME` for each variable, whose value `docker exec` then reads from its own
+/// environment.
+fn push_environment_names<'a>(
+    args: &mut Vec<String>,
+    environment: impl IntoIterator<Item = (&'a String, &'a String)>,
+) {
+    for (name, _) in environment {
+        if is_valid_environment_name(name) {
+            args.push("-e".to_string());
+            args.push(name.clone());
+        }
+    }
+}
+
+/// Replaces `${source:NAME}` and `${source:NAME:default}` in `template` with the
+/// value of `NAME` in `environment`, or the default, or nothing.
+pub(crate) fn resolve_environment_references(
+    template: &str,
+    source: &str,
+    environment: &HashMap<String, String>,
+) -> String {
+    let prefix = format!("${{{source}:");
+    let mut resolved = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find(&prefix) {
+        let reference = &rest[start + prefix.len()..];
+        let Some(end) = reference.find('}') else {
+            break;
+        };
+        let (name, default) = match reference[..end].split_once(':') {
+            Some((name, default)) => (name, default),
+            None => (&reference[..end], ""),
+        };
+        resolved.push_str(&rest[..start]);
+        resolved.push_str(environment.get(name).map_or(default, String::as_str));
+        rest = &reference[end + 1..];
+    }
+    resolved.push_str(rest);
+    resolved
 }
 
 fn push_environment<'a>(
@@ -1689,7 +1806,41 @@ mod tests {
     }
 
     #[test]
-    fn redacts_forwarded_env() {
+    fn resolves_environment_references_when_connecting() {
+        let environment: HashMap<String, String> = [
+            ("GITHUB_TOKEN".to_string(), "ghp_secret".to_string()),
+            ("PATH".to_string(), "/usr/bin".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            super::resolve_environment_references(
+                "${localEnv:GITHUB_TOKEN}",
+                "localEnv",
+                &environment
+            ),
+            "ghp_secret"
+        );
+        assert_eq!(
+            super::resolve_environment_references(
+                "${containerEnv:PATH}:/opt/bin:${containerEnv:MISSING:fallback}",
+                "containerEnv",
+                &environment
+            ),
+            "/usr/bin:/opt/bin:fallback"
+        );
+        assert_eq!(
+            super::resolve_environment_references(
+                "${localEnv:MISSING}-${other}",
+                "localEnv",
+                &environment
+            ),
+            "-${other}"
+        );
+    }
+
+    #[test]
+    fn keeps_remote_env_values_out_of_the_arguments() {
         let connection = connection(&[
             ("DATABASE_URL", "postgres://user:password@host/db"),
             ("GH_TOKEN", "ghp_supersecret"),
@@ -1701,8 +1852,8 @@ mod tests {
             redacted_docker_exec(&connection, &[], &["-c", "echo hi"]),
             concat!(
                 "\"docker\" \"exec\" \"-w\" \"/workspace\" \"-u\" \"user\"",
-                " \"-e\" \"DATABASE_URL=<redacted>\" \"-e\" \"GH_TOKEN=<redacted>\"",
-                " \"-e\" \"PATH=<redacted>\" \"-e\" \"lowercase_token=<redacted>\"",
+                " \"-e\" \"DATABASE_URL\" \"-e\" \"GH_TOKEN\"",
+                " \"-e\" \"PATH\" \"-e\" \"lowercase_token\"",
                 " \"container_id\" \"sh\" \"-c\" \"echo hi\""
             )
         );
@@ -1753,7 +1904,7 @@ mod tests {
             ),
             concat!(
                 "failed to run command \"docker\" \"exec\" \"-u\" \"user\"",
-                " \"-e\" \"API_KEY=<redacted>\" \"-e\" \"COMMAND_SECRET=<redacted>\"",
+                " \"-e\" \"API_KEY\" \"-e\" \"COMMAND_SECRET=<redacted>\"",
                 " \"container_id\" \"sh\" \"-c\" \"echo hi\"",
                 ": sh: 1: /usr/local/cargo/bin/zed-remote-server: not found\nGH_TOKEN=\"[REDACTED]\" run"
             )
@@ -1775,14 +1926,7 @@ mod tests {
 
         assert_eq!(
             args,
-            vec![
-                "-u",
-                "user",
-                "-e",
-                "GH_TOKEN=ghp_supersecret",
-                "container_id",
-                "sh"
-            ]
+            vec!["-u", "user", "-e", "GH_TOKEN", "container_id", "sh"]
         );
     }
 
@@ -1795,15 +1939,20 @@ mod tests {
             redacted_docker_exec(&connection, &[], &[]),
             concat!(
                 "\"podman\" \"exec\" \"-w\" \"/workspace\" \"-u\" \"user\"",
-                " \"-e\" \"GH_TOKEN=<redacted>\" \"container_id\" \"sh\""
+                " \"-e\" \"GH_TOKEN\" \"container_id\" \"sh\""
             )
         );
     }
 
     fn connection(remote_env: &[(&str, &str)]) -> DockerExecConnection {
+        let remote_env: BTreeMap<String, String> = remote_env
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
         DockerExecConnection {
             proxy_process: Mutex::new(None),
             secrets: BTreeMap::new(),
+            remote_env: remote_env.clone(),
             remote_dir_for_server: "/tmp/zed".to_string(),
             remote_binary_relpath: None,
             connection_options: DockerConnectionOptions {
@@ -1814,10 +1963,7 @@ mod tests {
                 config_file: None,
                 upload_binary_over_docker_exec: false,
                 use_podman: false,
-                remote_env: remote_env
-                    .iter()
-                    .map(|(key, value)| (key.to_string(), value.to_string()))
-                    .collect(),
+                remote_env,
                 host: EngineHost::Local,
                 forward_ports: Vec::new(),
                 auto_forward: Default::default(),
