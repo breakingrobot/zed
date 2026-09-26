@@ -362,6 +362,7 @@ pub struct Dotfiles {
 #[derive(RegisterSetting)]
 struct DevContainerSettings {
     use_podman: bool,
+    use_wslc: bool,
     use_buildkit: Option<bool>,
     dotfiles: Option<Dotfiles>,
     secrets_file: Option<std::path::PathBuf>,
@@ -418,6 +419,7 @@ impl Settings for DevContainerSettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
         Self {
             use_podman: content.remote.use_podman.unwrap_or(false),
+            use_wslc: content.remote.dev_container_use_wslc.unwrap_or(false),
             use_buildkit: content.remote.dev_container_use_buildkit,
             secrets_file: content
                 .remote
@@ -462,9 +464,11 @@ pub fn init(cx: &mut App) {
         remote::DevContainerSecretsFile(DevContainerSettings::get_global(cx).secrets_file.clone())
     };
     cx.set_global(secrets_file(cx));
+    remote::set_use_wslc(DevContainerSettings::get_global(cx).use_wslc);
     cx.observe_global::<settings::SettingsStore>(move |cx| {
         let secrets_file = secrets_file(cx);
         cx.set_global(secrets_file);
+        remote::set_use_wslc(DevContainerSettings::get_global(cx).use_wslc);
     })
     .detach();
     cx.on_action(|_: &InitializeDevContainer, cx| {

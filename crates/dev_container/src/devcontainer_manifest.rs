@@ -2794,15 +2794,26 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         let remote_workspace_mount = self.remote_workspace_mount()?;
 
         let docker_cli = self.docker_client.docker_cli();
+        // Like the reference CLI, `wslc` gets neither the options it lacks nor
+        // `--mount`, whose options it partly refuses: `-v` instead.
+        let wslc = remote::is_wslc(&docker_cli);
         let mut command = self.docker_client.docker_command();
 
         command.arg("run");
 
-        if build_resources.privileged {
-            command.arg("--privileged");
-        }
-        if build_resources.init {
-            command.arg("--init");
+        if wslc {
+            if build_resources.privileged || build_resources.init {
+                log::warn!(
+                    "WSL containers don't support --privileged or --init, which are left out"
+                );
+            }
+        } else {
+            if build_resources.privileged {
+                command.arg("--privileged");
+            }
+            if build_resources.init {
+                command.arg("--init");
+            }
         }
 
         let run_args = match &self.dev_container().run_args {
@@ -2843,14 +2854,23 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             }
         }
 
-        run_if_missing("--sig-proxy", "--sig-proxy=false", &mut command);
+        if !wslc {
+            run_if_missing("--sig-proxy", "--sig-proxy=false", &mut command);
+        }
         command.arg("-d");
-        command.arg("--mount");
-        command.arg(remote_workspace_mount.to_string());
-
-        for mount in &build_resources.additional_mounts {
-            command.arg("--mount");
-            command.arg(mount.to_string());
+        for mount in
+            std::iter::once(&remote_workspace_mount).chain(&build_resources.additional_mounts)
+        {
+            if wslc {
+                let Some(source) = &mount.source else {
+                    continue;
+                };
+                command.arg("-v");
+                command.arg(format!("{source}:{}", mount.target));
+            } else {
+                command.arg("--mount");
+                command.arg(mount.to_string());
+            }
         }
 
         for (key, val) in self.identifying_labels() {
@@ -2900,13 +2920,21 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         if self.uses_gpu {
             command.args(["--gpus", "all"]);
         }
-        for cap in &build_resources.cap_add {
-            command.arg("--cap-add");
-            command.arg(cap);
-        }
-        for opt in &build_resources.security_opt {
-            command.arg("--security-opt");
-            command.arg(opt);
+        if wslc {
+            if !build_resources.cap_add.is_empty() || !build_resources.security_opt.is_empty() {
+                log::warn!(
+                    "WSL containers don't support --cap-add or --security-opt, which are left out"
+                );
+            }
+        } else {
+            for cap in &build_resources.cap_add {
+                command.arg("--cap-add");
+                command.arg(cap);
+            }
+            for opt in &build_resources.security_opt {
+                command.arg("--security-opt");
+                command.arg(opt);
+            }
         }
 
         if let Some(forward_ports) = &self.dev_container().forward_ports {
@@ -2955,6 +2983,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         self.no_cache = build_mode == BuildMode::RebuildWithoutCache;
         self.parse_nonremote_vars()?;
         self.dev_container().validate_environment_names()?;
+        self.check_wslc_support()?;
         self.config_hash = Some(self.compute_config_hash().await);
         self.main_git_dir = self.linked_worktree_git_mount().await;
 
@@ -2984,6 +3013,35 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         }
         self.copy_git_config(&devcontainer_up).await;
         Ok(devcontainer_up)
+    }
+
+    /// WSL's own container engine (`wslc`, in preview) builds without
+    /// `--build-context`, has no Compose, and mounts Windows folders only.
+    fn check_wslc_support(&self) -> Result<(), DevContainerError> {
+        if !remote::is_wslc(&self.docker_client.docker_cli()) {
+            return Ok(());
+        }
+        let dev_container = self.dev_container();
+        let unsupported = if dev_container.build_type() == DevContainerBuildType::DockerCompose {
+            Some("Docker Compose configurations")
+        } else if dev_container
+            .features
+            .as_ref()
+            .is_some_and(|features| !features.is_empty())
+        {
+            Some("features")
+        } else if !self.docker_client.engine_host().is_local() {
+            Some("projects in a WSL distribution or on an SSH host")
+        } else {
+            None
+        };
+        match unsupported {
+            Some(unsupported) => Err(DevContainerError::DevContainerValidationFailed(format!(
+                "WSL containers (wslc) don't support {unsupported} yet. Turn off \
+                 dev_container_use_wslc to use Docker or Podman."
+            ))),
+            None => Ok(()),
+        }
     }
 
     /// A digest of the files that define the container: the configuration, and the
@@ -3725,11 +3783,7 @@ pub(crate) struct FeaturesBuildInfo {
 /// The engine's client, which probes for BuildKit once per engine and session
 /// unless the settings decide.
 async fn engine_client(context: &DevContainerContext) -> Docker {
-    let docker_cli = if context.use_podman {
-        "podman"
-    } else {
-        "docker"
-    };
+    let docker_cli = remote::container_cli(context.use_podman);
     let use_buildkit = context.use_buildkit.or_else(|| {
         context
             .session_cache
@@ -6973,6 +7027,94 @@ mod test {
                 .values()
                 .any(|value| value.contains("ghp_secret"))
         );
+    }
+
+    #[gpui::test]
+    async fn runs_wslc_containers_without_the_options_it_lacks(cx: &mut TestAppContext) {
+        let mut docker = FakeDocker::new();
+        docker.wslc = true;
+        let (_, mut devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            FakeFs::new(cx.executor()),
+            fake_http_client(),
+            Arc::new(docker),
+            Arc::new(TestCommandRunner::new()),
+            HashMap::new(),
+            r#"{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu", "init": true, "privileged": true }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        let base_image = DockerInspect {
+            id: "mcr.microsoft.com/devcontainers/base:ubuntu".to_string(),
+            created: None,
+            config: DockerInspectConfig {
+                labels: DockerConfigLabels::default(),
+                image_user: None,
+                env: Vec::new(),
+            },
+            mounts: None,
+            state: None,
+        };
+        let resources = devcontainer_manifest
+            .build_merged_resources(base_image, "mcr.microsoft.com/devcontainers/base:ubuntu")
+            .unwrap();
+        let args: Vec<String> = devcontainer_manifest
+            .create_docker_run_command(resources)
+            .unwrap()
+            .to_command()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        for unsupported in [
+            "--init",
+            "--privileged",
+            "--mount",
+            "--cap-add",
+            "--security-opt",
+        ] {
+            assert!(
+                !args.iter().any(|arg| arg == unsupported),
+                "{unsupported} in {args:?}"
+            );
+        }
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--sig-proxy")),
+            "{args:?}"
+        );
+        let workspace = args
+            .iter()
+            .position(|arg| arg == "-v")
+            .map(|index| &args[index + 1])
+            .expect("the workspace is mounted with -v");
+        assert!(workspace.ends_with(":/workspaces/project"), "{workspace}");
+    }
+
+    #[gpui::test]
+    async fn refuses_what_wslc_cant_do(cx: &mut TestAppContext) {
+        let mut docker = FakeDocker::new();
+        docker.wslc = true;
+        let (_, mut devcontainer_manifest) = init_devcontainer_manifest(
+            cx,
+            FakeFs::new(cx.executor()),
+            fake_http_client(),
+            Arc::new(docker),
+            Arc::new(TestCommandRunner::new()),
+            HashMap::new(),
+            r#"{
+                "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+                "features": { "ghcr.io/devcontainers/features/node:1": {} }
+            }"#,
+        )
+        .await
+        .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+        let Err(DevContainerError::DevContainerValidationFailed(message)) =
+            devcontainer_manifest.check_wslc_support()
+        else {
+            panic!("features must be refused with wslc");
+        };
+        assert!(message.contains("features"), "{message}");
     }
 
     #[gpui::test]
@@ -10670,6 +10812,8 @@ RUN echo $RUBY_VERSION2
     pub(crate) struct FakeDocker {
         exec_commands_recorded: Mutex<Vec<RecordedExecCommand>>,
         podman: bool,
+        /// Whether the fake is `wslc`, WSL's container CLI.
+        pub(crate) wslc: bool,
         has_buildx: bool,
         /// When `Some`, `find_process_by_filters` returns
         /// `MultipleMatchingContainers` with these IDs. Used to exercise the
@@ -10697,6 +10841,7 @@ RUN echo $RUBY_VERSION2
         pub(crate) fn new() -> Self {
             Self {
                 podman: false,
+                wslc: false,
                 has_buildx: true,
                 exec_commands_recorded: Mutex::new(Vec::new()),
                 duplicate_container_ids: Mutex::new(None),
@@ -11173,7 +11318,9 @@ RUN echo $RUBY_VERSION2
             *self.engine_resources.lock().expect("should be available")
         }
         fn docker_cli(&self) -> String {
-            if self.podman {
+            if self.wslc {
+                "wslc".to_string()
+            } else if self.podman {
                 "podman".to_string()
             } else {
                 "docker".to_string()

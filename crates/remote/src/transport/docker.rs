@@ -401,11 +401,7 @@ impl DockerExecConnection {
     }
 
     fn docker_cli(&self) -> &str {
-        if self.connection_options.use_podman {
-            "podman"
-        } else {
-            "docker"
-        }
+        container_cli(self.connection_options.use_podman)
     }
 
     /// Builds a docker CLI command that runs on the engine host. `remote_env` travels
@@ -467,17 +463,33 @@ impl DockerExecConnection {
 
     /// The environment the container was created with.
     async fn container_environment(&self) -> Result<HashMap<String, String>> {
-        let output = self
-            .run_docker_command(
-                "inspect",
-                &[
-                    "--format",
-                    "{{json .Config.Env}}",
-                    self.connection_options.container_id.as_str(),
-                ],
-            )
-            .await?;
-        let entries: Vec<String> = serde_json::from_str(output.trim())?;
+        let entries: Vec<String> = if is_wslc(self.docker_cli()) {
+            // `wslc` has no Go templates: its inspect output is an array of objects.
+            let output = self
+                .run_docker_command(
+                    "inspect",
+                    &[
+                        "--format",
+                        "json",
+                        self.connection_options.container_id.as_str(),
+                    ],
+                )
+                .await?;
+            let inspected: serde_json::Value = serde_json::from_str(output.trim())?;
+            serde_json::from_value(inspected[0]["Config"]["Env"].clone())?
+        } else {
+            let output = self
+                .run_docker_command(
+                    "inspect",
+                    &[
+                        "--format",
+                        "{{json .Config.Env}}",
+                        self.connection_options.container_id.as_str(),
+                    ],
+                )
+                .await?;
+            serde_json::from_str(output.trim())?
+        };
         Ok(entries
             .into_iter()
             .filter_map(|entry| {
@@ -865,7 +877,7 @@ impl DockerExecConnection {
         dst_path: String,
     ) -> Result<()> {
         let env = &engine_environment;
-        if !connection_options.host.has_local_files() {
+        if !connection_options.host.has_local_files() || is_wslc(&docker_cli) {
             Self::stream_into_container(
                 &docker_cli,
                 &connection_options,
@@ -1172,6 +1184,32 @@ impl DockerExecConnection {
 /// The volume that keeps the remote server binaries, mounted in the dev containers
 /// Zed creates so that they share one download, like VS Code's `vscode` volume.
 pub const SERVER_CACHE_VOLUME: &str = "zed-remote-server";
+static USE_WSLC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes dev containers use WSL's own container engine through `wslc`, instead of
+/// Docker or Podman. Experimental: `wslc` is in preview.
+pub fn set_use_wslc(use_wslc: bool) {
+    USE_WSLC.store(use_wslc, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The container engine CLI dev containers use: `wslc` when enabled on Windows,
+/// else `podman` or `docker`.
+pub fn container_cli(use_podman: bool) -> &'static str {
+    if cfg!(windows) && USE_WSLC.load(std::sync::atomic::Ordering::Relaxed) {
+        "wslc"
+    } else if use_podman {
+        "podman"
+    } else {
+        "docker"
+    }
+}
+
+/// Whether `cli` is `wslc`, which lacks Go templates, Compose, `buildx` and some
+/// `docker run` options.
+pub fn is_wslc(cli: &str) -> bool {
+    cli == "wslc"
+}
+
 /// Where `SSH_AUTH_SOCK` points in dev containers: the engine host's agent, when Zed
 /// can mount it, or else the remote server's relay to the agent of Zed's machine.
 pub const CONTAINER_SSH_AGENT_SOCKET: &str = "/tmp/zed-ssh-agent.sock";

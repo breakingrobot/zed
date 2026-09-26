@@ -130,11 +130,7 @@ pub(crate) async fn refresh_volume_copy(
 }
 
 async fn docker(use_podman: bool) -> Docker {
-    Docker::without_builds(
-        if use_podman { "podman" } else { "docker" },
-        EngineHost::Local,
-    )
-    .await
+    Docker::without_builds(remote::container_cli(use_podman), EngineHost::Local).await
 }
 
 /// Runs a docker command and returns its standard output.

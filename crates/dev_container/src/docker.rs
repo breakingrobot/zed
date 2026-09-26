@@ -303,7 +303,8 @@ impl Docker {
         host: EngineHost,
     ) -> Self {
         let engine_environment = host.engine_environment().await;
-        let has_buildx = if docker_cli == "podman" {
+        // `wslc` builds with BuildKit in its VM, but has no `buildx` CLI.
+        let has_buildx = if docker_cli == "podman" || remote::is_wslc(docker_cli) {
             false
         } else if let Some(use_buildkit) = use_buildkit {
             // Honor the explicit `dev_container_use_buildkit` setting. Setting it
@@ -394,22 +395,52 @@ impl Docker {
         Ok(())
     }
 
+    fn is_wslc(&self) -> bool {
+        remote::is_wslc(&self.docker_cli)
+    }
+
     fn create_docker_query_containers(&self, filters: Vec<String>) -> HostCommand {
         let mut command = self.docker_command();
-        command.args(&["ps", "-a"]);
+        // `wslc` calls it `list`, and has no Go templates but prints the same JSON.
+        command.args(&[if self.is_wslc() { "list" } else { "ps" }, "-a"]);
 
         for filter in filters {
             command.arg("--filter");
             command.arg(filter);
         }
-        command.arg("--format={{ json . }}");
+        command.arg(if self.is_wslc() {
+            "--format=json"
+        } else {
+            "--format={{ json . }}"
+        });
         command
     }
 
     fn create_docker_inspect(&self, id: &str) -> HostCommand {
         let mut command = self.docker_command();
-        command.args(&["inspect", "--format={{json . }}", id]);
+        command.args(&[
+            "inspect",
+            if self.is_wslc() {
+                "--format=json"
+            } else {
+                "--format={{json . }}"
+            },
+            id,
+        ]);
         command
+    }
+
+    /// Runs an inspect command: `wslc` prints an array of the inspected objects.
+    async fn evaluate_inspect(
+        &self,
+        command: HostCommand,
+    ) -> Result<Option<DockerInspect>, DevContainerError> {
+        if !self.is_wslc() {
+            return evaluate_json_command(command.to_command()).await;
+        }
+        let inspected: Option<Vec<DockerInspect>> =
+            evaluate_json_command(command.to_command()).await?;
+        Ok(inspected.and_then(|inspected| inspected.into_iter().next()))
     }
 
     fn create_docker_compose_build_command(
@@ -466,7 +497,7 @@ impl DockerClient for Docker {
     async fn inspect(&self, id: &String) -> Result<DockerInspect, DevContainerError> {
         // Always try inspect first — avoid pulling unless necessary.
         let command = self.create_docker_inspect(id);
-        match evaluate_json_command::<DockerInspect>(command.to_command()).await {
+        match self.evaluate_inspect(command).await {
             Ok(Some(docker_inspect)) => return Ok(docker_inspect),
             Ok(None) | Err(_) => {}
         }
@@ -475,9 +506,7 @@ impl DockerClient for Docker {
         self.pull_image(id).await.ok();
 
         let command = self.create_docker_inspect(id);
-        let Some(docker_inspect): Option<DockerInspect> =
-            evaluate_json_command(command.to_command()).await?
-        else {
+        let Some(docker_inspect) = self.evaluate_inspect(command).await? else {
             log::error!("Docker inspect produced no deserializable output");
             return Err(DevContainerError::CommandFailed(self.docker_cli.clone()));
         };
@@ -680,6 +709,10 @@ impl DockerClient for Docker {
     }
 
     async fn engine_resources(&self) -> Option<EngineResources> {
+        // `wslc info` has no Go templates, nor the engine's CPUs and memory.
+        if self.is_wslc() {
+            return None;
+        }
         let mut command = self.docker_command();
         command.args(["info", "--format", "{{json .}}"]);
         let output = match command.output().await {
@@ -1188,6 +1221,27 @@ mod test {
         let podman =
             futures::executor::block_on(Docker::new("podman", Some(true), EngineHost::Local));
         assert!(!podman.supports_compose_buildkit());
+    }
+
+    #[test]
+    fn wslc_lists_and_inspects_without_go_templates() {
+        let wslc = futures::executor::block_on(Docker::new("wslc", Some(true), EngineHost::Local));
+        assert!(!wslc.supports_compose_buildkit(), "wslc has no buildx");
+        let args = |command: remote::HostCommand| {
+            command
+                .to_command()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            args(wslc.create_docker_query_containers(vec!["label=a=b".to_string()])),
+            ["list", "-a", "--filter", "label=a=b", "--format=json"]
+        );
+        assert_eq!(
+            args(wslc.create_docker_inspect("abc")),
+            ["inspect", "--format=json", "abc"]
+        );
     }
 
     #[test]
