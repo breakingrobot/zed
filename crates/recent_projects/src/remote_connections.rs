@@ -867,7 +867,11 @@ mod tests {
 
         executor.run_until_parked();
 
-        assert!(result.is_ok(), "open_remote_project should succeed");
+        assert!(
+            result.is_ok(),
+            "open_remote_project should succeed: {:?}",
+            result.err()
+        );
 
         let windows = cx.update(|cx| cx.windows().len());
         assert_eq!(windows, 1, "Should have opened a window");

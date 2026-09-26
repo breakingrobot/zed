@@ -232,6 +232,42 @@ async fn test_basic_remote_editing(cx: &mut TestAppContext, server_cx: &mut Test
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(unix)]
+#[gpui::test]
+async fn test_runs_host_commands_for_the_client(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    server_cx.executor().allow_parking();
+    let fs = FakeFs::new(server_cx.executor());
+    let (project, _headless) = init_test(&fs, cx, server_cx).await;
+    let proto_client = project
+        .read_with(cx, |project, _| project.remote_client())
+        .expect("project should have a remote client")
+        .read_with(cx, |remote_client, _| remote_client.proto_client());
+
+    let response = proto_client
+        .request(proto::RunHostCommand {
+            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+            program: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                r#"cat; printf ' %s %s' "$GREETING" "$(pwd)"; echo oops >&2; exit 3"#.to_string(),
+            ],
+            env: [("GREETING".to_string(), "hello".to_string())]
+                .into_iter()
+                .collect(),
+            cwd: Some("/".to_string()),
+            stdin: b"input".to_vec(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(response.exit_code, Some(3));
+    assert_eq!(String::from_utf8_lossy(&response.stdout), "input hello /");
+    assert_eq!(String::from_utf8_lossy(&response.stderr), "oops\n");
+}
+
 #[gpui::test]
 async fn test_port_tunnels_reach_ports_of_the_remote_machine(
     cx: &mut TestAppContext,
