@@ -2,7 +2,10 @@
 
 - Statut : proposé.
   - Dossier temporaire : **accepté** (décision du 2026-09-24), mis en œuvre par A8a (`devcontainers/a8-unique-build-dir`).
-  - Env persisté : **en suspens** (décision utilisateur du 2026-09-23).
+  - Env persisté : **accepté et mis en œuvre** le 2026-09-26 par F44 (`devcontainers/f44-environment-not-persisted`) :
+    la connexion garde les gabarits de `remoteEnv`, résolus à la connexion ; l'env du conteneur n'est plus stocké ;
+    les valeurs passent à `docker exec` par l'environnement du processus (`-e NOM`), plus par l'argv.
+    Les anciennes entrées sont remplacées à la prochaine ouverture du conteneur (pas de purge à la migration).
 - Contexte :
   - `remote_env` = env complet du conteneur + `remoteEnv` (`devcontainer_manifest.rs:208-223`) ;
   - il est passé en `-e` sur chaque `docker exec` et **persisté en clair** (`workspace/src/persistence.rs:1035, 1754`) ;
