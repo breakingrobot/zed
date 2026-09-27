@@ -175,7 +175,7 @@ et le test `requireLocalPort` rendu stable.
 | 12 | `12-agent-relays-and-ssh-sharing` | 5 | 12 f, +825 −72 | relais agent SSH et GnuPG, `ControlMaster`, helpers de statut, doc des templates |
 | 13 | `13-real-world-fixes` | 8 | 10 f, +757 −122 | worktrees liés, conteneurs VS Code (autres chemins, labels mixtes), hooks sans connexion, cache non inscriptible, quoting `containerEnv` et tâches, environnement non persisté (A8b) |
 | 14 | `14-ssh-over-connection-wslc-timings` | 4 | 20 f, +720 −135 | commandes de l'hôte SSH par la connexion Zed (Windows), `wslc` expérimental, durées dans le journal, banc de mesure |
-| 15 | `15-vs-code-parity` | 3 | — | `dockerFile`/`context` à la racine, socket Wayland (WSLg) monté comme VS Code, « Reopen Folder Locally » sans arrêt ; Stop/Delete rouvrent les projets WSL et SSH dans leur connexion |
+| 15 | `15-vs-code-parity` | 4 | — | commande `zed` dans le conteneur (comme `code` de VS Code : fichier:ligne, dossier), `dockerFile`/`context` à la racine, socket Wayland (WSLg) monté comme VS Code, « Reopen Folder Locally » sans arrêt ; Stop/Delete rouvrent les projets WSL et SSH dans leur connexion |
 
 Audit de parité VS Code (2026-09-27, sur les propriétés du schéma officiel `devContainer.base.schema.json` et les
 commandes de l'extension) : toutes les propriétés du spec sont lues, sauf les écarts ci-dessous.
