@@ -449,6 +449,8 @@ messages!(
     (ForwardGpgAgentMessageResponse, Background),
     (RunHostCommand, Background),
     (RunHostCommandResponse, Background),
+    (EnableOpenPathsInClient, Background),
+    (OpenPathsInClient, Background),
 );
 
 request_messages!(
@@ -697,6 +699,8 @@ request_messages!(
     (EnableGpgAgentForwarding, Ack),
     (ForwardGpgAgentMessage, ForwardGpgAgentMessageResponse),
     (RunHostCommand, RunHostCommandResponse),
+    (EnableOpenPathsInClient, Ack),
+    (OpenPathsInClient, Ack),
 );
 
 lsp_messages!(
@@ -938,7 +942,8 @@ entity_messages!(
     EnableGitCredentialForwarding,
     EnableSshAgentForwarding,
     EnableGpgAgentForwarding,
-    RunHostCommand
+    RunHostCommand,
+    EnableOpenPathsInClient
 );
 
 entity_messages!(

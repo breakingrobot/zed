@@ -396,6 +396,7 @@ impl DockerExecConnection {
             )
             .await?,
         );
+        this.install_zed_command().await;
 
         Ok(this)
     }
@@ -772,6 +773,26 @@ impl DockerExecConnection {
         ];
         exec_args.extend(args.iter().map(|arg| arg.to_string()));
         self.run_docker_command("exec", &exec_args).await
+    }
+
+    /// Installs `zed` in the container's `PATH`, which opens files and folders in
+    /// the window connected to it, like VS Code's `code`, unless the container has
+    /// another `zed`.
+    async fn install_zed_command(&self) {
+        let Some(relative_binary) = &self.remote_binary_relpath else {
+            return;
+        };
+        let server = format!(
+            "{}/{}",
+            self.remote_dir_for_server.trim_end_matches('/'),
+            relative_binary.display(self.path_style())
+        );
+        if let Err(error) = self
+            .run_as_root(INSTALL_ZED_COMMAND_SCRIPT, &[&server])
+            .await
+        {
+            log::debug!("Didn't install the zed command: {error:#}");
+        }
     }
 
     /// Keeps a copy of the server in the cache volume, when the container has it,
@@ -1220,6 +1241,14 @@ pub const SERVER_CACHE_PATH: &str = "/zed-remote-server";
 /// without leaving a partial copy behind.
 const CACHE_SERVER_SCRIPT: &str =
     r#"[ -d "$(dirname "$2")" ] || exit 0; cp "$1" "$2.partial" && mv -f "$2.partial" "$2""#;
+
+/// Writes `/usr/local/bin/zed`, which runs the server `$1`'s `open` command, unless
+/// a `zed` that Zed didn't write is there.
+const INSTALL_ZED_COMMAND_SCRIPT: &str = r#"target="${2:-/usr/local/bin/zed}"
+if [ -e "$target" ] && ! grep -q 'zed-remote-server-open' "$target"; then exit 0; fi
+mkdir -p "$(dirname "$target")" || exit 1
+printf '#!/bin/sh\n# zed-remote-server-open: opens files and folders in the Zed window connected to this machine.\nexec "%s" open "$@"\n' "$1" > "$target.partial" &&
+  chmod 755 "$target.partial" && mv -f "$target.partial" "$target""#;
 
 /// Installs `$1` from the cache volume as `$2`, owned by the container's user, or
 /// fails when the cache doesn't have it or it isn't the server whose SHA-256 is `$3`.
@@ -1677,6 +1706,48 @@ mod tests {
             assert_eq!(command.get_program(), "kill");
             assert_eq!(arguments, ["4242"]);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installs_the_zed_command_unless_the_container_has_its_own() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("bin/zed");
+        let install = |server: &str| {
+            let mut command = util::command::new_command("sh");
+            command
+                .arg("-c")
+                .arg(super::INSTALL_ZED_COMMAND_SCRIPT)
+                .arg("sh")
+                .arg(server)
+                .arg(&target);
+            assert!(smol::block_on(command.output()).unwrap().status.success());
+        };
+
+        install("/home/dev/.zed_server/zed-remote-server-stable-1.0");
+        let script = std::fs::read_to_string(&target).unwrap();
+        assert!(script.starts_with("#!/bin/sh\n"), "{script}");
+        assert!(
+            script.ends_with(
+                "exec \"/home/dev/.zed_server/zed-remote-server-stable-1.0\" open \"$@\"\n"
+            ),
+            "{script}"
+        );
+
+        // A newer server replaces the command Zed wrote...
+        install("/home/dev/.zed_server/zed-remote-server-stable-2.0");
+        assert!(
+            std::fs::read_to_string(&target)
+                .unwrap()
+                .contains("stable-2.0")
+        );
+        // ...but not a `zed` of the container.
+        std::fs::write(&target, "#!/bin/sh\necho mine\n").unwrap();
+        install("/home/dev/.zed_server/zed-remote-server-stable-3.0");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "#!/bin/sh\necho mine\n"
+        );
     }
 
     #[cfg(unix)]

@@ -395,6 +395,8 @@ pub enum Event {
     DisconnectedFromRemote {
         server_not_running: bool,
     },
+    /// The `zed` command of the remote machine asks to open these paths.
+    OpenRemotePaths(Vec<rpc::proto::PathToOpenInClient>),
     Closed,
     DeletedEntry(WorktreeId, ProjectEntryId),
     CollaboratorUpdated {
@@ -3924,6 +3926,9 @@ impl Project {
                 cx.emit(Event::DisconnectedFromRemote { server_not_running });
             }
             &remote::RemoteClientEvent::Reconnected => {}
+            remote::RemoteClientEvent::OpenPaths(paths) => {
+                cx.emit(Event::OpenRemotePaths(paths.clone()));
+            }
         }
     }
 

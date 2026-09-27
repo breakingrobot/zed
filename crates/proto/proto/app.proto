@@ -178,6 +178,25 @@ message RunHostCommandResponse {
   bytes stderr = 3;
 }
 
+// Makes the remote server answer the `zed` command of its machine, which opens
+// files and folders there in the window connected to it.
+message EnableOpenPathsInClient {
+  uint64 project_id = 1;
+}
+
+// Files and folders of the remote server's machine to open in Zed.
+message OpenPathsInClient {
+  repeated PathToOpenInClient paths = 1;
+}
+
+message PathToOpenInClient {
+  string path = 1;
+  bool is_dir = 2;
+  // 1-based, like `zed file:row:column`.
+  optional uint32 row = 3;
+  optional uint32 column = 4;
+}
+
 message GetRemoteProfilingData {
   uint64 project_id = 1;
   bool foreground_only = 2;

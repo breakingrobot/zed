@@ -85,6 +85,12 @@ pub enum Commands {
     GitCredential {
         operation: String,
     },
+    /// The `zed` command of dev containers: opens files and folders of this
+    /// machine in the Zed window connected to it, like `code` in VS Code.
+    Open {
+        /// Files or folders; a file can end in `:row` or `:row:column`.
+        paths: Vec<String>,
+    },
 }
 
 pub fn run(command: Commands) -> anyhow::Result<()> {
@@ -112,6 +118,7 @@ pub fn run(command: Commands) -> anyhow::Result<()> {
         Commands::GitCredential { operation } => {
             crate::headless_project::run_git_credential_helper(&operation)
         }
+        Commands::Open { paths } => crate::headless_project::run_open_command(&paths),
         Commands::Version => {
             let release_channel = *RELEASE_CHANNEL;
             match release_channel {

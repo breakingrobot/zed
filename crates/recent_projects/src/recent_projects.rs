@@ -531,6 +531,8 @@ pub fn init(cx: &mut App) {
     });
 
     cx.observe_new(DisconnectedOverlay::register).detach();
+    cx.observe_new(dev_container_lifecycle::open_paths_of_zed_command)
+        .detach();
 
     cx.on_action(|_: &OpenDevContainer, cx| {
         with_active_or_new_workspace(cx, open_dev_container);

@@ -539,7 +539,9 @@ message Envelope {
     ForwardGpgAgentMessage forward_gpg_agent_message = 507;
     ForwardGpgAgentMessageResponse forward_gpg_agent_message_response = 508;
     RunHostCommand run_host_command = 509;
-    RunHostCommandResponse run_host_command_response = 510; // current max
+    RunHostCommandResponse run_host_command_response = 510;
+    EnableOpenPathsInClient enable_open_paths_in_client = 511;
+    OpenPathsInClient open_paths_in_client = 512; // current max
   }
 
   reserved 87 to 88;

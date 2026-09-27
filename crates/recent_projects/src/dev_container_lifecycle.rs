@@ -21,6 +21,7 @@ use remote::{
     PortForwardingEvent, RemoteConnectionOptions, ShutdownAction, SshConnectionOptions,
 };
 use task::{TaskContext, TaskTemplate};
+use util::ResultExt as _;
 use workspace::notifications::{NotificationId, simple_message_notification::MessageNotification};
 use workspace::{AppState, MultiWorkspace, OpenOptions, Workspace, tasks::ScheduledTaskResult};
 
@@ -247,6 +248,70 @@ pub(crate) fn stop_dev_container(
             log::error!("Failed to reopen project locally after stopping dev container: {e:#}");
         }
     })
+    .detach();
+}
+
+/// Opens in `workspace` what the `zed` command of its dev container is given,
+/// like `code` in VS Code: files in the editor (at their row and column), and
+/// folders in the project.
+pub(crate) fn open_paths_of_zed_command(
+    workspace: &mut Workspace,
+    window: Option<&mut Window>,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(window) = window else {
+        return;
+    };
+    cx.subscribe_in(
+        workspace.project(),
+        window,
+        |workspace, project, event, window, cx| {
+            let project::Event::OpenRemotePaths(paths) = event else {
+                return;
+            };
+            window.activate_window();
+            let mut files = Vec::new();
+            for path in paths {
+                if path.is_dir {
+                    let worktree = project.update(cx, |project, cx| {
+                        project.find_or_create_worktree(&path.path, true, cx)
+                    });
+                    cx.background_spawn(async move { worktree.await.log_err() })
+                        .detach();
+                } else {
+                    files.push(util::paths::PathWithPosition {
+                        path: PathBuf::from(&path.path),
+                        row: path.row,
+                        column: path.column,
+                    });
+                }
+            }
+            if files.is_empty() {
+                return;
+            }
+            let open = workspace.open_paths(
+                files.iter().map(|file| file.path.clone()).collect(),
+                OpenOptions {
+                    visible: Some(workspace::OpenVisible::None),
+                    ..Default::default()
+                },
+                None,
+                window,
+                cx,
+            );
+            let Some(window_handle) = window.window_handle().downcast::<MultiWorkspace>() else {
+                return;
+            };
+            cx.spawn(async move |_, cx| {
+                let items = open
+                    .await
+                    .into_iter()
+                    .map(|item| item.and_then(|item| item.log_err()));
+                crate::remote_connections::navigate_to_positions(&window_handle, items, &files, cx);
+            })
+            .detach();
+        },
+    )
     .detach();
 }
 

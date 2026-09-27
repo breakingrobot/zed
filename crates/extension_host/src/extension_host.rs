@@ -2299,7 +2299,7 @@ impl ExtensionStore {
                         .ok();
                 }
             }
-            RemoteClientEvent::Disconnected { .. } => {}
+            RemoteClientEvent::Disconnected { .. } | RemoteClientEvent::OpenPaths(_) => {}
         });
         let release_subscription = cx.observe_release(&client, move |store, _client, _cx| {
             store.remote_clients.remove(&entity_id);

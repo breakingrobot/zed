@@ -343,8 +343,12 @@ pub struct RemoteClient {
 
 #[derive(Debug)]
 pub enum RemoteClientEvent {
-    Disconnected { server_not_running: bool },
+    Disconnected {
+        server_not_running: bool,
+    },
     Reconnected,
+    /// The `zed` command of the remote machine asks to open these paths.
+    OpenPaths(Vec<proto::PathToOpenInClient>),
 }
 
 impl EventEmitter<RemoteClientEvent> for RemoteClient {}
@@ -559,6 +563,22 @@ impl RemoteClient {
                         cx.background_spawn(async move {
                             if let Err(error) = enable.await {
                                 log::warn!("Failed to forward the SSH agent: {error:#}");
+                            }
+                        })
+                        .detach();
+
+                        // Like `code` in VS Code, `zed` in a dev container opens files
+                        // in this window.
+                        proto_client.add_request_handler(
+                            cx.weak_entity(),
+                            Self::handle_open_paths_in_client,
+                        );
+                        let enable = proto_client.request(proto::EnableOpenPathsInClient {
+                            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+                        });
+                        cx.background_spawn(async move {
+                            if let Err(error) = enable.await {
+                                log::warn!("Failed to answer the zed command: {error:#}");
                             }
                         })
                         .detach();
@@ -1073,6 +1093,19 @@ impl RemoteClient {
             return Task::ready(Err(anyhow!("no remote connection")));
         };
         connection.upload_directory(src_path, dest_path, cx)
+    }
+
+    /// Has the window of this connection open what the `zed` command of the remote
+    /// machine was given.
+    async fn handle_open_paths_in_client(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::OpenPathsInClient>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        this.update(&mut cx, |_, cx| {
+            cx.emit(RemoteClientEvent::OpenPaths(envelope.payload.paths))
+        });
+        Ok(proto::Ack {})
     }
 
     /// Answers git's credential helper in a dev container with this machine's git

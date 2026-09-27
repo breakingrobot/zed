@@ -77,6 +77,8 @@ pub struct HeadlessProject {
     pub(crate) port_tunnels: HashMap<u64, futures::channel::mpsc::UnboundedSender<Vec<u8>>>,
     /// Answers the git credential helper once the client forwards git credentials.
     git_credential_forwarding: Option<gpui::Task<()>>,
+    /// Answers the `zed` command once the client can open paths for it.
+    open_paths_in_client: Option<gpui::Task<()>>,
     /// Relays the SSH agent socket once the client forwards its SSH agent.
     ssh_agent_forwarding: Option<gpui::Task<()>>,
     /// Relays the GnuPG agent socket once the client forwards its GnuPG agent.
@@ -326,6 +328,7 @@ impl HeadlessProject {
         session.add_entity_message_handler(Self::handle_port_tunnel_data);
         session.add_entity_message_handler(Self::handle_close_port_tunnel);
         session.add_entity_request_handler(Self::handle_enable_git_credential_forwarding);
+        session.add_entity_request_handler(Self::handle_enable_open_paths_in_client);
         session.add_entity_request_handler(Self::handle_enable_ssh_agent_forwarding);
         session.add_entity_request_handler(Self::handle_enable_gpg_agent_forwarding);
         session.add_entity_request_handler(Self::handle_run_host_command);
@@ -379,6 +382,7 @@ impl HeadlessProject {
             kernels: Default::default(),
             port_tunnels: Default::default(),
             git_credential_forwarding: None,
+            open_paths_in_client: None,
             ssh_agent_forwarding: None,
             gpg_agent_forwarding: None,
         }
@@ -1440,6 +1444,67 @@ impl HeadlessProject {
         Ok(proto::Ack {})
     }
 
+    /// Listens for the `zed` command of this machine, and asks the client to open
+    /// the paths it's given.
+    async fn handle_enable_open_paths_in_client(
+        this: Entity<Self>,
+        _envelope: TypedEnvelope<proto::EnableOpenPathsInClient>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let already_enabled =
+            this.read_with(&mut cx, |this, _| this.open_paths_in_client.is_some());
+        // The `zed` command is for the Linux machines of dev containers.
+        if already_enabled || cfg!(not(unix)) {
+            return Ok(proto::Ack {});
+        }
+        let session = this.read_with(&mut cx, |this, _| this.session.clone());
+        let socket_path = open_paths_socket_path();
+        let listener = cx
+            .background_spawn(async move {
+                if let Some(parent) = socket_path.parent() {
+                    smol::fs::create_dir_all(parent).await?;
+                }
+                // Another window's server, or one that ran before, may have left its
+                // socket: the latest window connected answers.
+                smol::fs::remove_file(&socket_path).await.ok();
+                anyhow::Ok(net::async_net::UnixListener::bind(&socket_path)?)
+            })
+            .await?;
+        let weak_this = this.downgrade();
+        let task = cx.spawn(async move |cx| {
+            let mut failures = 0;
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        failures = 0;
+                        let session = session.clone();
+                        cx.background_spawn(async move {
+                            if let Err(error) = answer_open_paths_request(stream, session).await {
+                                log::warn!("Failed to open paths in Zed: {error:#}");
+                            }
+                        })
+                        .detach();
+                    }
+                    Err(error) => {
+                        failures += 1;
+                        if failures >= MAX_FORWARDED_SOCKET_ACCEPT_FAILURES {
+                            log::warn!("Stopped answering the zed command: {error}");
+                            break;
+                        }
+                        cx.background_executor()
+                            .timer(FORWARDED_SOCKET_ACCEPT_RETRY_DELAY)
+                            .await;
+                    }
+                }
+            }
+            weak_this
+                .update(cx, |this, _| this.open_paths_in_client = None)
+                .ok();
+        });
+        this.update(&mut cx, |this, _| this.open_paths_in_client = Some(task));
+        Ok(proto::Ack {})
+    }
+
     /// Relays the SSH agent socket at the requested path to the client's SSH agent,
     /// like VS Code, unless an agent already listens there (one Zed mounted into the
     /// container when it could).
@@ -1893,6 +1958,37 @@ mod tests {
     }
 
     #[test]
+    fn zed_command_requests_carry_each_path_and_its_position() {
+        let path = super::proto::PathToOpenInClient {
+            path: "/workspaces/project/src/main.rs".to_string(),
+            is_dir: false,
+            row: Some(12),
+            column: None,
+        };
+        let line = super::format_open_path_line(&path);
+        assert_eq!(line, "f\t12\t\t/workspaces/project/src/main.rs\n");
+        assert_eq!(super::parse_open_path_line(line.trim_end()), Some(path));
+        assert_eq!(super::parse_open_path_line("x\t\t\t/tmp"), None);
+        assert_eq!(super::parse_open_path_line("d\t\t\t"), None);
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("app.js"), "").unwrap();
+        let file = super::path_to_open("app.js:3:7", directory.path());
+        assert_eq!(
+            (file.path.as_str(), file.row, file.column, file.is_dir),
+            (
+                directory.path().join("app.js").to_str().unwrap(),
+                Some(3),
+                Some(7),
+                false
+            )
+        );
+        let folder = super::path_to_open(".", directory.path());
+        assert!(folder.is_dir);
+        assert_eq!(folder.row, None);
+    }
+
+    #[test]
     fn git_credential_requests_carry_the_operation_on_the_first_line() {
         assert_eq!(
             super::parse_git_credential_request("get\nprotocol=https\nhost=github.com\n"),
@@ -2169,4 +2265,119 @@ pub(crate) fn run_git_credential_helper(operation: &str) -> Result<()> {
 #[cfg(not(unix))]
 pub(crate) fn run_git_credential_helper(_operation: &str) -> Result<()> {
     Ok(())
+}
+
+fn open_paths_socket_path() -> PathBuf {
+    paths::remote_server_state_dir().join("open.sock")
+}
+
+/// One path of a request of the `zed` command: `d` or `f` for a folder or a file,
+/// the row and column (empty when not given), and the path, separated by tabs.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn format_open_path_line(path: &proto::PathToOpenInClient) -> String {
+    let number = |number: Option<u32>| number.map(|n| n.to_string()).unwrap_or_default();
+    format!(
+        "{}\t{}\t{}\t{}\n",
+        if path.is_dir { "d" } else { "f" },
+        number(path.row),
+        number(path.column),
+        path.path
+    )
+}
+
+fn parse_open_path_line(line: &str) -> Option<proto::PathToOpenInClient> {
+    let mut fields = line.splitn(4, '\t');
+    let is_dir = match fields.next()? {
+        "d" => true,
+        "f" => false,
+        _ => return None,
+    };
+    let number = |field: &str| field.parse::<u32>().ok();
+    let row = number(fields.next()?);
+    let column = number(fields.next()?);
+    let path = fields.next().filter(|path| !path.is_empty())?;
+    Some(proto::PathToOpenInClient {
+        path: path.to_string(),
+        is_dir,
+        row,
+        column,
+    })
+}
+
+/// Reads the paths the `zed` command sends, has the client open them, and answers
+/// `ok` or the error.
+async fn answer_open_paths_request(
+    mut stream: net::async_net::UnixStream,
+    session: AnyProtoClient,
+) -> Result<()> {
+    use futures::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let mut request = String::new();
+    stream.read_to_string(&mut request).await?;
+    let paths = request
+        .lines()
+        .map(|line| parse_open_path_line(line).context("malformed zed command request"))
+        .collect::<Result<Vec<_>>>()?;
+    let answer = match session.request(proto::OpenPathsInClient { paths }).await {
+        Ok(_) => "ok".to_string(),
+        Err(error) => format!("{error:#}"),
+    };
+    stream.write_all(answer.as_bytes()).await?;
+    stream.close().await?;
+    Ok(())
+}
+
+/// The path of an argument of the `zed` command, and the row and column that may
+/// end it, like the `zed` command of Zed's machine.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn path_to_open(argument: &str, current_dir: &Path) -> proto::PathToOpenInClient {
+    let absolute = |path: &Path| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            current_dir.join(path)
+        }
+    };
+    let literal = absolute(Path::new(argument));
+    let (path, row, column) = if literal.exists() {
+        (literal, None, None)
+    } else {
+        let parsed = util::paths::PathWithPosition::parse_str(argument);
+        (absolute(&parsed.path), parsed.row, parsed.column)
+    };
+    proto::PathToOpenInClient {
+        is_dir: path.is_dir(),
+        path: path.to_string_lossy().into_owned(),
+        row,
+        column,
+    }
+}
+
+/// Runs as the `zed` command: sends the paths to the running server, which has the
+/// connected Zed window open them.
+#[cfg(unix)]
+pub(crate) fn run_open_command(arguments: &[String]) -> Result<()> {
+    use std::io::{Read as _, Write as _};
+
+    if arguments.is_empty() {
+        anyhow::bail!("Usage: zed <path>[:row[:column]]...");
+    }
+    let current_dir = std::env::current_dir()?;
+    let request = arguments
+        .iter()
+        .map(|argument| format_open_path_line(&path_to_open(argument, &current_dir)))
+        .collect::<String>();
+    let mut stream = std::os::unix::net::UnixStream::connect(open_paths_socket_path())
+        .context("no Zed window is connected to this machine")?;
+    stream.write_all(request.as_bytes())?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer)?;
+    anyhow::ensure!(answer == "ok", "Zed couldn't open the paths: {answer}");
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn run_open_command(_arguments: &[String]) -> Result<()> {
+    anyhow::bail!("the zed command of remote machines only runs on Linux")
 }
